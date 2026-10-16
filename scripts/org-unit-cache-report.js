@@ -6,7 +6,7 @@ function printable(state){
 }
 async function main(){
  require('dotenv').config();const env=process.env;
- const store=createResolutionStore({uri:env.MONGODB_URL,namespace:namespaceFor(env.BS_URL,env.D2L_OAUTH2_CLIENT_ID)});
+ const store=createResolutionStore({uri:env.DB_MONGODB_URL,namespace:namespaceFor(env.BS_URL,env.BS_OAUTH2_CLIENT_ID)});
  try{console.table([printable(await store.status())]);console.log('Server-only directory status. Snapshot dates describe dataset freshness, not live course permissions.');}finally{await store.close();}
 }
 if(require.main===module)main().catch(error=>{require('../src/shared/diagnostics').logFailure('org_directory_report_failed',error);process.exitCode=1;});

@@ -28,8 +28,8 @@ function printDistribution(title,stats){
 }
 async function main(argv=process.argv.slice(2),env=process.env){
  if(argv.length>1)throw Error('Usage: node scripts/date-step2-utilization-report.js [job-id]');
- const uri=env.MONGODB_URL;databaseConfig(uri);if(!env.BS_URL||!env.BS_DEPLOYMENT_ID)throw Error('Missing deployment configuration');
- const namespace=createHash('sha256').update(`${env.BS_URL}|${env.BS_DEPLOYMENT_ID}`).digest('hex'),client=new MongoClient(uri,{serverSelectionTimeoutMS:10000});
+ const uri=env.DB_MONGODB_URL;databaseConfig(uri);if(!env.BS_URL||!env.BS_LTI_DEPLOYMENT_ID)throw Error('Missing deployment configuration');
+ const namespace=createHash('sha256').update(`${env.BS_URL}|${env.BS_LTI_DEPLOYMENT_ID}`).digest('hex'),client=new MongoClient(uri,{serverSelectionTimeoutMS:10000});
  try{
   await client.connect();const job=await findJob(client.db().collection('bulk_date_jobs'),namespace,argv[0]);
   if(!job){console.log(argv[0]?'Date Manager job not found in this deployment.':'No Date Manager job with Step 2 utilization measurements was found.');return;}

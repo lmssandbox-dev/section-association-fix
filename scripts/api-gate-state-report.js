@@ -72,9 +72,9 @@ function printReport(report){
  console.log('\nInterpretation is limited to this current persisted snapshot. It does not establish historical gate conditions or available Brightspace capacity; absence of 429 responses is not evidence of unused capacity.');
 }
 async function main(env=process.env){
- const uri=env.MONGODB_URL;databaseConfig(uri);
- if(!env.BS_URL||!env.D2L_OAUTH2_CLIENT_ID)throw Error('Missing gate configuration');
- const key=rateLimitKey(env.BS_URL,env.D2L_OAUTH2_CLIENT_ID),client=new MongoClient(uri,{serverSelectionTimeoutMS:10000});
+ const uri=env.DB_MONGODB_URL;databaseConfig(uri);
+ if(!env.BS_URL||!env.BS_OAUTH2_CLIENT_ID)throw Error('Missing gate configuration');
+ const key=rateLimitKey(env.BS_URL,env.BS_OAUTH2_CLIENT_ID),client=new MongoClient(uri,{serverSelectionTimeoutMS:10000});
  try{
   await client.connect();const row=await readGateState(client.db().collection('api_rate_limits'),key);
   printReport(buildReport(row,Date.now()));

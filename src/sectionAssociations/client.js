@@ -7,7 +7,7 @@ function createSectionAssociationClient({ get, http, oauth, baseUrl, lpVersion }
   if (origin.protocol !== 'https:' || origin.username || origin.password || origin.search || origin.hash) {
     throw new Error('Brightspace base URL must be a clean HTTPS origin.');
   }
-  if (!/^\d+\.\d+$/.test(lpVersion || '')) throw new Error('Configure D2L_LP_VERSION.');
+  if (!/^\d+\.\d+$/.test(lpVersion || '')) throw new Error('Configure D2L_API_LP_VERSION.');
   const root = `/d2l/api/lp/${lpVersion}`;
   const url = path => new URL(path, origin).href;
   const read = async path => get(url(path));

@@ -13,7 +13,7 @@
       "pattern": "/d2l/api/lp/{LP}/outypes/",
       "features": ["Bulk Source Course Creator"],
       "sourceFiles": ["src/creation/client.js"],
-      "versionSource": "D2L_LP_VERSION; Source Course Creator minimum 1.60",
+      "versionSource": "D2L_API_LP_VERSION; Source Course Creator minimum 1.60",
       "documentedMinimum": "1.49",
       "applicationMinimum": "1.60 for optional live Source Course recheck",
       "contract": {
@@ -52,7 +52,7 @@
         "src/creation/client.js",
         "src/resolution/resolver.js"
       ],
-      "versionSource": "D2L_LP_VERSION; application fallback 1.53",
+      "versionSource": "D2L_API_LP_VERSION; application fallback 1.53",
       "documentedMinimum": "1.49",
       "applicationMinimum": "1.53 for Source Course Deployer; 1.60 for Source Course Creator",
       "contract": {
@@ -114,7 +114,7 @@
         "src/copy/resolver.js",
         "src/resolution/resolver.js"
       ],
-      "versionSource": "D2L_LP_VERSION; application fallback 1.53",
+      "versionSource": "D2L_API_LP_VERSION; application fallback 1.53",
       "documentedMinimum": "1.49",
       "applicationMinimum": null,
       "contract": {
@@ -173,7 +173,7 @@
         "src/shared/courses.js",
         "src/replication/client.js"
       ],
-      "versionSource": "D2L_LP_VERSION; application fallback 1.53",
+      "versionSource": "D2L_API_LP_VERSION; application fallback 1.53",
       "documentedMinimum": "1.49",
       "applicationMinimum": "1.53 for Source Course Deployer",
       "contract": {
@@ -229,7 +229,7 @@
       "sourceFiles": [
         "src/replication/client.js"
       ],
-      "versionSource": "D2L_LP_VERSION; application fallback 1.53",
+      "versionSource": "D2L_API_LP_VERSION; application fallback 1.53",
       "documentedMinimum": null,
       "applicationMinimum": "1.53",
       "contract": {
@@ -261,7 +261,7 @@
       "sourceFiles": [
         "src/replication/client.js"
       ],
-      "versionSource": "D2L_LP_VERSION; application fallback 1.53",
+      "versionSource": "D2L_API_LP_VERSION; application fallback 1.53",
       "documentedMinimum": "1.49",
       "applicationMinimum": "1.53",
       "contract": {
@@ -317,7 +317,7 @@
       "sourceFiles": [
         "src/replication/client.js"
       ],
-      "versionSource": "D2L_LP_VERSION; application fallback 1.53",
+      "versionSource": "D2L_API_LP_VERSION; application fallback 1.53",
       "documentedMinimum": null,
       "applicationMinimum": "1.53",
       "contract": {
@@ -350,7 +350,7 @@
       "sourceFiles": [
         "src/creation/client.js"
       ],
-      "versionSource": "D2L_LP_VERSION; application fallback 1.53",
+      "versionSource": "D2L_API_LP_VERSION; application fallback 1.53",
       "documentedMinimum": "1.60",
       "applicationMinimum": "1.60",
       "contract": {
@@ -385,7 +385,7 @@
       "sourceFiles": [
         "src/resolution/sync.js"
       ],
-      "versionSource": "D2L_LP_VERSION; application fallback 1.53",
+      "versionSource": "D2L_API_LP_VERSION; application fallback 1.53",
       "documentedMinimum": null,
       "applicationMinimum": null,
       "contract": {
@@ -970,7 +970,7 @@
       "sourceFiles": [
         "src/creation/client.js"
       ],
-      "versionSource": "D2L_LP_VERSION; application fallback 1.53",
+      "versionSource": "D2L_API_LP_VERSION; application fallback 1.53",
       "documentedMinimum": "1.49",
       "applicationMinimum": "1.60 for Source Course Creator",
       "contract": {
@@ -1026,7 +1026,7 @@
       "sourceFiles": [
         "src/creation/client.js"
       ],
-      "versionSource": "D2L_LP_VERSION; application fallback 1.53",
+      "versionSource": "D2L_API_LP_VERSION; application fallback 1.53",
       "documentedMinimum": "1.49",
       "applicationMinimum": "1.60 for Source Course Creator",
       "contract": {
@@ -1082,7 +1082,7 @@
       "sourceFiles": [
         "src/creation/client.js"
       ],
-      "versionSource": "D2L_LP_VERSION; application fallback 1.53",
+      "versionSource": "D2L_API_LP_VERSION; application fallback 1.53",
       "documentedMinimum": "1.49",
       "applicationMinimum": "1.60 for Source Course Creator",
       "contract": {
@@ -1139,7 +1139,7 @@
       "sourceFiles": [
         "src/creation/client.js"
       ],
-      "versionSource": "D2L_LP_VERSION; application fallback 1.53",
+      "versionSource": "D2L_API_LP_VERSION; application fallback 1.53",
       "documentedMinimum": "1.49",
       "applicationMinimum": "1.60 for Source Course Creator",
       "contract": {

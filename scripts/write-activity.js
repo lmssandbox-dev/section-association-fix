@@ -20,9 +20,9 @@ async function main() {
   require('dotenv').config();
   const http = require('axios'), env = process.env, type = request.activity.type;
   const leRoot = `${env.BS_URL}/d2l/api/le/${env.D2L_LE_VERSION}`;
-  if (!request.dryRun && !hasScope(env.D2L_OAUTH2_SCOPES, scopes[type])) throw new Error('scope');
-  const oauth = createBrightspaceAuth({ http, clientId: env.D2L_OAUTH2_CLIENT_ID, scope: env.D2L_OAUTH2_SCOPES,
-    kid: env.D2L_OAUTH2_KEY_ID, privateKeyPem: env.D2L_OAUTH2_PRIVATE_KEY, tokenEndpoint: env.D2L_OAUTH2_TOKEN_ENDPOINT });
+  if (!request.dryRun && !hasScope(env.BS_OAUTH2_SCOPES, scopes[type])) throw new Error('scope');
+  const oauth = createBrightspaceAuth({ http, clientId: env.BS_OAUTH2_CLIENT_ID, scope: env.BS_OAUTH2_SCOPES,
+    kid: env.BS_OAUTH2_KEY_ID, privateKeyPem: env.BS_OAUTH2_PRIVATE_KEY, tokenEndpoint: env.BS_OAUTH2_TOKEN_ENDPOINT });
   const api = createBrightspaceClient({ leRoot, get: createBrightspaceGet({ http, oauth, baseUrl: env.BS_URL }) });
   const writer = createActivityWriter({ api, type, put: createActivityPut({ http, oauth, leRoot, type }) });
   const result = await writer.updateActivityDates(request);

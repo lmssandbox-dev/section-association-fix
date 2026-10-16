@@ -27,7 +27,7 @@ test('optional Creator live recheck type lookup has the documented permission an
 });
 test('runtime versions preserve the existing LP fallback and environment source', () => {
   assert.deepEqual(resolveRuntimeVersions({}), { lp: { version: '1.53', source: 'application_fallback' }, le: { version: null, source: null } });
-  assert.deepEqual(resolveRuntimeVersions({ D2L_LP_VERSION: '1.62', D2L_LE_VERSION: '1.99' }), { lp: { version: '1.62', source: 'environment' }, le: { version: '1.99', source: 'environment' } });
+  assert.deepEqual(resolveRuntimeVersions({ D2L_API_LP_VERSION: '1.62', D2L_LE_VERSION: '1.99' }), { lp: { version: '1.62', source: 'environment' }, le: { version: '1.99', source: 'environment' } });
 });
 const base = { configured: { lp: { version: '1.60', source: 'environment' }, le: { version: '1.99', source: 'environment' } }, checks: { components: { lp: { supported: true, latestVersion: '1.65' }, le: { supported: true, latestVersion: '1.99' } } }, lifecycle, endpoints, minimums: { lp: [], le: [] } };
 test('assessment distinguishes supported from latest and reports tenant unsupported versions', () => {

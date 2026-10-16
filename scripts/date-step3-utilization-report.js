@@ -29,9 +29,9 @@ function printDistribution(title,stats){
 }
 async function main(argv=process.argv.slice(2),env=process.env){
  if(argv.length>1)throw Error('Usage: node scripts/date-step3-utilization-report.js [job-id]');
- const uri=env.MONGODB_URL;databaseConfig(uri);
- if(!env.BS_URL||!env.BS_DEPLOYMENT_ID)throw Error('Missing deployment configuration');
- const namespace=createHash('sha256').update(`${env.BS_URL}|${env.BS_DEPLOYMENT_ID}`).digest('hex');
+ const uri=env.DB_MONGODB_URL;databaseConfig(uri);
+ if(!env.BS_URL||!env.BS_LTI_DEPLOYMENT_ID)throw Error('Missing deployment configuration');
+ const namespace=createHash('sha256').update(`${env.BS_URL}|${env.BS_LTI_DEPLOYMENT_ID}`).digest('hex');
  const client=new MongoClient(uri,{serverSelectionTimeoutMS:10000});
  try{
   await client.connect();const jobs=client.db().collection('bulk_date_jobs');

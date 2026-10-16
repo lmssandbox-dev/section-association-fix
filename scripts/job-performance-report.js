@@ -4,9 +4,9 @@ const {MongoClient}=require('mongodb');
 const {createHash}=require('node:crypto');
 const {databaseConfig}=require('../src/shared/database');
 async function main(){
- const uri=process.env.MONGODB_URL;databaseConfig(uri);
- if(!process.env.BS_URL||!process.env.BS_DEPLOYMENT_ID)throw Error('Missing deployment configuration');
- const namespace=createHash('sha256').update(`${process.env.BS_URL}|${process.env.BS_DEPLOYMENT_ID}`).digest('hex');
+ const uri=process.env.DB_MONGODB_URL;databaseConfig(uri);
+ if(!process.env.BS_URL||!process.env.BS_LTI_DEPLOYMENT_ID)throw Error('Missing deployment configuration');
+ const namespace=createHash('sha256').update(`${process.env.BS_URL}|${process.env.BS_LTI_DEPLOYMENT_ID}`).digest('hex');
  const client=new MongoClient(uri,{serverSelectionTimeoutMS:10000});
  try{
   await client.connect();

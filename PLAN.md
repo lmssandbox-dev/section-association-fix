@@ -33,7 +33,7 @@
 
 Copy logs expose text messages and copy-job IDs, not a structured result directly correlated to the deployment ID. Missing or ambiguous logs remain unconfirmed. Monitoring neither blocks deployment nor automatically re-submits copies.
 
-Each Brightspace tenant uses its own Render service and the application database selected by MONGODB_URL. Queued background checks require the service to be running.
+Each Brightspace tenant uses its own Render service and the application database selected by DB_MONGODB_URL. Queued background checks require the service to be running.
 
 - Current UI: consistent four counters, inline copy-check progress, no popup or replica tables; details in CSV. History has View job only and copy-progress/completion badges.
 
@@ -46,7 +46,7 @@ Each Brightspace tenant uses its own Render service and the application database
 
 Copy-check optimization: new manual checks query only submitted or uncertain replicas without saved successful-copy confirmation. Confirmed results and CSV evidence are retained per job. Each run snapshots its pending replica IDs and checks batches of 10, keeping progress stable as results arrive. Already queued legacy checks finish their original scan; new deployment jobs have independent results. When nothing remains to check, no API work is queued.
 
-Each independently deployed tenant can now select a dedicated database through the existing MONGODB_URL path. Both LTI storage and job storage use that URI. Explicit application names are required; system names, missing names, and dbName query overrides are rejected. Existing connection strings remain valid. Database creation occurs on first write, subject to MongoDB permissions. This does not migrate data or change any live Render configuration.
+Each independently deployed tenant can now select a dedicated database through the existing DB_MONGODB_URL path. Both LTI storage and job storage use that URI. Explicit application names are required; system names, missing names, and dbName query overrides are rejected. Existing connection strings remain valid. Database creation occurs on first write, subject to MongoDB permissions. This does not migrate data or change any live Render configuration.
 
 Environment setup is documented in [ENVIRONMENT.md](ENVIRONMENT.md), with all 17 variables, their sources/defaults, key generation, LTI versus OAuth key URLs, database isolation, scopes, and installation troubleshooting. Use [.env.example](.env.example) as the placeholder-only server configuration template.
 

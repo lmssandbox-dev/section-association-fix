@@ -5,7 +5,7 @@ function deploymentGuard(expectedId) {
   const allowedId = typeof expectedId === 'string' ? expectedId.trim() : '';
   return (token, req, res) => {
     if (!allowedId) {
-      res.status(503).send('LTI setup incomplete: configure BS_DEPLOYMENT_ID and restart.');
+      res.status(503).send('LTI setup incomplete: configure BS_LTI_DEPLOYMENT_ID and restart.');
       return false;
     }
     if (typeof token?.deploymentId !== 'string' || token.deploymentId !== allowedId) {

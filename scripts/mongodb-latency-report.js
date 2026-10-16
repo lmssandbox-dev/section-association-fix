@@ -9,7 +9,7 @@ async function measure(client,{samples=8,clock=()=>performance.now()}={}){
 async function main(){
  require('dotenv').config();
  const {MongoClient}=require('mongodb'),{databaseConfig}=require('../src/shared/database');
- const uri=process.env.MONGODB_URL;databaseConfig(uri);
+ const uri=process.env.DB_MONGODB_URL;databaseConfig(uri);
  const client=new MongoClient(uri,{serverSelectionTimeoutMS:10000,socketTimeoutMS:15000});
  try{console.table([await measure(client)]);console.log('Read-only ping timings from this server. No database writes or Brightspace requests. Check Render and Atlas region settings separately; latency alone does not establish their locations.');}
  finally{await client.close();}

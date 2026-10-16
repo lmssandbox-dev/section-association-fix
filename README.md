@@ -10,7 +10,7 @@ The worker validates the complete set before writing. It then checks each curren
 
 ## Safety and rollout
 
-`SECTION_ASSOCIATION_DRY_RUN=true` is the default. Dry-run discovers, resolves, validates, and reports `would-inactivate` outcomes without sending PUT requests. It shares the production reconciler and remains pending so the same association can be processed after dry-run is disabled.
+`SECTION_ASSOCIATION_FIX_DRY_RUN=true` is the default. Dry-run discovers, resolves, validates, and reports `would-inactivate` outcomes without sending PUT requests. It shares the production reconciler and remains pending so the same association can be processed after dry-run is disabled.
 
 On the first successful discovery, the service records the associations already present as a baseline and does not reconcile any of them. Historical cleanup is intentionally outside this service. Associations first seen after baseline wait ten minutes before processing.
 
@@ -20,10 +20,10 @@ The fast loop discovers every 15 minutes and handles stable new associations. Th
 
 Background calls use Brightspace Server-to-Server OAuth 2.0 client credentials with a signed private-key JWT. LTI 1.3 registration and launch support remain available as the boundary for a future admin portal; no worker action depends on an LTI user session.
 
-The service account needs OAuth scopes `organizations:organization:read` and `orgunits:course:update`, plus Brightspace organizational-structure read access and Manage Courses permission to update Course Offerings. These scopes must be granted to the OAuth application and listed in `D2L_OAUTH2_SCOPES`.
+The service account needs OAuth scopes `organizations:organization:read` and `orgunits:course:update`, plus Brightspace organizational-structure read access and Manage Courses permission to update Course Offerings. These scopes must be granted to the OAuth application and listed in `BS_OAUTH2_SCOPES`.
 
 ## Run
 
-Use Node.js 22, install with `npm ci`, copy `.env.example` to `.env`, and provide tenant credentials. Run `npm test` and `npm run check`; start with `npm start`. Keep dry-run enabled until logs confirm the expected targets. Set `SECTION_ASSOCIATION_DRY_RUN=false` only when ready to permit inactivation.
+Use Node.js 22, install with `npm ci`, copy `.env.example` to `.env`, and provide tenant credentials. Run `npm test` and `npm run check`; start with `npm start`. Keep dry-run enabled until logs confirm the expected targets. Set `SECTION_ASSOCIATION_FIX_DRY_RUN=false` only when ready to permit inactivation.
 
 See [ENVIRONMENT.md](ENVIRONMENT.md) for configuration and [TECHNICAL.md](TECHNICAL.md) for reconciliation and persistence details.

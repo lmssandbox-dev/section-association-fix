@@ -17,43 +17,43 @@ const { createSectionAssociationService } = require('./src/sectionAssociations/s
 const env = process.env;
 const port = Number(env.PORT || 3000);
 const {
-  MONGODB_URL, LTI_KEY, BS_URL, BS_NAME, BS_CLIENT_ID, BS_AUTH_ENDPOINT, BS_TOKEN_ENDPOINT, BS_KEYSET_URL,
-  D2L_OAUTH2_CLIENT_ID, D2L_OAUTH2_PRIVATE_KEY, D2L_OAUTH2_KEY_ID, D2L_OAUTH2_TOKEN_ENDPOINT,
-  D2L_OAUTH2_SCOPES, D2L_LP_VERSION
+  DB_MONGODB_URL, APP_LTI_SECRET, BS_URL, BS_NAME, BS_LTI_CLIENT_ID, BS_LTI_AUTH_ENDPOINT, BS_LTI_TOKEN_ENDPOINT, BS_LTI_KEYSET_URL,
+  BS_OAUTH2_CLIENT_ID, BS_OAUTH2_PRIVATE_KEY, BS_OAUTH2_KEY_ID, BS_OAUTH2_TOKEN_ENDPOINT,
+  BS_OAUTH2_SCOPES, D2L_API_LP_VERSION
 } = env;
 
-const required = { MONGODB_URL, LTI_KEY, BS_URL, BS_CLIENT_ID, BS_AUTH_ENDPOINT, BS_TOKEN_ENDPOINT, BS_KEYSET_URL,
-  D2L_OAUTH2_CLIENT_ID, D2L_OAUTH2_PRIVATE_KEY, D2L_OAUTH2_KEY_ID, D2L_OAUTH2_SCOPES, D2L_LP_VERSION };
+const required = { DB_MONGODB_URL, APP_LTI_SECRET, BS_URL, BS_LTI_CLIENT_ID, BS_LTI_AUTH_ENDPOINT, BS_LTI_TOKEN_ENDPOINT, BS_LTI_KEYSET_URL,
+  BS_OAUTH2_CLIENT_ID, BS_OAUTH2_PRIVATE_KEY, BS_OAUTH2_KEY_ID, BS_OAUTH2_SCOPES, D2L_API_LP_VERSION };
 const missing = Object.entries(required).filter(([, value]) => !String(value || '').trim()).map(([key]) => key);
 if (missing.length) throw new Error(`Missing required environment settings: ${missing.join(', ')}`);
-databaseConfig(MONGODB_URL);
+databaseConfig(DB_MONGODB_URL);
 const brightspace = new URL(BS_URL);
 if (brightspace.protocol !== 'https:' || brightspace.username || brightspace.password || brightspace.search || brightspace.hash) {
   throw new Error('BS_URL must be the Brightspace HTTPS origin without credentials, query, or fragment.');
 }
-if (!/^\d+\.\d+$/.test(D2L_LP_VERSION)) throw new Error('D2L_LP_VERSION must use the form major.minor.');
-const missingScopes = ['organizations:organization:read', 'orgunits:course:update'].filter(scope => !hasScope(D2L_OAUTH2_SCOPES, scope));
-if (missingScopes.length) throw new Error(`D2L_OAUTH2_SCOPES must include: ${missingScopes.join(', ')}`);
+if (!/^\d+\.\d+$/.test(D2L_API_LP_VERSION)) throw new Error('D2L_API_LP_VERSION must use the form major.minor.');
+const missingScopes = ['organizations:organization:read', 'orgunits:course:update'].filter(scope => !hasScope(BS_OAUTH2_SCOPES, scope));
+if (missingScopes.length) throw new Error(`BS_OAUTH2_SCOPES must include: ${missingScopes.join(', ')}`);
 if (!/^\d+$/.test(String(port)) || port < 1 || port > 65535) throw new Error('PORT must be a valid TCP port.');
 
-const namespace = createHash('sha256').update(`${brightspace.origin}|${D2L_OAUTH2_CLIENT_ID}`).digest('hex');
-const oauth = createBrightspaceAuth({ clientId: D2L_OAUTH2_CLIENT_ID, scope: D2L_OAUTH2_SCOPES,
-  kid: D2L_OAUTH2_KEY_ID, privateKeyPem: D2L_OAUTH2_PRIVATE_KEY,
-  tokenEndpoint: D2L_OAUTH2_TOKEN_ENDPOINT || 'https://auth.brightspace.com/core/connect/token', http: axios });
-const apiGate = createMongoGate({ uri: MONGODB_URL, key: rateLimitKey(BS_URL, D2L_OAUTH2_CLIENT_ID) });
+const namespace = createHash('sha256').update(`${brightspace.origin}|${BS_OAUTH2_CLIENT_ID}`).digest('hex');
+const oauth = createBrightspaceAuth({ clientId: BS_OAUTH2_CLIENT_ID, scope: BS_OAUTH2_SCOPES,
+  kid: BS_OAUTH2_KEY_ID, privateKeyPem: BS_OAUTH2_PRIVATE_KEY,
+  tokenEndpoint: BS_OAUTH2_TOKEN_ENDPOINT || 'https://auth.brightspace.com/core/connect/token', http: axios });
+const apiGate = createMongoGate({ uri: DB_MONGODB_URL, key: rateLimitKey(BS_URL, BS_OAUTH2_CLIENT_ID) });
 const apiHttp = createRateLimitedHttp({ http: axios, gate: apiGate, baseUrl: BS_URL });
 const get = createBrightspaceGet({ http: apiHttp, oauth, baseUrl: BS_URL, retries: 2 });
-const client = createSectionAssociationClient({ get, http: apiHttp, oauth, baseUrl: BS_URL, lpVersion: D2L_LP_VERSION });
-const store = createSectionAssociationStore({ uri: MONGODB_URL, namespace });
-const dryRun = !/^(false|0|no)$/i.test(env.SECTION_ASSOCIATION_DRY_RUN || 'true');
-const stabilityMinutes = positiveInteger(env.SECTION_ASSOCIATION_STABILITY_MINUTES, 10);
-const fastMinutes = positiveInteger(env.SECTION_ASSOCIATION_FAST_INTERVAL_MINUTES, 15);
-const recoveryHours = positiveInteger(env.SECTION_ASSOCIATION_RECOVERY_INTERVAL_HOURS, 4);
+const client = createSectionAssociationClient({ get, http: apiHttp, oauth, baseUrl: BS_URL, lpVersion: D2L_API_LP_VERSION });
+const store = createSectionAssociationStore({ uri: DB_MONGODB_URL, namespace });
+const dryRun = !/^(false|0|no)$/i.test(env.SECTION_ASSOCIATION_FIX_DRY_RUN || 'true');
+const stabilityMinutes = positiveInteger(env.SECTION_ASSOCIATION_FIX_STABILITY_MINUTES, 10);
+const fastMinutes = positiveInteger(env.SECTION_ASSOCIATION_FIX_FAST_INTERVAL_MINUTES, 15);
+const recoveryHours = positiveInteger(env.SECTION_ASSOCIATION_FIX_RECOVERY_INTERVAL_HOURS, 4);
 const reconciler = createReconciler({ client, store, dryRun });
 const service = createSectionAssociationService({ client, store, reconciler, stabilityMinutes });
 
 // LTI remains available as the future protected admin layer. The worker never uses an LTI token.
-lti.setup(LTI_KEY, databaseConfig(MONGODB_URL), {
+lti.setup(APP_LTI_SECRET, databaseConfig(DB_MONGODB_URL), {
   appRoute: '/', loginRoute: '/login', cookies: { secure: true, sameSite: 'None' }, devMode: false
 });
 lti.whitelist({ route: '/.well-known/brightspace-jwks.json', method: 'get' }, { route: '/ping', method: 'get' });
@@ -62,9 +62,9 @@ lti.app.get('/ping', (_req, res) => res.type('text/plain').send('Section Associa
 lti.onConnect((_token, _req, res) => res.type('html').send('<main><h1>Section Association cleanup</h1><p>Administrative tools are not enabled yet.</p></main>'));
 
 async function registerBrightspace() {
-  await lti.registerPlatform({ url: BS_URL, name: BS_NAME || 'Brightspace', clientId: BS_CLIENT_ID,
-    authenticationEndpoint: BS_AUTH_ENDPOINT, accesstokenEndpoint: BS_TOKEN_ENDPOINT,
-    authConfig: { method: 'JWK_SET', key: BS_KEYSET_URL } });
+  await lti.registerPlatform({ url: BS_URL, name: BS_NAME || 'Brightspace', clientId: BS_LTI_CLIENT_ID,
+    authenticationEndpoint: BS_LTI_AUTH_ENDPOINT, accesstokenEndpoint: BS_LTI_TOKEN_ENDPOINT,
+    authConfig: { method: 'JWK_SET', key: BS_LTI_KEYSET_URL } });
 }
 
 async function start() {

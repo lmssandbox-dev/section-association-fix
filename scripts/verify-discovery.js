@@ -17,12 +17,12 @@ async function main() {
   require('dotenv').config();
   const http = require('axios');
   const env = process.env;
-  const required = ['BS_URL', 'D2L_LE_VERSION', 'D2L_OAUTH2_CLIENT_ID',
-    'D2L_OAUTH2_PRIVATE_KEY', 'D2L_OAUTH2_KEY_ID', 'D2L_OAUTH2_SCOPES'];
+  const required = ['BS_URL', 'D2L_LE_VERSION', 'BS_OAUTH2_CLIENT_ID',
+    'BS_OAUTH2_PRIVATE_KEY', 'BS_OAUTH2_KEY_ID', 'BS_OAUTH2_SCOPES'];
   if (required.some(key => !env[key] || /replace|placeholder|your-tenant/i.test(env[key]))) throw new Error('configuration required');
-  const oauth = createBrightspaceAuth({ http, clientId: env.D2L_OAUTH2_CLIENT_ID,
-    scope: env.D2L_OAUTH2_SCOPES, kid: env.D2L_OAUTH2_KEY_ID,
-    privateKeyPem: env.D2L_OAUTH2_PRIVATE_KEY, tokenEndpoint: env.D2L_OAUTH2_TOKEN_ENDPOINT });
+  const oauth = createBrightspaceAuth({ http, clientId: env.BS_OAUTH2_CLIENT_ID,
+    scope: env.BS_OAUTH2_SCOPES, kid: env.BS_OAUTH2_KEY_ID,
+    privateKeyPem: env.BS_OAUTH2_PRIVATE_KEY, tokenEndpoint: env.BS_OAUTH2_TOKEN_ENDPOINT });
   const api = createBrightspaceClient({
     get: createBrightspaceGet({ http, oauth, baseUrl: env.BS_URL }),
     leRoot: `${env.BS_URL}/d2l/api/le/${env.D2L_LE_VERSION}`

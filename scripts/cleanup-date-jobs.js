@@ -41,7 +41,7 @@ async function boundedDelete(collection,filter,ids,beforeBatch=async()=>{}){
  return deleted;
 }
 async function run({uri,baseUrl,deploymentId,apply=false,allDateJobs=false,client:providedClient,now=Date.now}={}){
- databaseConfig(uri);if(!baseUrl||!deploymentId)throw Error('BS_URL and BS_DEPLOYMENT_ID are required.');
+ databaseConfig(uri);if(!baseUrl||!deploymentId)throw Error('BS_URL and BS_LTI_DEPLOYMENT_ID are required.');
  const namespace=createHash('sha256').update(`${baseUrl}|${deploymentId}`).digest('hex');
  const client=providedClient||new MongoClient(uri,{serverSelectionTimeoutMS:10000,socketTimeoutMS:15000});
  const ownsClient=!providedClient;let lockId,lockWorker;
@@ -68,7 +68,7 @@ async function run({uri,baseUrl,deploymentId,apply=false,allDateJobs=false,clien
  }finally{if(lockId&&lockWorker){try{const db=client.db();await db.collection('bulk_date_locks').updateOne({_id:lockId,worker:lockWorker},{$set:{until:0},$unset:{maintenance:''}});}catch{}}if(ownsClient)await client.close();}
 }
 if(require.main===module){
- try{const options=parseArgs(process.argv.slice(2));run({uri:process.env.MONGODB_URL,baseUrl:process.env.BS_URL,deploymentId:process.env.BS_DEPLOYMENT_ID,...options}).then(r=>{console.table(r);console.log('Estimated logical JSON bytes only; this does not estimate physical Atlas storage reclaimed.');}).catch(e=>{console.error(e.message);process.exitCode=1;});}
+ try{const options=parseArgs(process.argv.slice(2));run({uri:process.env.DB_MONGODB_URL,baseUrl:process.env.BS_URL,deploymentId:process.env.BS_LTI_DEPLOYMENT_ID,...options}).then(r=>{console.table(r);console.log('Estimated logical JSON bytes only; this does not estimate physical Atlas storage reclaimed.');}).catch(e=>{console.error(e.message);process.exitCode=1;});}
  catch(e){console.error(e.message);process.exitCode=1;}
 }
 module.exports={parseArgs,makePlan,boundedDelete,run,BATCH};

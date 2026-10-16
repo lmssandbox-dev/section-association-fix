@@ -2,7 +2,7 @@
 const { id } = require('./id');
 function createCoursesClient({ api, baseUrl, lpVersion, sourceClient, orgResolver }) {
   const root = /^\d+\.\d+$/.test(lpVersion || '') ? `${baseUrl.replace(/\/$/,'')}/d2l/api/lp/${lpVersion}` : null;
-  function configured() { if (!root) throw new Error('Configure D2L_LP_VERSION for Course Offering validation.'); }
+  function configured() { if (!root) throw new Error('Configure D2L_API_LP_VERSION for Course Offering validation.'); }
   return {
     prepare:(rows,check)=>orgResolver?.prepare(rows.map(r=>r.orgUnitCode),check),
     async get(orgUnitId) {

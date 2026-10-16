@@ -28,7 +28,7 @@ function createSourceDeploymentClient({api,http,oauth,baseUrl,lpVersion,delay=ms
     const httpStatus=Number.isInteger(status)?status:null;
     code=code||(error?.code==='LP_VERSION_UNSUPPORTED'?'LP_VERSION_UNSUPPORTED':'API_READ_FAILED');
     const label={source:'Source Course validation',sourceMetadata:'Source display-name lookup',replica:'Replica Course Offering lookup'}[stage];
-    const detail=code==='LP_VERSION_UNSUPPORTED'?'Set D2L_LP_VERSION to 1.53 or later.':code==='INVALID_RESPONSE'?'Brightspace returned an incomplete or unexpected response.':httpStatus===403?'Check the OAuth read scopes and Service User permissions.':httpStatus===404?'Check the ID, org-unit type and supported LP version.':httpStatus===401?'Check API authentication and granted read scopes.':httpStatus===429?'Brightspace rate limit reached; try a new preview later.':'Check API connectivity and availability.';
+    const detail=code==='LP_VERSION_UNSUPPORTED'?'Set D2L_API_LP_VERSION to 1.53 or later.':code==='INVALID_RESPONSE'?'Brightspace returned an incomplete or unexpected response.':httpStatus===403?'Check the OAuth read scopes and Service User permissions.':httpStatus===404?'Check the ID, org-unit type and supported LP version.':httpStatus===401?'Check API authentication and granted read scopes.':httpStatus===429?'Brightspace rate limit reached; try a new preview later.':'Check API connectivity and availability.';
     return Object.assign(new Error(`${label} for ${orgUnitId} failed (LP ${version||'invalid'}${httpStatus?`, HTTP ${httpStatus}`:''}). ${detail}`),{code:'REPLICATION_VALIDATION',stage,orgUnitId,httpStatus,reason:code});
   }
   async function validationRead(path,stage,orgUnitId){
