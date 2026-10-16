@@ -44,6 +44,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     logEvent(logger, 'info', 'fast cycle started');
     const stats = { candidates: 0, new: 0, alreadyKnown: 0, pending: 0, completed: 0, blocked: 0 };
     if (busy) {
+      logEvent(logger, 'warn', 'fast cycle skipped', { reason: 'already-running' });
       logEvent(logger, 'info', 'fast cycle completed', { ...stats, skipped: 1 });
       return;
     }
@@ -98,6 +99,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     logEvent(logger, 'info', 'recovery cycle started');
     const stats = { candidates: 0, new: 0, alreadyKnown: 0, pending: 0, completed: 0, blocked: 0 };
     if (busy) {
+      logEvent(logger, 'warn', 'recovery cycle skipped', { reason: 'already-running' });
       logEvent(logger, 'info', 'recovery cycle completed', { pending: 0, blocked: 0, completed: 0, skipped: 1 });
       return;
     }

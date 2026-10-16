@@ -13,6 +13,7 @@ const { createSectionAssociationClient } = require('./src/sectionAssociations/cl
 const { createSectionAssociationStore } = require('./src/sectionAssociations/store');
 const { createReconciler } = require('./src/sectionAssociations/reconciler');
 const { createSectionAssociationService } = require('./src/sectionAssociations/service');
+const { startSectionAssociationScheduler } = require('./src/sectionAssociations/scheduler');
 const { validateRequiredEnvironment, ltiConfiguration, registerBrightspacePlatform,
   installPublicBootstrapEndpoints } = require('./src/sectionAssociations/config');
 
@@ -50,6 +51,7 @@ const fastMinutes = positiveInteger(env.SECTION_ASSOCIATION_FIX_FAST_INTERVAL_MI
 const recoveryHours = positiveInteger(env.SECTION_ASSOCIATION_FIX_RECOVERY_INTERVAL_HOURS, 4);
 const reconciler = createReconciler({ client, store, dryRun });
 const service = createSectionAssociationService({ client, store, reconciler, stabilityMinutes });
+let sectionAssociationScheduler;
 
 // LTI remains available as the future protected admin layer. The worker never uses an LTI token.
 lti.setup(APP_LTI_SECRET, databaseConfig(DB_MONGODB_URL), {
@@ -64,11 +66,8 @@ async function start() {
     if (ltiConfig.complete) console.log('LTI configured: Brightspace platform registration enabled.');
     else console.log('LTI setup mode: Brightspace LTI registration is not fully configured.');
     console.log(`Section Association cleanup service listening on ${port}; dry-run=${dryRun}.`);
-    void service.fastTick();
-    const fastTimer = setInterval(() => { void service.fastTick(); }, fastMinutes * 60000);
-    const recoveryTimer = setInterval(() => { void service.recoveryTick(); }, recoveryHours * 60 * 60000);
-    fastTimer.unref?.();
-    recoveryTimer.unref?.();
+    sectionAssociationScheduler = startSectionAssociationScheduler({ service,
+      fastIntervalMinutes: fastMinutes, recoveryIntervalHours: recoveryHours });
     if (ltiConfig.complete) {
       try { await registerBrightspacePlatform(lti, ltiConfig); }
       catch { console.error('Brightspace LTI platform registration failed; Section Association processing remains active.'); }

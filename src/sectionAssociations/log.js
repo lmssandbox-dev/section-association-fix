@@ -1,21 +1,21 @@
 'use strict';
 
 const EVENTS = new Set([
-  'fast cycle started', 'fast cycle completed', 'fast cycle failed',
-  'recovery cycle started', 'recovery cycle completed', 'recovery cycle failed',
+  'scheduler started', 'fast cycle started', 'fast cycle completed', 'fast cycle failed', 'fast cycle skipped',
+  'recovery cycle started', 'recovery cycle completed', 'recovery cycle failed', 'recovery cycle skipped',
   'discovery completed', 'baseline recorded', 'reconcile started',
   'validation passed', 'pending', 'dry-run', 'update starting',
   'update verified', 'target already compliant', 'blocked', 'uncertain outcome',
   'reconcile failed'
 ]);
 const FIELDS = new Set([
-  'candidates', 'new', 'alreadyKnown', 'pending', 'completed', 'blocked',
+  'candidates', 'new', 'alreadyKnown', 'pending', 'completed', 'blocked', 'fastIntervalMinutes', 'recoveryIntervalHours',
   'associationId', 'targetId', 'code', 'children', 'targets', 'action',
   'isActive', 'reason', 'skipped'
 ]);
 
 function safeValue(key, value) {
-  if (['candidates', 'new', 'alreadyKnown', 'pending', 'completed', 'blocked', 'children', 'targets', 'skipped'].includes(key)) {
+  if (['candidates', 'new', 'alreadyKnown', 'pending', 'completed', 'blocked', 'children', 'targets', 'skipped', 'fastIntervalMinutes', 'recoveryIntervalHours'].includes(key)) {
     return Number.isSafeInteger(value) && value >= 0 ? String(value) : null;
   }
   if (key === 'associationId' || key === 'targetId') return /^\d{1,20}$/.test(String(value)) ? String(value) : null;
