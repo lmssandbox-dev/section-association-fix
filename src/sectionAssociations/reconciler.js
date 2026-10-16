@@ -50,8 +50,15 @@ function createReconciler({ client, store, dryRun = true, now = Date.now }) {
       }
       const outcomes = [];
       for (const item of prepared) {
-        const { target, payload, status: preparedStatus } = item;
+        const { target, status: preparedStatus } = item;
         if (preparedStatus) { outcomes.push({ ...target, status: preparedStatus }); continue; }
+        // Re-read immediately before this target's write and build from that current record.
+        const latest = await client.course(target.id);
+        if (latest?.IsActive === false) { outcomes.push({ ...target, status: 'already-inactive' }); continue; }
+        if (latest?.IsActive !== true) throw Object.assign(new Error(`Current Course Offering active state is unavailable: ${target.code}`), { blocked: true });
+        let payload;
+        try { payload = courseUpdatePayload(latest); }
+        catch (error) { error.blocked = true; throw error; }
 
         try {
           await client.putCourse(target.id, payload);
@@ -70,7 +77,7 @@ function createReconciler({ client, store, dryRun = true, now = Date.now }) {
       const status = dryRun ? 'pending' : 'completed';
       const checkedAt = new Date(now());
       await store.record(id, {
-        associationCode: (await client.orgUnit(id)).Code, lastCheckedAt: checkedAt,
+        associationCode: association.Code, lastCheckedAt: checkedAt,
         processedAt: dryRun ? null : checkedAt, status, lastError: null,
         dryRun, outcomes
       });

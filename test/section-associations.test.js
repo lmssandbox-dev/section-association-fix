@@ -105,7 +105,7 @@ test('post-PUT state must verify inactive', async () => {
   const result = await createReconciler({ client, store: memoryStore(), dryRun: false }).reconcileAssociation('33664');
   assert.equal(result.status, 'pending');
   assert.equal(writes.length, 1);
-  assert.equal(reads, 3);
+  assert.equal(reads, 4);
 });
 
 test('dry-run goes through resolution and validation but performs zero PUTs and stays pending', async () => {
@@ -122,7 +122,7 @@ test('uncertain PUT is read back and never replayed', async () => {
   let reads = 0;
   const { client, writes, records } = api({ course: async id => {
     reads++;
-    if (reads === 3) records.set(String(id), { ...courseRecord(), IsActive: false });
+    if (reads === 4) records.set(String(id), { ...courseRecord(), IsActive: false });
     return { ...records.get(String(id)) };
   }, putCourse: async () => { writes.push('attempt'); const error = new Error('lost response'); error.uncertain = true; throw error; } });
   const result = await createReconciler({ client, store: memoryStore(), dryRun: false }).reconcileAssociation('33664');

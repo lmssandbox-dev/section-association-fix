@@ -9,7 +9,9 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
     ready ||= (async () => {
       if (!mongoClient) await client.connect();
       const db = client.db();
-      return { associations: db.collection('section_associations'), meta: db.collection('section_association_meta') };
+      const associations = db.collection('section_associations');
+      await associations.createIndex({ namespace: 1, associationOrgUnitId: 1 }, { unique: true });
+      return { associations, meta: db.collection('section_association_meta') };
     })().catch(error => { ready = null; throw error; });
     return ready;
   }
@@ -20,10 +22,14 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
   async function record(id, fields) {
     const { associations } = await collections();
     const time = new Date(now());
-    await associations.updateOne({ namespace, associationOrgUnitId: String(id) }, {
-      $set: { ...fields, lastSeenAt: time },
-      $setOnInsert: { firstSeenAt: time, associationOrgUnitId: String(id), namespace }
-    }, { upsert: true });
+    const filter = { namespace, associationOrgUnitId: String(id) };
+    const update = { $set: { ...fields, lastSeenAt: time },
+      $setOnInsert: { firstSeenAt: time, associationOrgUnitId: String(id), namespace } };
+    try { await associations.updateOne(filter, update, { upsert: true }); }
+    catch (error) {
+      if (error.code !== 11000) throw error;
+      await associations.updateOne(filter, { $set: { ...fields, lastSeenAt: time } });
+    }
   }
   async function baselineStatus() {
     const { meta } = await collections();
