@@ -7,6 +7,7 @@ const { resolveTargets } = require('../src/sectionAssociations/resolver');
 const { createReconciler, courseUpdatePayload } = require('../src/sectionAssociations/reconciler');
 const { createSectionAssociationClient } = require('../src/sectionAssociations/client');
 const { createSectionAssociationService } = require('../src/sectionAssociations/service');
+const { logEvent } = require('../src/sectionAssociations/log');
 
 const association = { Identifier: 33664, Code: '002521-01-2602-I0001', Type: { Code: 'Course Offering' } };
 const courseRecord = (overrides = {}) => ({ Name: 'Original', Code: '002521-01-2602-GS2-EL1S', StartDate: null, EndDate: null,
@@ -35,6 +36,10 @@ function memoryStore(now = () => Date.now()) {
     records.set(String(id), { ...prior, ...data, associationOrgUnitId: String(id),
       firstSeenAt: prior?.firstSeenAt || new Date(now()), lastSeenAt: new Date(now()) });
   } };
+}
+function captureLogger() {
+  const lines = [];
+  return { lines, info(message) { lines.push(message); }, warn(message) { lines.push(message); }, error(message) { lines.push(message); } };
 }
 
 test('association code and child suffix validation are exact', () => {
@@ -111,11 +116,46 @@ test('post-PUT state must verify inactive', async () => {
 test('dry-run goes through resolution and validation but performs zero PUTs and stays pending', async () => {
   const { client, writes } = api();
   const store = memoryStore();
-  const result = await createReconciler({ client, store, dryRun: true }).reconcileAssociation('33664');
+  const logger = captureLogger();
+  const result = await createReconciler({ client, store, dryRun: true, logger }).reconcileAssociation('33664', { associationCode: association.Code });
   assert.equal(result.status, 'pending');
   assert.equal(result.dryRun, true);
   assert.deepEqual(result.targets.map(target => target.status), ['would-inactivate', 'already-inactive']);
   assert.equal(writes.length, 0);
+  assert.ok(logger.lines.includes('[section-association] dry-run associationId=33664 targetId=100 code=002521-01-2602-GS2-EL1S action=would-inactivate'));
+  assert.ok(logger.lines.includes('[section-association] dry-run associationId=33664 targetId=101 code=002521-01-2602-GS2-EL1T action=already-inactive'));
+  assert.ok(logger.lines.includes('[section-association] validation passed associationId=33664 children=2 targets=2'));
+});
+
+test('blocked validation logs a safe reason without child code or API response content', async () => {
+  const logger = captureLogger();
+  const { client } = api({ children: async () => [
+    { Identifier: 1, Code: 'TOPSECRET-RESPONSE-BODY', Type: { Code: 'Group' } }, groups[1]
+  ] });
+  const result = await createReconciler({ client, store: memoryStore(), dryRun: true, logger }).reconcileAssociation('33664', { associationCode: association.Code });
+  assert.equal(result.status, 'pending');
+  assert.ok(logger.lines.some(line => line === '[section-association] blocked associationId=33664 code=002521-01-2602-I0001 reason=invalid-child-code'));
+  assert.equal(logger.lines.some(line => line.includes('TOPSECRET-RESPONSE-BODY')), false);
+});
+
+test('live verified updates emit start and success events', async () => {
+  const logger = captureLogger();
+  const { client, writes } = api();
+  const result = await createReconciler({ client, store: memoryStore(), dryRun: false, logger }).reconcileAssociation('33664', { associationCode: association.Code });
+  assert.equal(result.status, 'completed');
+  assert.equal(writes.length, 1);
+  assert.ok(logger.lines.includes('[section-association] update starting associationId=33664 targetId=100 code=002521-01-2602-GS2-EL1S'));
+  assert.ok(logger.lines.includes('[section-association] update verified associationId=33664 targetId=100 isActive=false'));
+  assert.ok(logger.lines.includes('[section-association] target already compliant associationId=33664 targetId=101'));
+});
+
+test('structured logger excludes unapproved fields and redacts non-course codes', () => {
+  const logger = captureLogger();
+  logEvent(logger, 'info', 'dry-run', {
+    associationId: '33664', targetId: '100', code: 'TOPSECRET', action: 'would-inactivate',
+    token: 'oauth-secret', privateKey: 'private-key', payload: { IsActive: false }, authorization: 'Bearer secret'
+  });
+  assert.deepEqual(logger.lines, ['[section-association] dry-run associationId=33664 targetId=100 code=[redacted] action=would-inactivate']);
 });
 
 test('uncertain PUT is read back and never replayed', async () => {
@@ -163,14 +203,40 @@ test('pending associations wait ten minutes and completed associations are skipp
   store.baselineStatus = async () => ({ state: 'ready' });
   store.beginBaseline = async () => null;
   const seen = [];
+  const logger = captureLogger();
   const service = createSectionAssociationService({ client: { async associationCandidates() { return [association]; } }, store,
-    reconciler: { async reconcileAssociation(id) { seen.push(id); await store.record(id, { status: 'completed' }); } },
-    stabilityMinutes: 10, now: () => time, logger: { error() {} } });
+    reconciler: { async reconcileAssociation(id) { seen.push(id); await store.record(id, { status: 'completed' }); return { status: 'completed' }; } },
+    stabilityMinutes: 10, now: () => time, logger });
   await service.fastTick();
   assert.equal(seen.length, 0);
+  assert.equal(logger.lines.filter(line => line === '[section-association] pending associationId=33664 reason=stability-window').length, 1);
+  assert.ok(logger.lines.includes('[section-association] discovery completed candidates=1 new=1 alreadyKnown=0'));
   time += 10 * 60000;
   await service.fastTick();
   assert.deepEqual(seen, ['33664']);
+  assert.equal(logger.lines.filter(line => line === '[section-association] pending associationId=33664 reason=stability-window').length, 1);
+  assert.ok(logger.lines.includes('[section-association] fast cycle completed candidates=1 new=0 alreadyKnown=1 pending=0 completed=1 blocked=0'));
   await service.fastTick();
   assert.equal(seen.length, 1);
+  assert.equal(logger.lines.filter(line => line === '[section-association] fast cycle started').length, 3);
+  assert.equal(logger.lines.filter(line => line.startsWith('[section-association] fast cycle completed')).length, 3);
+});
+
+test('recovery cycle logs discovery and outcome counters', async () => {
+  const time = 100000000;
+  const store = memoryStore(() => time);
+  store.baselineStatus = async () => ({ state: 'ready' });
+  store.listUncompleted = async () => [...store.records.values()].filter(item => item.status !== 'completed');
+  await store.record('33664', { associationCode: association.Code, status: 'pending' });
+  store.records.get('33664').firstSeenAt = new Date(time - 10 * 60000);
+  const logger = captureLogger();
+  const service = createSectionAssociationService({
+    client: { async associationCandidates() { return [association]; } }, store,
+    reconciler: { async reconcileAssociation(id) { await store.record(id, { status: 'completed' }); return { status: 'completed' }; } },
+    now: () => time, logger
+  });
+  await service.recoveryTick();
+  assert.ok(logger.lines.includes('[section-association] recovery cycle started'));
+  assert.ok(logger.lines.includes('[section-association] discovery completed candidates=1 new=0 alreadyKnown=1'));
+  assert.ok(logger.lines.includes('[section-association] recovery cycle completed pending=0 blocked=0 completed=1'));
 });

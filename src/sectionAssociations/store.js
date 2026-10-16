@@ -53,15 +53,16 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
     const { associations, meta } = await collections();
     const metaId = `baseline:${namespace}`;
     const baselineAt = new Date(now());
-    if (records.length) await associations.bulkWrite(records.map(item => ({ updateOne: {
+    const baselineResult = records.length ? await associations.bulkWrite(records.map(item => ({ updateOne: {
       filter: { namespace, associationOrgUnitId: String(item.id) },
       update: { $setOnInsert: { namespace, associationOrgUnitId: String(item.id), associationCode: item.code,
         firstSeenAt: baselineAt, lastSeenAt: baselineAt, lastCheckedAt: baselineAt, processedAt: baselineAt,
         status: 'completed', baseline: true, lastError: null } }, upsert: true
-    } })), { ordered: false });
+    } })), { ordered: false }) : { upsertedCount: 0, matchedCount: 0 };
     const result = await meta.updateOne({ _id: metaId, leaseToken: token, state: { $ne: 'ready' } },
       { $set: { state: 'ready', completedAt: baselineAt }, $unset: { leaseToken: '', leaseUntil: '' } });
     if (!result.matchedCount) throw new Error('Could not finalize Section Association baseline.');
+    return { newlyRecorded: baselineResult.upsertedCount || 0, alreadyKnown: baselineResult.matchedCount || 0 };
   }
   async function releaseBaseline(token) {
     const { meta } = await collections();
