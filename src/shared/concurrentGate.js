@@ -7,6 +7,7 @@ const {currentStep2Utilization}=require('./step2Utilization');
 const {logMongoOperationFailure}=require('./diagnostics');
 const hash=s=>createHash('sha256').update(s).digest('hex');
 const LIMIT=4,RESOLUTION_LIMIT=8,RESERVATION_LIMIT=2,BUDGET=30000,BUDGET_WINDOW_MS=60000;
+function markPhase(error,phase){if(error&&typeof error==='object'&&!error.phase){try{error.phase=phase;}catch{}}return error;}
 const isCodeResolution=config=>{const url=new URL(config.url);return String(config.method||'GET').toUpperCase()==='GET'&&/^\/d2l\/api\/lp\/[^/]+\/orgstructure\/$/.test(url.pathname)&&Boolean(url.searchParams.get('exactOrgUnitCode'));};
 const dateDiscoveryPath=/^\/d2l\/api\/le\/[^/]+\/[1-9]\d*\/(?:dropbox\/folders\/|quizzes\/|discussions\/forums\/|discussions\/forums\/[1-9]\d*\/topics\/)$/;
 const isDateDiscovery=config=>{const url=new URL(config.url);return String(config.method||'GET').toUpperCase()==='GET'&&dateDiscoveryPath.test(url.pathname);};
@@ -139,7 +140,7 @@ function createConcurrentHttp({http,gate,baseUrl,now=Date.now,monotonicNow=()=>p
   const url=new URL(config.url);if(url.origin!==origin||!url.pathname.startsWith('/d2l/api/'))throw Error('Rate-limited transport only accepts tenant API URLs');
   const route=String(config.method||'GET').toUpperCase()+' '+url.pathname.replace(/(\/copy\/)[^/]+$/,'$1:token').replace(/\/\d+(?=\/|$)/g,'/:id');
   for(let attempt=0;;attempt++){
-   if(poisoned)throw Error('API gate unavailable; requests stopped');
+   if(poisoned)throw markPhase(Error('API gate unavailable; requests stopped'),'database');
    const waitingAt=now();let permit;
    const acquisitionStartedAt=monotonicNow();let acquisitionRecorded=false;
    const gateTimings={localReservationQueue:0,mongoReservation:0,deniedReservationRead:0,permitContentionWait:0,pacingBudgetWait:0,mixedWait:0};
@@ -161,7 +162,7 @@ function createConcurrentHttp({http,gate,baseUrl,now=Date.now,monotonicNow=()=>p
    gateTimings.localReservationQueue+=permit.localReservationQueueMs||0;
    gateTimings.mongoReservation+=permit.mongoReservationMs||0;
    gateTimings.deniedReservationRead+=permit.deniedReservationReadMs||0;
-   }catch(e){if(!acquisitionRecorded)tracker?.add('apiPermitAcquisitionMs',Math.max(0,monotonicNow()-acquisitionStartedAt));poisoned=true;throw e;}
+   }catch(e){if(!acquisitionRecorded)tracker?.add('apiPermitAcquisitionMs',Math.max(0,monotonicNow()-acquisitionStartedAt));poisoned=true;throw markPhase(e,'database');}
    tracker?.changePermit(1);
    const startedAt=now();let response,error;
    if(tracker)tracker.changeHttp(1);
@@ -170,7 +171,7 @@ function createConcurrentHttp({http,gate,baseUrl,now=Date.now,monotonicNow=()=>p
    const status=error?.response?.status??response?.status,reset=Math.max(seconds(read('retry-after'),now())||0,seconds(read('x-rate-limit-reset'),now())||0);
    const cost=Number(read('x-request-cost')??NaN),remaining=Number(read('x-rate-limit-remaining')??NaN),known=Number.isFinite(cost)&&cost>=0;
    const pauseMs=status===429||Number.isFinite(remaining)&&remaining<=Math.max(10000,known?cost:125)?Math.max(60000,reset):0;
-   try{await gate.complete(permit,{route,status,cost:known?cost:null,remaining:Number.isFinite(remaining)?remaining:null,resetMs:reset,pauseMs,latencyMs:now()-startedAt,gateWaitMs:startedAt-waitingAt,gateTimings,adaptiveSpacing:known&&remaining>10000&&reset>0?Math.ceil(cost*reset/(remaining-10000)):0});}catch(e){poisoned=true;Object.assign(e,{requestDispatched:Boolean(response||error?.request||error?.response),responseReceived:Boolean(response||error?.response),httpStatus:Number.isInteger(status)?status:undefined,responseConfirmedSuccess:Boolean(response&&response.status===200&&!error)});throw e;}finally{tracker?.changePermit(-1);}
+   try{await gate.complete(permit,{route,status,cost:known?cost:null,remaining:Number.isFinite(remaining)?remaining:null,resetMs:reset,pauseMs,latencyMs:now()-startedAt,gateWaitMs:startedAt-waitingAt,gateTimings,adaptiveSpacing:known&&remaining>10000&&reset>0?Math.ceil(cost*reset/(remaining-10000)):0});}catch(e){poisoned=true;Object.assign(markPhase(e,'database'),{requestDispatched:Boolean(response||error?.request||error?.response),responseReceived:Boolean(response||error?.response),httpStatus:Number.isInteger(status)?status:undefined,responseConfirmedSuccess:Boolean(response&&response.status===200&&!error)});throw e;}finally{tracker?.changePermit(-1);}
    if(!error)return response;
    if(status!==429||attempt>=maxRetries)throw error;
   }

@@ -1,7 +1,7 @@
 'use strict';
 
 const { isAssociation } = require('./rules');
-const { logEvent } = require('./log');
+const { logEvent, safeErrorFields } = require('./log');
 
 function createSectionAssociationService({ client, store, reconciler, stabilityMinutes = 10, now = Date.now, logger = console }) {
   let busy = false;
@@ -41,17 +41,21 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
   }
 
   async function fastTick() {
+    const startedAt = now();
     logEvent(logger, 'info', 'fast cycle started');
     const stats = { candidates: 0, new: 0, alreadyKnown: 0, pending: 0, completed: 0, blocked: 0 };
     if (busy) {
       logEvent(logger, 'warn', 'fast cycle skipped', { reason: 'already-running' });
-      logEvent(logger, 'info', 'fast cycle completed', { ...stats, skipped: 1 });
+      logEvent(logger, 'info', 'fast cycle finished', { status: 'skipped', elapsedMs: Math.max(0, now() - startedAt) });
       return;
     }
     busy = true;
+    let phase = 'discovery';
+    let succeeded = false;
     try {
       const associations = await discover();
       stats.candidates = associations.length;
+      phase = 'database';
       const baseline = await store.baselineStatus();
       if (!baseline || baseline.state !== 'ready') {
         const counts = await bootstrap(associations);
@@ -61,6 +65,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
           stats.completed = associations.length;
           stabilityLogged.clear();
         }
+        succeeded = true;
         return;
       }
       const time = now();
@@ -83,30 +88,42 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
           continue;
         }
         stabilityLogged.delete(id);
+        phase = 'reconciliation';
         const result = await reconciler.reconcileAssociation(id, { associationCode: item.Code });
         countStatus(stats, result);
+        phase = 'database';
       }
       logDiscovery(stats);
-    } catch {
-      logEvent(logger, 'error', 'fast cycle failed', { reason: 'cycle-error' });
+      succeeded = true;
+    } catch (error) {
+      const errorPhase = error?.phase || phase;
+      const endpoint = error?.endpoint || (errorPhase === 'oauth' ? 'oauth-token' : ['discovery', 'oauth/api-read'].includes(errorPhase) ? 'association-candidates' : undefined);
+      logEvent(logger, 'error', 'fast cycle failed', safeErrorFields(error, {
+        phase: errorPhase, endpoint, elapsedMs: Math.max(0, now() - startedAt)
+      }));
     } finally {
       busy = false;
-      logEvent(logger, 'info', 'fast cycle completed', stats);
+      if (succeeded) logEvent(logger, 'info', 'fast cycle completed', stats);
+      logEvent(logger, 'info', 'fast cycle finished', { status: succeeded ? 'completed' : 'failed', elapsedMs: Math.max(0, now() - startedAt) });
     }
   }
 
   async function recoveryTick() {
+    const startedAt = now();
     logEvent(logger, 'info', 'recovery cycle started');
     const stats = { candidates: 0, new: 0, alreadyKnown: 0, pending: 0, completed: 0, blocked: 0 };
     if (busy) {
       logEvent(logger, 'warn', 'recovery cycle skipped', { reason: 'already-running' });
-      logEvent(logger, 'info', 'recovery cycle completed', { pending: 0, blocked: 0, completed: 0, skipped: 1 });
+      logEvent(logger, 'info', 'recovery cycle finished', { status: 'skipped', elapsedMs: Math.max(0, now() - startedAt) });
       return;
     }
     busy = true;
+    let phase = 'discovery';
+    let succeeded = false;
     try {
       const associations = await discover();
       stats.candidates = associations.length;
+      phase = 'database';
       const baseline = await store.baselineStatus();
       if (!baseline || baseline.state !== 'ready') {
         const counts = await bootstrap(associations);
@@ -116,6 +133,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
           stats.completed = associations.length;
           stabilityLogged.clear();
         }
+        succeeded = true;
         return;
       }
       for (const item of associations) {
@@ -134,6 +152,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
       logDiscovery(stats);
       const items = await store.listUncompleted();
       for (const item of items) {
+        phase = 'reconciliation';
         const id = item.associationOrgUnitId;
         if (now() - new Date(item.firstSeenAt).getTime() < stabilityMinutes * 60000) {
           stats.pending++;
@@ -143,12 +162,19 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
         stabilityLogged.delete(id);
         const result = await reconciler.reconcileAssociation(id, { associationCode: item.associationCode });
         countStatus(stats, result);
+        phase = 'database';
       }
-    } catch {
-      logEvent(logger, 'error', 'recovery cycle failed', { reason: 'cycle-error' });
+      succeeded = true;
+    } catch (error) {
+      const errorPhase = error?.phase || phase;
+      const endpoint = error?.endpoint || (errorPhase === 'oauth' ? 'oauth-token' : ['discovery', 'oauth/api-read'].includes(errorPhase) ? 'association-candidates' : undefined);
+      logEvent(logger, 'error', 'recovery cycle failed', safeErrorFields(error, {
+        phase: errorPhase, endpoint, elapsedMs: Math.max(0, now() - startedAt)
+      }));
     } finally {
       busy = false;
-      logEvent(logger, 'info', 'recovery cycle completed', { pending: stats.pending, blocked: stats.blocked, completed: stats.completed });
+      if (succeeded) logEvent(logger, 'info', 'recovery cycle completed', { pending: stats.pending, blocked: stats.blocked, completed: stats.completed });
+      logEvent(logger, 'info', 'recovery cycle finished', { status: succeeded ? 'completed' : 'failed', elapsedMs: Math.max(0, now() - startedAt) });
     }
   }
 

@@ -102,7 +102,13 @@ function createBrightspaceGet({ http, oauth, baseUrl, retries = 0, delay = ms =>
     }
     let token;
     try { token = await oauth.getAccessToken(); }
-    catch { throw new ApiReadError(401, true); }
+    catch (error) {
+      const safe = new ApiReadError(Number.isInteger(error?.status) ? error.status : 401, true);
+      safe.code = error?.code === 'TOKEN_EXCHANGE_FAILED' ? error.code : 'API_READ_FAILED';
+      safe.phase = error?.code === 'TOKEN_EXCHANGE_FAILED' ? 'oauth' : 'oauth/api-read';
+      safe.protocolCode = error?.protocolCode;
+      throw safe;
+    }
     for (let attempt = 0; ; attempt++) {
       try {
         const response = await http({

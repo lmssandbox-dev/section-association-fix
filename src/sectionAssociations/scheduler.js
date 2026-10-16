@@ -1,6 +1,6 @@
 'use strict';
 
-const { logEvent } = require('./log');
+const { logEvent, safeErrorFields } = require('./log');
 
 function startSectionAssociationScheduler({ service, fastIntervalMinutes, recoveryIntervalHours,
   setIntervalFn = setInterval, logger = console }) {
@@ -20,9 +20,14 @@ function startSectionAssociationScheduler({ service, fastIntervalMinutes, recove
       return { skipped: true };
     }
     fastRunning = true;
+    const startedAt = Date.now();
     try { return await service.fastTick(); }
-    catch {
-      logEvent(logger, 'error', 'fast cycle failed', { reason: 'scheduler-error' });
+    catch (error) {
+      const elapsedMs = Math.max(0, Date.now() - startedAt);
+      logEvent(logger, 'error', 'fast cycle failed', safeErrorFields(error, {
+        phase: 'scheduler', elapsedMs
+      }));
+      logEvent(logger, 'info', 'fast cycle finished', { status: 'failed', elapsedMs });
       return { failed: true };
     } finally { fastRunning = false; }
   }
@@ -33,9 +38,14 @@ function startSectionAssociationScheduler({ service, fastIntervalMinutes, recove
       return { skipped: true };
     }
     recoveryRunning = true;
+    const startedAt = Date.now();
     try { return await service.recoveryTick(); }
-    catch {
-      logEvent(logger, 'error', 'recovery cycle failed', { reason: 'scheduler-error' });
+    catch (error) {
+      const elapsedMs = Math.max(0, Date.now() - startedAt);
+      logEvent(logger, 'error', 'recovery cycle failed', safeErrorFields(error, {
+        phase: 'scheduler', elapsedMs
+      }));
+      logEvent(logger, 'info', 'recovery cycle finished', { status: 'failed', elapsedMs });
       return { failed: true };
     } finally { recoveryRunning = false; }
   }

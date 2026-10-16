@@ -53,7 +53,11 @@ function createBrightspaceAuth({ clientId, scope, kid, privateKeyPem,
       const code = error.response?.data?.error;
       // Only allow known protocol codes, never arbitrary response text or assertions.
       const detail = knownErrors.has(code) ? ` [${code}]` : '';
-      throw new Error(`Brightspace token exchange failed${status ? ` (HTTP ${status})` : ''}${detail}`);
+      const safe = new Error(`Brightspace token exchange failed${status ? ` (HTTP ${status})` : ''}${detail}`);
+      safe.code = 'TOKEN_EXCHANGE_FAILED';
+      safe.status = Number.isInteger(status) ? status : null;
+      safe.protocolCode = knownErrors.has(code) ? code : null;
+      throw safe;
     }
   }
 

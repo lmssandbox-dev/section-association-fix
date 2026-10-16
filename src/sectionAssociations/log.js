@@ -1,8 +1,8 @@
 'use strict';
 
 const EVENTS = new Set([
-  'scheduler started', 'fast cycle started', 'fast cycle completed', 'fast cycle failed', 'fast cycle skipped',
-  'recovery cycle started', 'recovery cycle completed', 'recovery cycle failed', 'recovery cycle skipped',
+  'scheduler started', 'fast cycle started', 'fast cycle completed', 'fast cycle failed', 'fast cycle finished', 'fast cycle skipped',
+  'recovery cycle started', 'recovery cycle completed', 'recovery cycle failed', 'recovery cycle finished', 'recovery cycle skipped',
   'discovery completed', 'baseline recorded', 'reconcile started',
   'validation passed', 'pending', 'dry-run', 'update starting',
   'update verified', 'target already compliant', 'blocked', 'uncertain outcome',
@@ -11,19 +11,47 @@ const EVENTS = new Set([
 const FIELDS = new Set([
   'candidates', 'new', 'alreadyKnown', 'pending', 'completed', 'blocked', 'fastIntervalMinutes', 'recoveryIntervalHours',
   'associationId', 'targetId', 'code', 'children', 'targets', 'action',
-  'isActive', 'reason', 'skipped'
+  'isActive', 'reason', 'skipped', 'phase', 'code', 'protocolCode', 'httpStatus', 'endpoint', 'elapsedMs', 'status', 'fatal'
 ]);
 
-function safeValue(key, value) {
+const PHASES = new Set(['discovery', 'database', 'oauth/api-read', 'oauth', 'reconciliation', 'scheduler']);
+const PROTOCOL_CODES = new Set(['invalid_request', 'invalid_client', 'invalid_grant', 'unauthorized_client',
+  'unsupported_grant_type', 'invalid_scope', 'server_error', 'temporarily_unavailable']);
+
+function safeValue(key, value, event) {
   if (['candidates', 'new', 'alreadyKnown', 'pending', 'completed', 'blocked', 'children', 'targets', 'skipped', 'fastIntervalMinutes', 'recoveryIntervalHours'].includes(key)) {
     return Number.isSafeInteger(value) && value >= 0 ? String(value) : null;
   }
   if (key === 'associationId' || key === 'targetId') return /^\d{1,20}$/.test(String(value)) ? String(value) : null;
-  if (key === 'code') return /^\d{6}-\d{2}-\d{4}-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(String(value)) ? String(value) : '[redacted]';
+  if (key === 'code') {
+    const text = String(value);
+    if (/^\d{6}-\d{2}-\d{4}-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(text)) return text;
+    if (['fast cycle failed', 'recovery cycle failed'].includes(event) &&
+        /^(?:[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|\d{1,8})$/.test(text)) return text;
+    return '[redacted]';
+  }
   if (key === 'reason') return /^[a-z0-9-]{1,60}$/.test(String(value)) ? String(value) : 'unknown';
+  if (key === 'phase') return PHASES.has(value) ? value : null;
+  if (key === 'protocolCode') return PROTOCOL_CODES.has(value) ? value : null;
+  if (key === 'httpStatus') return Number.isInteger(value) && value >= 100 && value <= 599 ? String(value) : null;
+  if (key === 'elapsedMs') return Number.isSafeInteger(value) && value >= 0 ? String(value) : null;
+  if (key === 'endpoint') return ['association-candidates', 'oauth-token', 'brightspace-api'].includes(value) ? value : null;
+  if (key === 'status') return ['completed', 'failed', 'skipped'].includes(value) ? value : null;
+  if (key === 'fatal') return typeof value === 'boolean' ? String(value) : null;
   if (key === 'action') return ['would-inactivate', 'already-inactive', 'read-back-required'].includes(value) ? value : null;
   if (key === 'isActive') return value === false ? 'false' : null;
   return null;
+}
+
+function safeErrorFields(error, { phase, elapsedMs, endpoint } = {}) {
+  const fields = { phase, elapsedMs, endpoint };
+  if (typeof error?.code === 'string' || Number.isInteger(error?.code)) fields.code = error.code;
+  else if (typeof error?.codeName === 'string') fields.code = error.codeName;
+  if (Number.isInteger(error?.status)) fields.httpStatus = error.status;
+  else if (Number.isInteger(error?.statusCode)) fields.httpStatus = error.statusCode;
+  if (typeof error?.protocolCode === 'string') fields.protocolCode = error.protocolCode;
+  if (typeof error?.fatal === 'boolean') fields.fatal = error.fatal;
+  return fields;
 }
 
 function logEvent(logger, level, event, fields = {}) {
@@ -31,11 +59,11 @@ function logEvent(logger, level, event, fields = {}) {
   const details = [];
   for (const [key, value] of Object.entries(fields)) {
     if (!FIELDS.has(key)) continue;
-    const safe = safeValue(key, value);
+    const safe = safeValue(key, value, event);
     if (safe != null) details.push(`${key}=${safe}`);
   }
   const method = typeof logger?.[level] === 'function' ? logger[level] : logger?.info;
   method?.call(logger, `[section-association] ${event}${details.length ? ` ${details.join(' ')}` : ''}`);
 }
 
-module.exports = { logEvent };
+module.exports = { logEvent, safeErrorFields };

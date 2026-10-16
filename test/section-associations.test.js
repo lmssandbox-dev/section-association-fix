@@ -7,6 +7,7 @@ const { resolveTargets } = require('../src/sectionAssociations/resolver');
 const { createReconciler, courseUpdatePayload } = require('../src/sectionAssociations/reconciler');
 const { createSectionAssociationClient } = require('../src/sectionAssociations/client');
 const { createSectionAssociationService } = require('../src/sectionAssociations/service');
+const { createBrightspaceGet } = require('../src/shared/client');
 const { logEvent } = require('../src/sectionAssociations/log');
 
 const association = { Identifier: 33664, Code: '002521-01-2602-I0001', Type: { Code: 'Course Offering' } };
@@ -173,17 +174,72 @@ test('uncertain PUT is read back and never replayed', async () => {
 test('discovery follows every bookmark and filters exact association codes', async () => {
   const requested = [];
   const client = createSectionAssociationClient({ baseUrl: 'https://tenant.example', lpVersion: '1.60', oauth: {}, http: async () => {}, get: async url => {
-    requested.push(new URL(url).searchParams.get('bookmark'));
+    requested.push(url);
     if (requested.length === 1) return { Items: [{ Code: '001111-01-2601-I0001' }], PagingInfo: { HasMoreItems: true, Bookmark: 'next-page' } };
     return { Items: [{ Code: '002521-01-2602-I0001' }], PagingInfo: { HasMoreItems: false, Bookmark: null } };
   } });
   const found = await client.associationCandidates();
-  assert.deepEqual(requested, [null, 'next-page']);
+  assert.equal(new URL(requested[0]).pathname, '/d2l/api/lp/1.60/orgstructure/');
+  assert.equal(new URL(requested[0]).search, '?orgUnitType=3&orgUnitCode=I0001');
+  assert.equal(new URL(requested[1]).search, '?orgUnitType=3&orgUnitCode=I0001&bookmark=next-page');
   assert.equal(found.length, 2);
   const service = createSectionAssociationService({ client: { async associationCandidates() { return [
     association, { ...association, Code: 'prefix-002521-01-2602-I0001' }, { ...association, Type: { Code: 'Group' } }
   ]; } }, store: {}, reconciler: {}, logger: { error() {} } });
   assert.deepEqual((await service.discover()).map(item => item.Code), [association.Code]);
+});
+
+test('discovery HTTP 401 and 403 failures log safe typed status and do not log success counters', async () => {
+  for (const status of [401, 403]) {
+    const logger = captureLogger();
+    const client = createSectionAssociationClient({ baseUrl: 'https://tenant.example', lpVersion: '1.60', oauth: {}, http: async () => {},
+      get: async () => { throw { response: { status, data: { detail: 'sensitive body' } }, config: { headers: { Authorization: 'secret' } } }; } });
+    const service = createSectionAssociationService({ client, store: {}, reconciler: {}, logger, now: () => 5520 });
+    await service.fastTick();
+    assert.ok(logger.lines.some(line => new RegExp(`^\\[section-association\\] fast cycle failed phase=discovery elapsedMs=\\d+ endpoint=association-candidates code=API_READ_FAILED httpStatus=${status} fatal=true$`).test(line)));
+    assert.ok(logger.lines.some(line => /^\[section-association\] fast cycle finished status=failed elapsedMs=\d+$/.test(line)));
+    assert.equal(logger.lines.some(line => line.startsWith('[section-association] fast cycle completed')), false);
+    assert.equal(logger.lines.join('\n').includes('sensitive body'), false);
+    assert.equal(logger.lines.join('\n').includes('Authorization'), false);
+  }
+});
+
+test('OAuth token failures log safe protocol classification separately from API reads', async () => {
+  const logger = captureLogger();
+  const get = createBrightspaceGet({ baseUrl: 'https://tenant.example', http: async () => {}, oauth: { async getAccessToken() {
+    const error = new Error('secret assertion and response');
+    Object.assign(error, { code: 'TOKEN_EXCHANGE_FAILED', status: 401, protocolCode: 'invalid_client' });
+    throw error;
+  } } });
+  const client = createSectionAssociationClient({ get, baseUrl: 'https://tenant.example', lpVersion: '1.60', oauth: {}, http: async () => {} });
+  const service = createSectionAssociationService({ client, store: {}, reconciler: {}, logger });
+  await service.fastTick();
+  assert.ok(logger.lines.some(line => /^\[section-association\] fast cycle failed phase=oauth elapsedMs=\d+ endpoint=oauth-token code=TOKEN_EXCHANGE_FAILED httpStatus=401 protocolCode=invalid_client fatal=true$/.test(line)));
+  assert.equal(logger.lines.join('\n').includes('assertion'), false);
+});
+
+test('database failures report database phase without logging error messages or connection details', async () => {
+  const logger = captureLogger();
+  const error = new Error('mongodb://user:password@host/private-database');
+  error.code = 'ETIMEDOUT';
+  const service = createSectionAssociationService({ client: { async associationCandidates() { return []; } },
+    store: { async baselineStatus() { throw error; } }, reconciler: {}, logger });
+  await service.fastTick();
+  assert.ok(logger.lines.some(line => /^\[section-association\] fast cycle failed phase=database elapsedMs=\d+ code=ETIMEDOUT$/.test(line)));
+  assert.ok(logger.lines.some(line => /^\[section-association\] fast cycle finished status=failed elapsedMs=\d+$/.test(line)));
+  assert.equal(logger.lines.join('\n').includes('mongodb://'), false);
+  assert.equal(logger.lines.some(line => line.startsWith('[section-association] fast cycle completed')), false);
+});
+
+test('Mongo-backed API gate failures during discovery retain their database classification', async () => {
+  const logger = captureLogger();
+  const gateError = Object.assign(new Error('mongodb://user:secret@host/private'), { code: 50, phase: 'database' });
+  const client = createSectionAssociationClient({ baseUrl: 'https://tenant.example', lpVersion: '1.60', oauth: {}, http: async () => {},
+    get: async () => { throw gateError; } });
+  const service = createSectionAssociationService({ client, store: {}, reconciler: {}, logger });
+  await service.fastTick();
+  assert.ok(logger.lines.some(line => /^\[section-association\] fast cycle failed phase=database elapsedMs=\d+ code=50$/.test(line)));
+  assert.equal(logger.lines.join('\n').includes('mongodb://'), false);
 });
 
 test('first successful discovery baselines historical records without reconciliation', async () => {

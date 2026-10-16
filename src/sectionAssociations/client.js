@@ -1,6 +1,7 @@
 'use strict';
 
 const ID = /^[1-9]\d*$/;
+const { ApiReadError } = require('../shared/client');
 
 function createSectionAssociationClient({ get, http, oauth, baseUrl, lpVersion }) {
   const origin = new URL(baseUrl);
@@ -10,7 +11,23 @@ function createSectionAssociationClient({ get, http, oauth, baseUrl, lpVersion }
   if (!/^\d+\.\d+$/.test(lpVersion || '')) throw new Error('Configure D2L_API_LP_VERSION.');
   const root = `/d2l/api/lp/${lpVersion}`;
   const url = path => new URL(path, origin).href;
-  const read = async path => get(url(path));
+  const getPage = async target => {
+    try { return await get(target); }
+    catch (error) {
+      if (error?.code === 'TOKEN_EXCHANGE_FAILED' || error?.code === 'API_READ_FAILED') throw error;
+      if (error?.phase === 'database') {
+        const safe = new Error('Section Association database operation failed');
+        safe.code = error.code ?? error.codeName ?? 'DATABASE_OPERATION_FAILED';
+        safe.phase = 'database';
+        throw safe;
+      }
+      const safe = new ApiReadError(Number.isInteger(error?.response?.status) ? error.response.status : null);
+      safe.phase = 'discovery';
+      safe.endpoint = 'association-candidates';
+      throw safe;
+    }
+  };
+  const read = async path => getPage(url(path));
   const pages = async path => {
     let next = url(path);
     const seen = new Set();
@@ -18,7 +35,7 @@ function createSectionAssociationClient({ get, http, oauth, baseUrl, lpVersion }
     while (next) {
       if (seen.has(next) || seen.size >= 10000 || values.length >= 1000000) throw new Error('Brightspace pagination limit exceeded.');
       seen.add(next);
-      const page = await get(next);
+      const page = await getPage(next);
       if (!page || !Array.isArray(page.Items) || !page.PagingInfo || typeof page.PagingInfo.HasMoreItems !== 'boolean') throw new Error('Invalid Brightspace paging response.');
       values.push(...page.Items);
       if (values.length > 1000000) throw new Error('Brightspace result limit exceeded.');
