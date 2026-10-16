@@ -1,0 +1,94 @@
+'use strict';
+
+require('dotenv').config();
+
+const axios = require('axios');
+const { createHash } = require('node:crypto');
+const lti = require('ltijs').Provider;
+const { createBrightspaceAuth } = require('./src/shared/auth');
+const { databaseConfig } = require('./src/shared/database');
+const { createBrightspaceGet, hasScope } = require('./src/shared/client');
+const { createRateLimitedHttp, createMongoGate, rateLimitKey } = require('./src/shared/rateLimit');
+const { createSectionAssociationClient } = require('./src/sectionAssociations/client');
+const { createSectionAssociationStore } = require('./src/sectionAssociations/store');
+const { createReconciler } = require('./src/sectionAssociations/reconciler');
+const { createSectionAssociationService } = require('./src/sectionAssociations/service');
+
+const env = process.env;
+const port = Number(env.PORT || 3000);
+const {
+  MONGODB_URL, LTI_KEY, BS_URL, BS_NAME, BS_CLIENT_ID, BS_AUTH_ENDPOINT, BS_TOKEN_ENDPOINT, BS_KEYSET_URL,
+  D2L_OAUTH2_CLIENT_ID, D2L_OAUTH2_PRIVATE_KEY, D2L_OAUTH2_KEY_ID, D2L_OAUTH2_TOKEN_ENDPOINT,
+  D2L_OAUTH2_SCOPES, D2L_LP_VERSION
+} = env;
+
+const required = { MONGODB_URL, LTI_KEY, BS_URL, BS_CLIENT_ID, BS_AUTH_ENDPOINT, BS_TOKEN_ENDPOINT, BS_KEYSET_URL,
+  D2L_OAUTH2_CLIENT_ID, D2L_OAUTH2_PRIVATE_KEY, D2L_OAUTH2_KEY_ID, D2L_OAUTH2_SCOPES, D2L_LP_VERSION };
+const missing = Object.entries(required).filter(([, value]) => !String(value || '').trim()).map(([key]) => key);
+if (missing.length) throw new Error(`Missing required environment settings: ${missing.join(', ')}`);
+databaseConfig(MONGODB_URL);
+const brightspace = new URL(BS_URL);
+if (brightspace.protocol !== 'https:' || brightspace.username || brightspace.password || brightspace.search || brightspace.hash) {
+  throw new Error('BS_URL must be the Brightspace HTTPS origin without credentials, query, or fragment.');
+}
+if (!/^\d+\.\d+$/.test(D2L_LP_VERSION)) throw new Error('D2L_LP_VERSION must use the form major.minor.');
+const missingScopes = ['organizations:organization:read', 'orgunits:course:update'].filter(scope => !hasScope(D2L_OAUTH2_SCOPES, scope));
+if (missingScopes.length) throw new Error(`D2L_OAUTH2_SCOPES must include: ${missingScopes.join(', ')}`);
+if (!/^\d+$/.test(String(port)) || port < 1 || port > 65535) throw new Error('PORT must be a valid TCP port.');
+
+const namespace = createHash('sha256').update(`${brightspace.origin}|${D2L_OAUTH2_CLIENT_ID}`).digest('hex');
+const oauth = createBrightspaceAuth({ clientId: D2L_OAUTH2_CLIENT_ID, scope: D2L_OAUTH2_SCOPES,
+  kid: D2L_OAUTH2_KEY_ID, privateKeyPem: D2L_OAUTH2_PRIVATE_KEY,
+  tokenEndpoint: D2L_OAUTH2_TOKEN_ENDPOINT || 'https://auth.brightspace.com/core/connect/token', http: axios });
+const apiGate = createMongoGate({ uri: MONGODB_URL, key: rateLimitKey(BS_URL, D2L_OAUTH2_CLIENT_ID) });
+const apiHttp = createRateLimitedHttp({ http: axios, gate: apiGate, baseUrl: BS_URL });
+const get = createBrightspaceGet({ http: apiHttp, oauth, baseUrl: BS_URL, retries: 2 });
+const client = createSectionAssociationClient({ get, http: apiHttp, oauth, baseUrl: BS_URL, lpVersion: D2L_LP_VERSION });
+const store = createSectionAssociationStore({ uri: MONGODB_URL, namespace });
+const dryRun = !/^(false|0|no)$/i.test(env.SECTION_ASSOCIATION_DRY_RUN || 'true');
+const stabilityMinutes = positiveInteger(env.SECTION_ASSOCIATION_STABILITY_MINUTES, 10);
+const fastMinutes = positiveInteger(env.SECTION_ASSOCIATION_FAST_INTERVAL_MINUTES, 15);
+const recoveryHours = positiveInteger(env.SECTION_ASSOCIATION_RECOVERY_INTERVAL_HOURS, 4);
+const reconciler = createReconciler({ client, store, dryRun });
+const service = createSectionAssociationService({ client, store, reconciler, stabilityMinutes });
+
+// LTI remains available as the future protected admin layer. The worker never uses an LTI token.
+lti.setup(LTI_KEY, databaseConfig(MONGODB_URL), {
+  appRoute: '/', loginRoute: '/login', cookies: { secure: true, sameSite: 'None' }, devMode: false
+});
+lti.whitelist({ route: '/.well-known/brightspace-jwks.json', method: 'get' }, { route: '/ping', method: 'get' });
+lti.app.get('/.well-known/brightspace-jwks.json', (_req, res) => res.json(oauth.jwks));
+lti.app.get('/ping', (_req, res) => res.type('text/plain').send('Section Association service is running.'));
+lti.onConnect((_token, _req, res) => res.type('html').send('<main><h1>Section Association cleanup</h1><p>Administrative tools are not enabled yet.</p></main>'));
+
+async function registerBrightspace() {
+  await lti.registerPlatform({ url: BS_URL, name: BS_NAME || 'Brightspace', clientId: BS_CLIENT_ID,
+    authenticationEndpoint: BS_AUTH_ENDPOINT, accesstokenEndpoint: BS_TOKEN_ENDPOINT,
+    authConfig: { method: 'JWK_SET', key: BS_KEYSET_URL } });
+}
+
+async function start() {
+  try {
+    await lti.deploy({ port });
+    await registerBrightspace();
+    console.log(`Section Association cleanup service listening on ${port}; dry-run=${dryRun}.`);
+    void service.fastTick();
+    const fastTimer = setInterval(() => { void service.fastTick(); }, fastMinutes * 60000);
+    const recoveryTimer = setInterval(() => { void service.recoveryTick(); }, recoveryHours * 60 * 60000);
+    fastTimer.unref?.();
+    recoveryTimer.unref?.();
+  } catch (error) {
+    console.error(`Section Association service startup failed: ${String(error?.message || 'unknown error').replace(/[\r\n]/g, ' ')}`);
+    process.exit(1);
+  }
+}
+
+function positiveInteger(value, fallback) {
+  if (value == null || value === '') return fallback;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 10080) throw new Error('Section Association schedule settings must be positive whole numbers.');
+  return parsed;
+}
+
+if (require.main === module) void start();
+module.exports = { start, positiveInteger };

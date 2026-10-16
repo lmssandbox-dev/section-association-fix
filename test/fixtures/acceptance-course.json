@@ -1,0 +1,125 @@
+{
+  "assignments": [
+    {
+      "Id": 11,
+      "CategoryId": 2,
+      "Name": "Essay",
+      "Availability": {
+        "StartDate": "2026-09-01T09:00:00.000Z",
+        "EndDate": "2026-09-30T23:59:00.000Z",
+        "StartDateAvailabilityType": 0,
+        "EndDateAvailabilityType": "2"
+      },
+      "DueDate": "2026-09-20T23:59:00.000Z",
+      "DisplayInCalendar": false,
+      "ActivityId": "assignment-a"
+    },
+    {
+      "Id": 12,
+      "CategoryId": null,
+      "Name": "Due only",
+      "Availability": {
+        "StartDateAvailabilityType": 1,
+        "EndDateAvailabilityType": 1
+      },
+      "DueDate": "2026-10-01T00:00:00Z"
+    },
+    {
+      "Id": 13,
+      "Name": "Undated",
+      "Availability": {
+        "StartDate": null,
+        "EndDate": null,
+        "StartDateAvailabilityType": null,
+        "EndDateAvailabilityType": null
+      },
+      "DueDate": null
+    },
+    {
+      "Id": 14,
+      "Name": "Fields omitted"
+    },
+    {
+      "Id": 15,
+      "Name": "Start only",
+      "Availability": {
+        "StartDate": "2026-09-01T00:00:00Z",
+        "StartDateAvailabilityType": 1
+      }
+    }
+  ],
+  "quizzes": {
+    "Objects": [
+      {
+        "QuizId": 21,
+        "Name": "Quiz",
+        "CategoryId": 3,
+        "StartDate": "2026-09-02T00:00:00Z",
+        "DueDate": "2026-09-03T00:00:00Z",
+        "EndDate": "2026-09-04T00:00:00Z",
+        "ActivityId": "quiz-a",
+        "DisplayInCalendar": true,
+        "IsActive": false,
+        "Password": "raw-only-secret"
+      },
+      {
+        "QuizId": 22,
+        "Name": "No dates",
+        "StartDate": null,
+        "EndDate": null,
+        "DueDate": null
+      }
+    ],
+    "Next": "/d2l/api/le/1.90/999/quizzes/?bookmark=next"
+  },
+  "quizPage2": {
+    "Objects": [
+      {
+        "QuizId": 23,
+        "Name": "Page two",
+        "EndDate": "2026-09-05T00:00:00Z"
+      }
+    ],
+    "Next": null
+  },
+  "forums": [
+    {
+      "ForumId": 31,
+      "Name": "Forum",
+      "StartDate": "2026-09-01T00:00:00Z",
+      "EndDate": null,
+      "StartDateAvailabilityType": "1",
+      "EndDateAvailabilityType": null,
+      "PostStartDate": null,
+      "PostEndDate": null
+    },
+    {
+      "ForumId": 32,
+      "Name": "Undated parent",
+      "StartDate": null,
+      "EndDate": null
+    }
+  ],
+  "discussionTopics": [
+    {
+      "ForumId": 32,
+      "TopicId": 41,
+      "Name": "Dated child",
+      "StartDate": "2026-09-02T00:00:00Z",
+      "DueDate": "2026-09-03T00:00:00Z",
+      "EndDate": "2026-09-04T00:00:00Z",
+      "StartDateAvailabilityType": 0,
+      "EndDateAvailabilityType": "2",
+      "UnlockStartDate": null,
+      "UnlockEndDate": null,
+      "ActivityId": "discussion-a"
+    },
+    {
+      "ForumId": 32,
+      "TopicId": 42,
+      "Name": "Undated topic",
+      "StartDate": null,
+      "EndDate": null
+    }
+  ]
+}

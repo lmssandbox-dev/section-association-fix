@@ -1,0 +1,225 @@
+import './demo-flags.js';
+import '../button/button.js';
+import '../inputs/input-checkbox-group.js';
+import '../inputs/input-checkbox.js';
+import '../inputs/input-fieldset.js';
+import '../inputs/input-group.js';
+import '../collapsible-panel/collapsible-panel.js';
+import '../collapsible-panel/collapsible-panel-summary-item.js';
+import { colorModes, defaultColorMode } from './demo-color-mode.js';
+import { css, html, LitElement, nothing } from 'lit';
+import { getDocumentLocaleSettings, supportedLocalesDetails } from '@brightspace-ui/intl/lib/common.js';
+import { getFlagOverrides, getKnownFlags } from '../../helpers/flags.js';
+import { inputLabelStyles } from '../inputs/input-label-styles.js';
+import { selectStyles } from '../inputs/input-select-styles.js';
+
+const localeSettings = getDocumentLocaleSettings();
+
+class DemoPageSettings extends LitElement {
+
+	static properties = {
+		panelTitle: { type: String, attribute: 'panel-title' },
+		_language: { state: true }
+	};
+
+	static styles = [inputLabelStyles, selectStyles, css`
+		:host {
+			display: block;
+		}
+		:host[hidden] {
+			display: none;
+		}
+		d2l-collapsible-panel {
+			width: 100%;
+		}
+		.color-mode-group {
+			display: inline-flex;
+		}
+		#applyFlagsButton {
+			max-width: max-content;
+		}
+		#useAsDefaultColorMode {
+			margin-block-end: 0;
+		}
+	`];
+
+	constructor() {
+		super();
+		const urlParams = new URLSearchParams(window.location.search);
+		if (urlParams.has('lang')) {
+			const newLanguageCode = urlParams.get('lang');
+			document.documentElement.dir = newLanguageCode === 'ar-sa' ? 'rtl' : 'ltr';
+			document.documentElement.lang = newLanguageCode;
+			this._language = newLanguageCode;
+		} else {
+			this._language = getDocumentLocaleSettings().language;
+		}
+
+		this._colorMode = document.documentElement.dataset.colorMode || defaultColorMode;
+
+		this.#updateColorSchemeMeta();
+	}
+
+	connectedCallback() {
+		super.connectedCallback();
+		document.addEventListener('d2l-flags-known', this.#handleFlagsKnown);
+		localeSettings.addChangeListener(this.#handleDocumentLanguageChange);
+	}
+
+	disconnectedCallback() {
+		super.disconnectedCallback();
+		document.removeEventListener('d2l-flags-known', this.#handleFlagsKnown);
+		localeSettings.removeChangeListener(this.#handleDocumentLanguageChange);
+	}
+
+	render() {
+
+		let selectedLanguageCode = this._language;
+		if (selectedLanguageCode === 'en') selectedLanguageCode = 'en-us';
+		let foundSelected = false;
+		const languageOptions = supportedLocalesDetails.map((l) => {
+			const selected = !foundSelected && l.code.startsWith(selectedLanguageCode);
+			foundSelected = foundSelected || selected;
+			return html`<option value="${l.code}" ?selected="${selected}">${l.code} - ${l.name}</option>`;
+		});
+		let languageItem = nothing;
+		if (selectedLanguageCode !== 'en-us') {
+			languageItem = html`<d2l-collapsible-panel-summary-item slot="summary" text="Language: ${selectedLanguageCode}"></d2l-collapsible-panel-summary-item>`;
+		}
+
+		const colorModeOptions = colorModes.map(colorMode => html`<option value="${colorMode}" ?selected="${this._colorMode === colorMode}">${colorMode}</option>`);
+
+		const knownFlags = this.#getKnownFlagsSorted();
+		const knownFlagCheckboxes = [];
+		knownFlags.forEach((knownFlag, key) => {
+			knownFlagCheckboxes.push(html`<d2l-input-checkbox label="${key}" data-flag-key="${key}" ?checked="${knownFlag.value}"></d2l-input-checkbox>`);
+		});
+
+		const flagOverrides = getFlagOverrides();
+		const flagOverrideItems = [];
+		flagOverrides.forEach((value, key) => {
+			const knownFlag = knownFlags.get(key);
+			const defaultValue = knownFlag ? knownFlag.defaultValue : 'unknown';
+			flagOverrideItems.push(html`<d2l-collapsible-panel-summary-item slot="summary" text="${key} (default: ${defaultValue}; override: ${value})"></d2l-collapsible-panel-summary-item>`);
+		});
+
+		return html`
+			<d2l-collapsible-panel panel-title="${this.panelTitle}" heading-level="1" heading-style="3" type="subtle">
+				<d2l-input-group>
+					<label>
+						<span class="d2l-input-label">Language</span>
+						<select class="d2l-input-select" @change="${this.#handleLanguageChange}">${languageOptions}</select>
+					</label>
+
+					<d2l-input-fieldset label="Color Mode">
+						<d2l-input-group class="color-mode-group">
+							<select id="colorMode" aria-label="Color Mode" class="d2l-input-select" @change="${this.#handleColorModeChange}">${colorModeOptions}</select>
+							<d2l-input-checkbox id="useAsDefaultColorMode" label="Use as Default" @change="${this.#handleUseAsDefaultColorModeChange}"></d2l-input-checkbox>
+						</d2l-input-group>
+					</d2l-input-fieldset>
+
+					${knownFlagCheckboxes.length > 0 ? html`
+						<d2l-input-checkbox-group id="flagsCheckboxGroup" label="Flags">
+							${knownFlagCheckboxes}
+						</d2l-input-checkbox-group>
+						<d2l-button id="applyFlagsButton" @click="${this.#handleApplyFlagsClick}">Apply Flags</d2l-button>
+					` : 'No known flags'}
+				</d2l-input-group>
+				${languageItem}
+				${flagOverrideItems}
+			</d2l-collapsible-panel>
+		`;
+	}
+
+	#handleDocumentLanguageChange = () => {
+		this._language = localeSettings.language;
+		const url = new URL(window.location.href);
+		if (this._language === 'en-us') {
+			url.searchParams.delete('lang');
+		} else {
+			url.searchParams.set('lang', this._language);
+		}
+		window.history.replaceState({}, '', url.toString());
+	};
+
+	#handleFlagsKnown = () => {
+		this.requestUpdate();
+	};
+
+	#getKnownFlagsSorted() {
+		return new Map([...getKnownFlags().entries()].sort((entry1, entry2) => {
+			const key1 = entry1[0].toLowerCase();
+			const key2 = entry2[0].toLowerCase();
+			if (key1 < key2) return -1;
+			else if (key1 > key2) return 1;
+			else return 0;
+		}));
+	}
+
+	#handleApplyFlagsClick() {
+		const urlParams = new URLSearchParams(window.location.search);
+		const elems = [...this.shadowRoot.querySelectorAll('#flagsCheckboxGroup > d2l-input-checkbox')];
+
+		const knownFlags = getKnownFlags();
+		elems.forEach(elem => {
+			const key = elem.dataset.flagKey;
+			const flag = knownFlags.get(key);
+
+			if (flag.defaultValue === elem.checked) {
+				urlParams.delete(`demo-flag-${key}`);
+			} else if (flag.defaultValue !== elem.checked) {
+				urlParams.set(`demo-flag-${key}`, elem.checked);
+			}
+		});
+
+		window.location.search = urlParams.toString();
+	}
+
+	#handleColorModeChange(e) {
+		const newColorMode = e.target[e.target.selectedIndex].value;
+		document.documentElement.dataset.colorMode = newColorMode;
+		const url = new URL(window.location.href);
+
+		const useAsDefault = this.shadowRoot.querySelector('#useAsDefaultColorMode').checked;
+		if (useAsDefault) {
+			this.#updateDefaultColorMode(newColorMode);
+		}
+
+		this.#updateColorSchemeMeta();
+
+		url.searchParams.set('color-mode', newColorMode);
+		window.history.replaceState({}, '', url.toString());
+	}
+
+	#handleLanguageChange(e) {
+		const newLanguageCode = e.target[e.target.selectedIndex].value;
+		document.documentElement.dir = newLanguageCode === 'ar-sa' ? 'rtl' : 'ltr';
+		document.documentElement.lang = newLanguageCode;
+	}
+
+	#handleUseAsDefaultColorModeChange(e) {
+		const useAsDefault = e.target.checked;
+		if (useAsDefault) {
+			this.#updateDefaultColorMode(this.shadowRoot.querySelector('#colorMode').value);
+		}
+	}
+
+	#updateColorSchemeMeta() {
+		let elem = document.querySelector('meta[name="color-scheme"]');
+		if (!elem) {
+			elem = document.createElement('meta');
+			elem.name = 'color-scheme';
+			document.head.insertBefore(elem, document.head.firstChild);
+		}
+		if (document.documentElement.dataset.colorMode === 'dark') elem.content = 'dark';
+		else if (document.documentElement.dataset.colorMode === 'os') elem.content = 'light dark';
+		else elem.content = 'light';
+	}
+
+	#updateDefaultColorMode(colorMode) {
+		localStorage.setItem('color-mode', colorMode);
+	}
+
+}
+
+customElements.define('d2l-demo-page-settings', DemoPageSettings);

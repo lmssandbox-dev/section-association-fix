@@ -1,0 +1,126 @@
+'use strict';
+const { createHash,createHmac,timingSafeEqual }=require('node:crypto');
+const { deploymentGuard }=require('./deploymentGuard');
+const {DEFAULT_ZONE,validateZone,localDateToUtc}=require('../dates/timeZone');
+const {createDateView}=require('../dates/view');
+const {badge,table}=require('../ui/page');
+const {translateReport}=require('../ui/i18n');
+const {extractLtiIdentity}=require('./ltiIdentity');
+const {append:appendReportIdentity}=require('./reportIdentity');
+const {markBulkStatusHandler,startBulkStatusPhase,recordBulkStatusPhase,setBulkStatusSize,recordBulkStatusError}=require('./bulkStatusDiagnostics');
+const escape=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const date=v=>v?new Intl.DateTimeFormat('pt-BR',{timeZone:'America/Sao_Paulo',dateStyle:'short',timeStyle:'medium'}).format(new Date(v)):'—';
+function createBulkDates({jobs,deploymentId,secret,writeEnabled,now=Date.now,view,kind='dates'}) {
+  const presentation=view||createDateView({writeEnabled});
+  if(!secret)throw new Error('Bulk forms require the configured application key.');
+  const prefix=kind==='courseCopy'?'/copy':kind==='sourceDeployment'?'/deploy':kind==='sourceCreation'?'/create':'/bulk';
+  const guard=deploymentGuard(deploymentId);
+  const owner=res=>createHash('sha256').update(JSON.stringify([res.locals.token.iss,res.locals.token.deploymentId,res.locals.token.user])).digest('hex');
+  const session=res=>createHash('sha256').update(String(res.locals.ltik)).digest('hex');
+  const signature=value=>createHmac('sha256',secret).update(value).digest('hex');
+  function token(res,action,id='') {const data=Buffer.from(JSON.stringify({kind,action,id,session:session(res),expires:now()+30*60*1000})).toString('base64url');return `${data}.${signature(data)}`;}
+  function valid(res,value,action,id='') {
+    try {const [data,sig]=String(value).split('.');const expected=signature(data);if(sig.length!==expected.length||!timingSafeEqual(Buffer.from(sig),Buffer.from(expected)))return false;
+      const t=JSON.parse(Buffer.from(data,'base64url'));return t.kind===kind&&t.session===session(res)&&t.action===action&&t.id===id&&t.expires>now();}catch{return false;}
+  }
+  const hidden=(k,v)=>`<input type="hidden" name="${k}" value="${escape(v)}">`;
+  function controls(res,action,id='') {return hidden('ltik',res.locals.ltik)+hidden('ticket',token(res,action,id))+hidden('jobId',id);}
+  function button(res,action,id,label,extra='') {return `<form method="post" action="${prefix}/${action}" ${extra}>${controls(res,action,id)}${hidden('page',Number(extra.match(/data-page="(\d+)"/)?.[1]||1))}<button class="${['apply','activate'].includes(action)?'primary':'secondary'}">${escape(label)}</button></form>`;}
+  function form(res){return presentation.form(res,{controls,button});}
+  function render(res,job,page=1){return presentation.render(res,job,{controls,button,now,page});}
+  function authorize(req,res,action) {
+    res.set('Cache-Control','no-store');res.set('Referrer-Policy','no-referrer');
+    if(!guard(res.locals.token,req,res))return false;
+    if(!res.locals.ltik || typeof res.locals.token?.user!=='string' || !res.locals.token.user){res.status(403).send('A validated LTI user session is required.');return false;}
+    if(!valid(res,req.body?.ticket,action,action==='preview'||action==='history'?'':req.body?.jobId)){res.status(403).send('Form expired or invalid. Relaunch through Brightspace.');return false;}
+    return true;
+  }
+  const handlers={form,historyButton:res=>button(res,'history','',kind==='courseCopy'?'View Copy Jobs':kind==='dates'?'View Date Jobs':kind==='sourceCreation'?'View Source Creation Jobs':'View Deployment Jobs')};
+  for(const action of ['preview','apply','status','cancel','history','report','review','activate','checkCopies','reconcile'])handlers[action]=async(req,res)=>{
+    const timing=action==='status'&&kind==='dates'?markBulkStatusHandler(req):null;
+    let diagnosticStage='authorization';
+    const authStarted=timing?startBulkStatusPhase(req,'authorization'):null;
+    const authorized=authorize(req,res,action);
+    if(timing)recordBulkStatusPhase(req,'authorization',authStarted);
+    if(!authorized)return;
+    try {
+      if(action==='history'){const list=await jobs.list(owner(res),kind);return res.send(`<div class="section-heading"><div><span class="eyebrow">Job history</span><h1>${kind==='courseCopy'?'Course Copy Jobs':kind==='dates'?'Activity Dates Update Jobs':kind==='sourceCreation'?'Source Course Creation Jobs':'Deployment Jobs'}</h1><p>Your latest 100 saved jobs. Open one to review results or continue.</p></div></div><section class="panel">${table(['Created · Brasília','Status','Job',''],list.map(j=>[escape(new Intl.DateTimeFormat('pt-BR',{timeZone:'America/Sao_Paulo',dateStyle:'short',timeStyle:'short'}).format(new Date(j.createdAt||now()))),badge(kind==='sourceCreation'&&j.status==='completed'?(j.confirmedAt?'sourceCoursesCreated':'noEligibleSourceCourses'):kind==='sourceDeployment'&&['activated','submitted'].includes(j.status)?(j.copySummary?.total>0&&j.copySummary.copied===j.copySummary.total?'copiesConcluded':'copiesInProcess'):j.status)+(kind==='sourceDeployment'?`<small>${j.copyMonitorCheckedAt?'Copy logs checked '+escape(new Date(j.copyMonitorCheckedAt).toISOString()):'Copy completion unconfirmed'}</small>`:''),escape(j._id),button(res,'status',j._id,'View job')]),'No jobs yet. Start a workflow from Workspace.')}</section>`);}
+      if(action==='preview'){
+        let dates,timeZone,scheduleMode='uniform',activityTypes,rules;
+        res.locals.dateForm=req.body;
+        try {if(kind==='dates'){timeZone=validateZone(req.body.timeZone??DEFAULT_ZONE);scheduleMode=req.body.scheduleMode||'uniform';activityTypes=req.body.activityTypes;if(scheduleMode==='uniform')dates=Object.fromEntries(['start','due','end'].map(k=>[k,localDateToUtc(req.body[k],timeZone)]));else {const parsed=JSON.parse(req.body.rulesJson||'[]');rules=parsed.map(rule=>({...rule,dates:Object.fromEntries(['start','due','end'].map(k=>[k,localDateToUtc(rule[k],timeZone)]))}));}}}
+        catch(e){return res.status(400).send(`<section class="form-error" role="alert"><h2>Check your requested dates</h2><p>${escape(e.code==='INVALID_DATE'?e.message:'Enter valid dates and a time zone.')}</p></section>${form(res)}`);}
+        let job;
+        try {job=await jobs.create({owner:owner(res),createdBy:extractLtiIdentity(res.locals.token),csv:req.body.csv,dates,timeZone,kind,copyMode:req.body.copyMode,components:req.body.components,validationMode:req.body.validationMode,liveSourceCourseRecheck:req.body.liveSourceCourseRecheck,scheduleMode,activityTypes,rules});}
+        catch(e){if(!['INVALID_CSV','INVALID_DATES','INVALID_DATE','INVALID_ACTIVITY_TYPES','INVALID_SCHEDULING_RULES'].includes(e.code))require('./diagnostics').logFailure('job_create_failed',e,{kind});return res.status(400).send(`<section class="form-error" role="alert"><h2>Unable to review your upload</h2><p>${escape(['INVALID_CSV','INVALID_DATES','INVALID_DATE','INVALID_ACTIVITY_TYPES','INVALID_SCHEDULING_RULES'].includes(e.code)?e.message:'Could not create preview. Check database availability.')}</p><p>Correct the issue, then select your CSV file and try again.</p></section>${form(res)}`);}
+        return res.send(render(res,job));
+      }
+      const statusOnly=action==='status'&&['dates','sourceCreation'].includes(kind)&&typeof jobs.getStatus==='function';
+      diagnosticStage=statusOnly?'getStatus':'get';
+      const initialReadPhase=statusOnly?'get_status':'full_get';
+      const readStarted=timing?startBulkStatusPhase(req,initialReadPhase):null;
+      let job;
+      try {job=await (statusOnly?jobs.getStatus(req.body.jobId,owner(res)):jobs.get(req.body.jobId,owner(res)));if(timing)setBulkStatusSize(req,job);}
+      finally {if(timing)recordBulkStatusPhase(req,initialReadPhase,readStarted);}
+      if(!job||(job.kind||'dates')!==kind)return res.status(404).send('Job not found.');
+      if(action==='checkCopies'){if(!['sourceDeployment','courseCopy'].includes(kind)||!await jobs.requestCopyCheck(job._id,owner(res)))return res.status(409).send('No submitted replicas are available to check, or deployment is still processing.');}
+      if(action==='reconcile'){
+        if(kind!=='sourceCreation'||!view?.canApply?.())return res.status(403).send('Required Source Course Creator permissions are unavailable.');
+        if(job.status!=='completedWithErrors')return res.status(409).send('Only a completed job with unresolved template parenting can be reconciled.');
+        const operations=[];
+        for(const plan of job.templateReconciliationPlan||[]){
+          const entry=job.templateReconciliation?.[plan.templateId];if(entry?.status!=='Uncertain')continue;
+          for(const [operationKey,operation] of Object.entries(entry.operations||{})){
+            const expected=operation.kind==='add'?`add:${operation.parentId}`:operation.kind==='remove'?`remove:${operation.parentId}`:'';
+            const planned=operation.kind==='add'?(plan.departmentIds||[]).includes(String(operation.parentId)):operation.kind==='remove'&&String(operation.parentId)===String(job.templateReconciliationRootOrgUnitId);
+            if(operationKey===expected&&planned&&['intent','uncertain'].includes(operation.status))operations.push({templateId:String(plan.templateId),operationKey});
+          }
+        }
+        if(!operations.length)return res.status(409).send('No unresolved saved template-parent operation is eligible for reconciliation.');
+        if(!await jobs.queueTemplateReconciliation(job._id,owner(res),operations))return res.status(409).send('Template parenting was already queued or is no longer eligible.');
+      }
+      if(action==='apply') {
+        if(kind==='courseCopy'&&req.body.confirmCopy!=='yes')return res.status(400).send('Confirm copying the selected components before continuing.');
+        if(kind==='sourceCreation'&&req.body.confirmCreation!=='yes')return res.status(400).send('Confirm creation of the eligible Source Courses before continuing.');
+        if(kind==='sourceDeployment'&&req.body.confirmReset!=='yes')return res.status(400).send('Confirm the reset of the listed replicas before deployment.');
+        if(!(view?view.canApply():job.tasks.every(t=>writeEnabled(t.activity.type))))return res.status(403).send('A required write scope is unavailable.');
+        if(!await jobs.confirm(job._id,owner(res)))return res.status(409).send('Job expired, was already confirmed, or is not ready.');
+      }
+      if(action==='activate'){
+        if(kind!=='sourceDeployment')return res.status(400).send('Reactivation is available only for deployment jobs.');
+        if(!view.canApply())return res.status(403).send('Required scopes are unavailable.');
+        if(!await jobs.activate(job._id,owner(res)))return res.status(409).send('Activation is already queued or this job is not eligible.');
+      }
+      if(action==='review'){if(kind!=='sourceDeployment'||req.body.confirmReviewed!=='yes')return res.status(400).send('Confirm review in Brightspace.');if(!await jobs.review(job._id,owner(res)))return res.status(409).send('Job cannot be reviewed in its current state.');}
+      if(action==='cancel'&&!await jobs.cancel(job._id,owner(res)))return res.status(409).send('Job is already processing or finished.');
+      if(action==='report') {res.set('Content-Type','text/csv; charset=utf-8');res.set('Content-Disposition',`attachment; filename="${kind==='courseCopy'?'course-copy':kind==='sourceDeployment'?'deploy':kind==='sourceCreation'?'source-course-creation':'date-manager'}-results.csv"`);return res.send(translateReport(view?view.report(job):report(job),req.body.uiLanguage));}
+      // A non-ready status page has no intervening mutation, so render the
+      // metadata snapshot already fetched above instead of issuing it again.
+      let renderJob=job;
+      if(!(statusOnly&&job.status!=='ready')){
+        diagnosticStage='get';
+        const fullReadStarted=timing?startBulkStatusPhase(req,'full_get'):null;
+        try {renderJob=await jobs.get(job._id,owner(res));}
+        finally {if(timing)recordBulkStatusPhase(req,'full_get',fullReadStarted);}
+      }
+      diagnosticStage='render';
+      const renderStarted=timing?startBulkStatusPhase(req,'render'):null;
+      const html=render(res,renderJob,Number(req.body.page)||1);
+      if(timing)recordBulkStatusPhase(req,'render',renderStarted);
+      return res.send(html);
+    } catch(error) {if(timing)recordBulkStatusError(req,diagnosticStage,error);require('./diagnostics').logFailure('job_request_failed',error,timing?{kind,action}:{kind,action,jobId:req.body?.jobId});return res.status(503).send('Job storage is unavailable. Refresh or relaunch to check the saved status before retrying.');}
+  };
+  return handlers;
+}
+function report(job) {
+  const rows=[['Record','CSV row','Course ID','Course code','Activity type','Activity ID','Name','Status','Rule ID','Rule label','Requested Start UTC','Requested Due UTC','Requested End UTC','Current Start UTC','Current Due UTC','Current End UTC','Message','Selected time zone']];
+  for(const r of job.rows)rows.push(['CSV',r.row,r.resolvedId||r.orgUnitId,r.orgUnitCode,'','','',r.status,'','','','','','','','',r.resolutionMessage||r.message,job.timeZone||DEFAULT_ZONE]);
+  const coursesById=new Map(job.courses.map(c=>[c.orgUnitId,c]));
+  const rules=new Map((job.rules||[]).map(rule=>[rule.id,rule.label]));
+  for(const t of job.tasks){const r=t.result||((job.cancelledDuringStep3||job.cancelRequestedAt)?{...t.preview,status:'pending'}:t.preview),c=coursesById.get(t.orgUnitId),requested=t.dates||job.dates||{},message=r.error?.message||(r.status==='pending'&&(job.cancelledDuringStep3||job.cancelRequestedAt)?'Not attempted because the job was cancelled.':undefined);rows.push(['Activity',c?.row,t.orgUnitId,c?.code,t.activity.type,t.activity.id,t.name,r.status,t.ruleId||'',rules.get(t.ruleId)||'',requested.start,requested.due,requested.end,r.verifiedDates?.start,r.verifiedDates?.due,r.verifiedDates?.end,message,job.timeZone||DEFAULT_ZONE]);}
+  for(const course of job.courses||[])if(course.coverage?.unmatched)rows.push(['Course summary',course.row,course.orgUnitId,course.code,'','','','unmatched excluded','','','','','','','',`${course.coverage.unmatched} unmatched activities excluded from updates`,job.timeZone||DEFAULT_ZONE]);
+  appendReportIdentity(rows,job);
+  // Quote all cells and neutralize spreadsheet formula injection in native names/codes.
+  return '\uFEFF'+rows.map(row=>row.map(v=>{let s=String(v??'');if(/^[\s]*[=+\-@]/.test(s)||/^[\t\r\n]/.test(s))s="'"+s;return '"'+s.replace(/"/g,'""')+'"';}).join(',')).join('\r\n');
+}
+module.exports={createBulkDates,report};

@@ -1,0 +1,95 @@
+# Brightspace Source Courses Tools — Delivery Status
+
+## Implemented locally
+
+- Shared Org Library live fallback resolves unique externally created courses before dataset sync, caches lower-assurance evidence for 15 minutes, and invalidates it on authoritative publication; Date Manager CSV includes sanitized resolution reasons.
+- Bulk Source Course Creator: exact CSV schema, partial-validity template/code checks, four-worker confirmed creation, graceful cancellation, durable outcomes, immediate Org Library registration overlay, and result CSV.
+- Org Library directory version 5 includes non-deleted Course Templates and forces a full rebuild for older directory generations.
+
+- Application branding, sidebar navigation, and simplified date and deployment forms.
+- 10,000-row / 5 MB CSV support for both workflows; deployment requests contain up to 100 replicas per source batch.
+- Named time zones and date conversion validation; bulk date discovery, updates, read-back checks and CSV reports.
+- Three deployment steps: Upload Mappings → Review & Confirm → Deploy & Check Copy.
+- Just-in-time batch deactivation, deployment submission, and automatic reactivation of accepted replicas.
+- Isolated failures continue; authentication, exhausted rate-limit retries and repeated service failures stop further batches.
+- Sanitized deployment diagnostics in stored results, screens and reports.
+- No historical job reservations or manual copy-completion requirement.
+- On-demand “Check copy results now” inside job details (opened through View job in Job History); signed owner-scoped requests, duplicate prevention, bounded batches, durable progress and lease recovery.
+- Reports retain saved copy-log snapshots, timestamps, and pending-current-check indicators. History access and CSV download do not trigger API checks.
+- Previous automatic 24-hour monitoring removed. A worker dispatch timer processes only explicitly queued checks; completed checks do not repeat.
+- Latest full local test run: 201 tests passed.
+
+## Confirmed by the user in Brightspace
+
+- Live activity date updates and read-back behavior.
+- Source Course deployments succeeded after enabling missing course-copy permissions for the OAuth-linked Service User. OAuth scopes alone were insufficient.
+
+## Remaining live validation
+
+1. Redeploy subsequent UI changes to Render and verify the current labels and compact layout. Two-replica automatic reactivation and successful copy checking have been observed in user-provided reports/screenshots.
+2. Use a tenant-supported LE version of at least 1.91 and grant the Service User permission to read course-copy logs.
+3. Broaden live validation of copy-log matching, including other languages, missing/ambiguous logs, and error outcomes. The observed Portuguese full-copy message is now recognized only with matching IDs and an unambiguous single-page response.
+4. Test restart recovery and representative large workloads. Local synthetic tests include 3,000 sources and 5,000 replicas; this scale has not been validated live.
+
+Copy logs expose text messages and copy-job IDs, not a structured result directly correlated to the deployment ID. Missing or ambiguous logs remain unconfirmed. Monitoring neither blocks deployment nor automatically re-submits copies.
+
+Each Brightspace tenant uses its own Render service and the application database selected by MONGODB_URL. Queued background checks require the service to be running.
+
+- Current UI: consistent four counters, inline copy-check progress, no popup or replica tables; details in CSV. History has View job only and copy-progress/completion badges.
+
+## Localization completed
+
+- Added English, Latin American Spanish, and Brazilian Portuguese catalogs and a persistent header language selector.
+- Localized application text, dynamic summaries, validation messages, and report headings; preserved CSV input schemas and original report data/logs.
+- Verified Portuguese/Spanish switching, retained date input values, and language persistence across workflow navigation in an isolated local preview.
+- All 206 automated tests pass. Live Render/LTI verification remains a deployment check.
+
+Copy-check optimization: new manual checks query only submitted or uncertain replicas without saved successful-copy confirmation. Confirmed results and CSV evidence are retained per job. Each run snapshots its pending replica IDs and checks batches of 10, keeping progress stable as results arrive. Already queued legacy checks finish their original scan; new deployment jobs have independent results. When nothing remains to check, no API work is queued.
+
+Each independently deployed tenant can now select a dedicated database through the existing MONGODB_URL path. Both LTI storage and job storage use that URI. Explicit application names are required; system names, missing names, and dbName query overrides are rejected. Existing connection strings remain valid. Database creation occurs on first write, subject to MongoDB permissions. This does not migrate data or change any live Render configuration.
+
+Environment setup is documented in [ENVIRONMENT.md](ENVIRONMENT.md), with all 17 variables, their sources/defaults, key generation, LTI versus OAuth key URLs, database isolation, scopes, and installation troubleshooting. Use [.env.example](.env.example) as the placeholder-only server configuration template.
+
+API rate safeguards and actual-cost reporting are described in ENVIRONMENT.md under “API pacing and measured costs”. The shared durable gate covers server tenant API traffic. Use `node scripts/api-cost-report.js` after a representative live test; no live measurements have been collected by local tests. Full-scale production capacity and interrupted deployment recovery remain operational validation items.
+
+Pacing tuning: the shared gate now targets 30,000 measured credits/minute with a 10,000-credit reserve, adaptive reset-aware spacing and a conservative 250 ms fallback when costs are missing. At 10 credits, start-to-start spacing is 20 ms; response latency counts toward it. Up to eight exact-code lookups, Course Copy submissions, native copy-result checks or Source Deployer operations/checks may overlap, while other requests remain capped at four and total active requests at eight, under the same durable budget; ambiguous writes are never replayed. This reduces artificial delay, but does not guarantee job completion during outages or make interrupted deployments automatically resumable.
+
+CSV templates: the date template downloads as `date-manager-template.csv`. Deployment accepts `SourceOrgUnitId,SourceOrgUnitCode,ReplicaOrgUnitId,ReplicaOrgUnitCode`; provide an ID, code, or matching pair for each side. Codes must resolve to exactly one non-deleted directory match or live API match. Brightspace validates source/replica eligibility during deployment; no separate type/access preflight is performed. Aliases are deduplicated after resolution; conflicting targets and source/target overlap block deployment. All four headers are required, even when code cells are empty. Legacy two-column CSV files are rejected; download the new template. Code lookup requires orgstructure read access.
+
+## Bulk Course Copy to Source Courses implementation
+
+Added the first sidebar workflow for Offering → existing Offering/Source Course copies. It supports a four-column ID/code CSV, all or selected component types, saved confirmation plans, durable native job tokens, on-demand cumulative status checks, translated compact pages, reports, and separate Job History. Reuses session/owner guards, worker leases and API rate limiting. It does not create/reset/reactivate courses. Restart recovery preserves uncertain outcomes without resubmitting. See README and ENVIRONMENT for usage, component dependencies, permissions, and required tenant acceptance tests. Live verification of this implementation and bulk-volume timing remain pending.
+
+Course Copy, Source Deployer, Date Manager and Source Course Creator use the shared MongoDB org-code directory for code resolution, in 500-code batches. Missing codes use bounded exactOrgUnitCode API searches and are saved for future jobs. Per-job promises deduplicate concurrent misses. The nightly Organizational Units dataset import refreshes the directory; known matches reflect the saved snapshot, not a live permission/code check. See [RESOLUTION.md](RESOLUTION.md) for setup, freshness, failure behavior and server-only commands.
+
+## Bounded bulk processing
+
+See [PERFORMANCE.md](PERFORMANCE.md) for automatic ID/code mapping in both copy tools, parallel source-group deployment, targeted checkpoints, shared credit reservations, failure behavior, and the server-only timing commands. No new environment variables are required. Local tests cover simulated 5,000-row work; Render/Brightspace throughput remains to be measured after deployment.
+
+### Database round-trip optimization
+
+Concurrent copy/deployment checkpoints now share a durable write when ready together; no copy is sent before its checkpoint succeeds. Lease renewals are deduplicated and reused briefly within the valid lease, while the heartbeat and worker/status fencing remain. The API gate initializes once and waits on known spacing/reset/budget deadlines without repeated database polling. Course Copy submissions and native result checks use eight workers; Source Deployer execution/checks also use eight; Date Manager discovery/updates retain four. The job report distinguishes checkpoint requests from physical saves. Run `node scripts/mongodb-latency-report.js` in Render for a read-only connection/ping report; credentials and hostnames are never printed. See [PERFORMANCE.md](PERFORMANCE.md) for behavior, tests, region checks and the repeat-test procedure. No new environment variables or infrastructure changes are required.
+
+Source Deployer uses the shared lease reuse, gate waiting and checkpoint coalescing improvements. Activation retries now checkpoint only the affected task, and normal execution omits the redundant end-of-batch save after submission/activation results have already been persisted. Pre-write intent checkpoints, course-state verification, the 100-replica batch limit and sequential batches for each source remain intact. Test a small deployment separately: Course Copy timing does not predict deployment timing because deployment also prepares and reactivates replicas.
+
+Date Manager performance update: course resolution uses up to eight workers; discovery/preview and application use up to four independent courses. Activities within a course remain sequential. Mapping and activity previews must succeed before confirmation; each activity write retains its own current-settings and stale-preview checks. Repeated CSV identifiers are deduplicated; resolved aliases are processed once. Checkpoints coalesce for 10 ms and snapshot immutable chunks before database I/O. The 250,000-activity limit reserves capacity before parallel preview work. Existing stale-preview, unrelated-setting preservation, read-back verification, worker fencing and uncertain-write recovery remain enabled. No new environment variables are required. Measure a small date job separately with `node scripts/job-performance-report.js`; copy timings do not predict date-update duration. These changes do not remove cross-region MongoDB latency.
+
+Date Manager CSV accepts an ID, a code, or both in `OrgUnitId,OrgUnitCode`. With both supplied, directory/live code resolution must match the supplied ID before activity discovery. Distinct pairs are validated before resolved-course deduplication, so a repeated ID with a different code cannot bypass matching. Mismatches appear in the report and block the date plan under the existing all-courses-valid requirement. IDs alone skip code resolution; pairs use the shared directory and per-job lookup cache. CSV headers are unchanged; dataset scheduling has optional settings documented in RESOLUTION.md.
+
+Upload guidance is condensed into short “Before you begin” cards across the four tools. Date Manager places upload and guidance side by side, with a full-width schedule below; the three date fields share a row on desktop and stack on narrow screens.
+
+Code resolution uses eight mapping workers in Course Copy, Source Deployer and Date Manager. GET orgstructure requests with a nonempty exactOrgUnitCode filter, POST import/{id}/copy/ submissions, GET import/{id}/copy/{token} result checks, Source Deployer POST deploy and PUT course status calls, GET course/org-unit metadata and reofferedCourses, and GET ccb/logs qualify for the eight-request allowance. Other calls (including activity discovery and date updates) share a four-request allowance; all classes together are capped at eight. Credit reservations, pacing, cooldowns and lease expiry remain shared and unchanged. No new environment variables are needed. Compare the same CSV before/after deployment using server-side timing reports; doubling workers does not guarantee twice the throughput.
+
+
+## Shared directory and nightly dataset refresh
+
+Course Copy, Source Deployer, Date Manager and Source Course Creator use the shared MongoDB org-code directory for code resolution, in 500-code batches. Missing codes use bounded exactOrgUnitCode API searches and are saved for future jobs. Per-job promises deduplicate concurrent misses. The nightly Organizational Units dataset import refreshes the directory; known matches reflect the saved snapshot, not a live permission/code check. See [RESOLUTION.md](RESOLUTION.md) for setup, freshness, failure behavior and server-only commands.
+
+Run `node scripts/sync-org-units.js` to initialize/refresh after granting the Service User dataset access, then `node scripts/org-unit-cache-report.js` to inspect freshness. Scheduled refresh defaults to 06:00 UTC. The OAuth scope is `datasets:bds:read`; no extra credentials or CSV changes are needed. The 8-worker resolution / 4-worker ordinary API limits remain unchanged. A failed import preserves the previous generation.
+
+
+Directory sync now downloads a full plus newer differentials for initial setup (and once when upgrading a legacy cache). Later runs download only unprocessed differentials; a newer full rebuilds the baseline. There is no fixed 36-hour interval assumption. The extract ledger and directory publish together after success. Incremental runs use a bounded local MongoDB staging copy for atomic publication, so they reduce API downloads but still require staging storage and database I/O. See [RESOLUTION.md](RESOLUTION.md) for continuity checks and operational details. No environment or CSV changes are required.
+
+## Date Manager rule-based scheduling
+
+Implemented Uniform and Rule-Based Date Update modes with a global activity-type multiselect. Rule-Based plans validate up to 20 trimmed, case-insensitive Contains/Starts with title rules, resolve matches locally during the existing discovery pass, exclude unmatched/unselected activities, and block readiness on conflicts or an empty executable plan. Rule tasks persist their rule ID and effective UTC dates; Step 3 writes and interrupted-task reconciliation use those saved dates without rematching. Added bounded aggregate and course coverage, rule-aware review/status/CSV output, backward compatibility for legacy Uniform jobs, focused resolver/integration tests, and user/technical/performance guidance. Discovery and execution concurrency, API limits, checkpoint cadence, chunk storage, confirmation, cancellation, and uncertain-write safeguards remain unchanged.

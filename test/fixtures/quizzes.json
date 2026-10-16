@@ -1,0 +1,4 @@
+{"Objects":[
+  {"QuizId":21,"Name":"Quiz","CategoryId":3,"StartDate":"2026-09-02T00:00:00Z","DueDate":"2026-09-03T00:00:00Z","EndDate":"2026-09-04T00:00:00Z","ActivityId":"quiz-a","DisplayInCalendar":true,"IsActive":false,"Password":"raw-only-secret"},
+  {"QuizId":22,"Name":"No dates","StartDate":null,"EndDate":null,"DueDate":null}
+],"Next":"/d2l/api/le/1.90/999/quizzes/?bookmark=next"}

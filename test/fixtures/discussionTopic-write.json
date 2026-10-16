@@ -1,0 +1,30 @@
+{
+  "TopicId": 11,
+  "ForumId": 31,
+  "Name": "Topic fixture",
+  "Description": {
+    "Html": "<p>Keep topic</p>",
+    "Text": "Keep topic"
+  },
+  "AllowAnonymousPosts": false,
+  "IsHidden": true,
+  "UnlockStartDate": null,
+  "UnlockEndDate": null,
+  "RequiresApproval": true,
+  "ScoreOutOf": 100,
+  "IsAutoScore": true,
+  "IncludeNonScoredValues": false,
+  "ScoringType": "2",
+  "IsLocked": false,
+  "MustPostToParticipate": true,
+  "RatingType": "1",
+  "DisplayInCalendar": true,
+  "DisplayUnlockDatesInCalendar": false,
+  "GroupTypeId": 9,
+  "StartDateAvailabilityType": 1,
+  "EndDateAvailabilityType": "2",
+  "StartDate": null,
+  "DueDate": null,
+  "EndDate": null,
+  "ActivityId": "topic-identity"
+}

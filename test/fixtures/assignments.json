@@ -1,0 +1,6 @@
+[
+  {"Id":11,"CategoryId":2,"Name":"Essay","Availability":{"StartDate":"2026-09-01T09:00:00.000Z","EndDate":"2026-09-30T23:59:00.000Z","StartDateAvailabilityType":0,"EndDateAvailabilityType":"2"},"DueDate":"2026-09-20T23:59:00.000Z","DisplayInCalendar":false,"ActivityId":"assignment-a"},
+  {"Id":12,"CategoryId":null,"Name":"Due only","Availability":null,"DueDate":"2026-10-01T00:00:00Z"},
+  {"Id":13,"Name":"Undated","Availability":{"StartDate":null,"EndDate":null,"StartDateAvailabilityType":null,"EndDateAvailabilityType":null},"DueDate":null},
+  {"Id":14,"Name":"Fields omitted"}
+]

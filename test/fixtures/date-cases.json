@@ -1,0 +1,442 @@
+[
+  {
+    "type": "assignment",
+    "case": "null",
+    "row": {
+      "Name": "assignment null",
+      "Id": 101,
+      "Availability": {
+        "StartDate": null,
+        "EndDate": null,
+        "StartDateAvailabilityType": 0,
+        "EndDateAvailabilityType": "1"
+      },
+      "DueDate": null
+    },
+    "expected": {
+      "startDate": null,
+      "dueDate": null,
+      "endDate": null
+    }
+  },
+  {
+    "type": "assignment",
+    "case": "startOnly",
+    "row": {
+      "Name": "assignment startOnly",
+      "Id": 101,
+      "Availability": {
+        "StartDate": "2026-09-21T03:01:00.000Z",
+        "EndDate": null,
+        "StartDateAvailabilityType": 0,
+        "EndDateAvailabilityType": "1"
+      },
+      "DueDate": null
+    },
+    "expected": {
+      "startDate": "2026-09-21T03:01:00.000Z",
+      "dueDate": null,
+      "endDate": null
+    }
+  },
+  {
+    "type": "assignment",
+    "case": "dueOnly",
+    "row": {
+      "Name": "assignment dueOnly",
+      "Id": 101,
+      "Availability": {
+        "StartDate": null,
+        "EndDate": null,
+        "StartDateAvailabilityType": 0,
+        "EndDateAvailabilityType": "1"
+      },
+      "DueDate": "2026-09-21T03:01:00.000Z"
+    },
+    "expected": {
+      "startDate": null,
+      "dueDate": "2026-09-21T03:01:00.000Z",
+      "endDate": null
+    }
+  },
+  {
+    "type": "assignment",
+    "case": "endOnly",
+    "row": {
+      "Name": "assignment endOnly",
+      "Id": 101,
+      "Availability": {
+        "StartDate": null,
+        "EndDate": "2026-09-21T03:01:00.000Z",
+        "StartDateAvailabilityType": 0,
+        "EndDateAvailabilityType": "1"
+      },
+      "DueDate": null
+    },
+    "expected": {
+      "startDate": null,
+      "dueDate": null,
+      "endDate": "2026-09-21T03:01:00.000Z"
+    }
+  },
+  {
+    "type": "quiz",
+    "case": "null",
+    "row": {
+      "Name": "quiz null",
+      "QuizId": 101,
+      "StartDate": null,
+      "DueDate": null,
+      "EndDate": null
+    },
+    "expected": {
+      "startDate": null,
+      "dueDate": null,
+      "endDate": null
+    }
+  },
+  {
+    "type": "quiz",
+    "case": "startOnly",
+    "row": {
+      "Name": "quiz startOnly",
+      "QuizId": 101,
+      "StartDate": "2026-09-21T03:01:00.000Z",
+      "DueDate": null,
+      "EndDate": null
+    },
+    "expected": {
+      "startDate": "2026-09-21T03:01:00.000Z",
+      "dueDate": null,
+      "endDate": null
+    }
+  },
+  {
+    "type": "quiz",
+    "case": "dueOnly",
+    "row": {
+      "Name": "quiz dueOnly",
+      "QuizId": 101,
+      "StartDate": null,
+      "DueDate": "2026-09-21T03:01:00.000Z",
+      "EndDate": null
+    },
+    "expected": {
+      "startDate": null,
+      "dueDate": "2026-09-21T03:01:00.000Z",
+      "endDate": null
+    }
+  },
+  {
+    "type": "quiz",
+    "case": "endOnly",
+    "row": {
+      "Name": "quiz endOnly",
+      "QuizId": 101,
+      "StartDate": null,
+      "DueDate": null,
+      "EndDate": "2026-09-21T03:01:00.000Z"
+    },
+    "expected": {
+      "startDate": null,
+      "dueDate": null,
+      "endDate": "2026-09-21T03:01:00.000Z"
+    }
+  },
+  {
+    "type": "discussionTopic",
+    "case": "null",
+    "row": {
+      "Name": "discussionTopic null",
+      "TopicId": 101,
+      "StartDate": null,
+      "DueDate": null,
+      "EndDate": null,
+      "ForumId": 100,
+      "StartDateAvailabilityType": "2",
+      "EndDateAvailabilityType": null
+    },
+    "expected": {
+      "startDate": null,
+      "dueDate": null,
+      "endDate": null
+    }
+  },
+  {
+    "type": "discussionTopic",
+    "case": "startOnly",
+    "row": {
+      "Name": "discussionTopic startOnly",
+      "TopicId": 101,
+      "StartDate": "2026-09-21T03:01:00.000Z",
+      "DueDate": null,
+      "EndDate": null,
+      "ForumId": 100,
+      "StartDateAvailabilityType": "2",
+      "EndDateAvailabilityType": null
+    },
+    "expected": {
+      "startDate": "2026-09-21T03:01:00.000Z",
+      "dueDate": null,
+      "endDate": null
+    }
+  },
+  {
+    "type": "discussionTopic",
+    "case": "dueOnly",
+    "row": {
+      "Name": "discussionTopic dueOnly",
+      "TopicId": 101,
+      "StartDate": null,
+      "DueDate": "2026-09-21T03:01:00.000Z",
+      "EndDate": null,
+      "ForumId": 100,
+      "StartDateAvailabilityType": "2",
+      "EndDateAvailabilityType": null
+    },
+    "expected": {
+      "startDate": null,
+      "dueDate": "2026-09-21T03:01:00.000Z",
+      "endDate": null
+    }
+  },
+  {
+    "type": "discussionTopic",
+    "case": "endOnly",
+    "row": {
+      "Name": "discussionTopic endOnly",
+      "TopicId": 101,
+      "StartDate": null,
+      "DueDate": null,
+      "EndDate": "2026-09-21T03:01:00.000Z",
+      "ForumId": 100,
+      "StartDateAvailabilityType": "2",
+      "EndDateAvailabilityType": null
+    },
+    "expected": {
+      "startDate": null,
+      "dueDate": null,
+      "endDate": "2026-09-21T03:01:00.000Z"
+    }
+  },
+  {
+    "type": "assignment",
+    "case": "startDue",
+    "row": {
+      "Name": "assignment null",
+      "Id": 101,
+      "Availability": {
+        "StartDate": "2026-09-21T03:01:00.000Z",
+        "EndDate": null,
+        "StartDateAvailabilityType": 0,
+        "EndDateAvailabilityType": "1"
+      },
+      "DueDate": "2026-09-21T03:01:00.000Z"
+    },
+    "expected": {
+      "startDate": "2026-09-21T03:01:00.000Z",
+      "dueDate": "2026-09-21T03:01:00.000Z",
+      "endDate": null
+    }
+  },
+  {
+    "type": "assignment",
+    "case": "startEnd",
+    "row": {
+      "Name": "assignment null",
+      "Id": 101,
+      "Availability": {
+        "StartDate": "2026-09-21T03:01:00.000Z",
+        "EndDate": "2026-09-21T03:01:00.000Z",
+        "StartDateAvailabilityType": 0,
+        "EndDateAvailabilityType": "1"
+      },
+      "DueDate": null
+    },
+    "expected": {
+      "startDate": "2026-09-21T03:01:00.000Z",
+      "dueDate": null,
+      "endDate": "2026-09-21T03:01:00.000Z"
+    }
+  },
+  {
+    "type": "assignment",
+    "case": "dueEnd",
+    "row": {
+      "Name": "assignment null",
+      "Id": 101,
+      "Availability": {
+        "StartDate": null,
+        "EndDate": "2026-09-21T03:01:00.000Z",
+        "StartDateAvailabilityType": 0,
+        "EndDateAvailabilityType": "1"
+      },
+      "DueDate": "2026-09-21T03:01:00.000Z"
+    },
+    "expected": {
+      "startDate": null,
+      "dueDate": "2026-09-21T03:01:00.000Z",
+      "endDate": "2026-09-21T03:01:00.000Z"
+    }
+  },
+  {
+    "type": "assignment",
+    "case": "all",
+    "row": {
+      "Name": "assignment null",
+      "Id": 101,
+      "Availability": {
+        "StartDate": "2026-09-21T03:01:00.000Z",
+        "EndDate": "2026-09-21T03:01:00.000Z",
+        "StartDateAvailabilityType": 0,
+        "EndDateAvailabilityType": "1"
+      },
+      "DueDate": "2026-09-21T03:01:00.000Z"
+    },
+    "expected": {
+      "startDate": "2026-09-21T03:01:00.000Z",
+      "dueDate": "2026-09-21T03:01:00.000Z",
+      "endDate": "2026-09-21T03:01:00.000Z"
+    }
+  },
+  {
+    "type": "quiz",
+    "case": "startDue",
+    "row": {
+      "Name": "quiz null",
+      "QuizId": 101,
+      "StartDate": "2026-09-21T03:01:00.000Z",
+      "DueDate": "2026-09-21T03:01:00.000Z",
+      "EndDate": null
+    },
+    "expected": {
+      "startDate": "2026-09-21T03:01:00.000Z",
+      "dueDate": "2026-09-21T03:01:00.000Z",
+      "endDate": null
+    }
+  },
+  {
+    "type": "quiz",
+    "case": "startEnd",
+    "row": {
+      "Name": "quiz null",
+      "QuizId": 101,
+      "StartDate": "2026-09-21T03:01:00.000Z",
+      "DueDate": null,
+      "EndDate": "2026-09-21T03:01:00.000Z"
+    },
+    "expected": {
+      "startDate": "2026-09-21T03:01:00.000Z",
+      "dueDate": null,
+      "endDate": "2026-09-21T03:01:00.000Z"
+    }
+  },
+  {
+    "type": "quiz",
+    "case": "dueEnd",
+    "row": {
+      "Name": "quiz null",
+      "QuizId": 101,
+      "StartDate": null,
+      "DueDate": "2026-09-21T03:01:00.000Z",
+      "EndDate": "2026-09-21T03:01:00.000Z"
+    },
+    "expected": {
+      "startDate": null,
+      "dueDate": "2026-09-21T03:01:00.000Z",
+      "endDate": "2026-09-21T03:01:00.000Z"
+    }
+  },
+  {
+    "type": "quiz",
+    "case": "all",
+    "row": {
+      "Name": "quiz null",
+      "QuizId": 101,
+      "StartDate": "2026-09-21T03:01:00.000Z",
+      "DueDate": "2026-09-21T03:01:00.000Z",
+      "EndDate": "2026-09-21T03:01:00.000Z"
+    },
+    "expected": {
+      "startDate": "2026-09-21T03:01:00.000Z",
+      "dueDate": "2026-09-21T03:01:00.000Z",
+      "endDate": "2026-09-21T03:01:00.000Z"
+    }
+  },
+  {
+    "type": "discussionTopic",
+    "case": "startDue",
+    "row": {
+      "Name": "discussionTopic null",
+      "TopicId": 101,
+      "StartDate": "2026-09-21T03:01:00.000Z",
+      "DueDate": "2026-09-21T03:01:00.000Z",
+      "EndDate": null,
+      "ForumId": 100,
+      "StartDateAvailabilityType": "2",
+      "EndDateAvailabilityType": null
+    },
+    "expected": {
+      "startDate": "2026-09-21T03:01:00.000Z",
+      "dueDate": "2026-09-21T03:01:00.000Z",
+      "endDate": null
+    }
+  },
+  {
+    "type": "discussionTopic",
+    "case": "startEnd",
+    "row": {
+      "Name": "discussionTopic null",
+      "TopicId": 101,
+      "StartDate": "2026-09-21T03:01:00.000Z",
+      "DueDate": null,
+      "EndDate": "2026-09-21T03:01:00.000Z",
+      "ForumId": 100,
+      "StartDateAvailabilityType": "2",
+      "EndDateAvailabilityType": null
+    },
+    "expected": {
+      "startDate": "2026-09-21T03:01:00.000Z",
+      "dueDate": null,
+      "endDate": "2026-09-21T03:01:00.000Z"
+    }
+  },
+  {
+    "type": "discussionTopic",
+    "case": "dueEnd",
+    "row": {
+      "Name": "discussionTopic null",
+      "TopicId": 101,
+      "StartDate": null,
+      "DueDate": "2026-09-21T03:01:00.000Z",
+      "EndDate": "2026-09-21T03:01:00.000Z",
+      "ForumId": 100,
+      "StartDateAvailabilityType": "2",
+      "EndDateAvailabilityType": null
+    },
+    "expected": {
+      "startDate": null,
+      "dueDate": "2026-09-21T03:01:00.000Z",
+      "endDate": "2026-09-21T03:01:00.000Z"
+    }
+  },
+  {
+    "type": "discussionTopic",
+    "case": "all",
+    "row": {
+      "Name": "discussionTopic null",
+      "TopicId": 101,
+      "StartDate": "2026-09-21T03:01:00.000Z",
+      "DueDate": "2026-09-21T03:01:00.000Z",
+      "EndDate": "2026-09-21T03:01:00.000Z",
+      "ForumId": 100,
+      "StartDateAvailabilityType": "2",
+      "EndDateAvailabilityType": null
+    },
+    "expected": {
+      "startDate": "2026-09-21T03:01:00.000Z",
+      "dueDate": "2026-09-21T03:01:00.000Z",
+      "endDate": "2026-09-21T03:01:00.000Z"
+    }
+  }
+]

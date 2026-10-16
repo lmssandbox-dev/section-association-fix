@@ -1,0 +1,79 @@
+{
+  "QuizId": 11,
+  "Name": "Quiz fixture",
+  "IsActive": true,
+  "SortOrder": 4,
+  "AutoExportToGrades": true,
+  "GradeItemId": 8,
+  "IsAutoSetGraded": false,
+  "DisplayInCalendar": true,
+  "LateSubmissionInfo": {
+    "LateSubmissionOption": 2,
+    "LateLimitMinutes": null
+  },
+  "SubmissionTimeLimit": {
+    "IsEnforced": true,
+    "ShowClock": true,
+    "TimeLimitValue": 45
+  },
+  "SubmissionGracePeriod": null,
+  "Password": "secret-quiz-password",
+  "AllowHints": false,
+  "DisableRightClick": true,
+  "DisablePagerAndAlerts": true,
+  "NotificationEmail": "fixture@example.invalid",
+  "CalcTypeId": 1,
+  "RestrictIPAddressRange": [
+    {
+      "IPRangeStart": "10.0.0.1",
+      "IPRangeEnd": "10.0.0.9"
+    }
+  ],
+  "CategoryId": 3,
+  "PreventMovingBackwards": true,
+  "Shuffle": true,
+  "AllowOnlyUsersWithSpecialAccess": false,
+  "IsRetakeIncorrectOnly": true,
+  "PagingTypeId": 1,
+  "IsSynchronous": false,
+  "DeductionPercentage": 10,
+  "HideQuestionPoints": true,
+  "IsSingleSession": true,
+  "AnnotationToolsEnabled": true,
+  "AttemptsAllowed": {
+    "IsUnlimited": false,
+    "NumberOfAttemptsAllowed": 3
+  },
+  "StartDate": null,
+  "DueDate": null,
+  "EndDate": null,
+  "ActivityId": "quiz-identity",
+  "Instructions": {
+    "Text": {
+      "Html": "<b>Keep</b>",
+      "Text": "Keep"
+    },
+    "IsDisplayed": true
+  },
+  "Description": {
+    "Text": {
+      "Html": "<b>Keep</b>",
+      "Text": "Keep"
+    },
+    "IsDisplayed": true
+  },
+  "Header": {
+    "Text": {
+      "Html": "<b>Keep</b>",
+      "Text": "Keep"
+    },
+    "IsDisplayed": true
+  },
+  "Footer": {
+    "Text": {
+      "Html": "<b>Keep</b>",
+      "Text": "Keep"
+    },
+    "IsDisplayed": true
+  }
+}

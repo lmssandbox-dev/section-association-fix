@@ -1,0 +1,4 @@
+[
+  {"ForumId":32,"TopicId":41,"Name":"Dated child","StartDate":"2026-09-02T00:00:00Z","DueDate":"2026-09-03T00:00:00Z","EndDate":"2026-09-04T00:00:00Z","StartDateAvailabilityType":0,"EndDateAvailabilityType":"2","UnlockStartDate":null,"UnlockEndDate":null,"ActivityId":"discussion-a"},
+  {"ForumId":32,"TopicId":42,"Name":"Undated topic","StartDate":null,"EndDate":null}
+]

@@ -1,0 +1,42 @@
+{
+  "Id": 11,
+  "Name": "Preservation fixture",
+  "CategoryId": 2,
+  "CustomInstructions": {
+    "Html": "<p>Keep <b>formatting</b></p>",
+    "Text": "Keep formatting"
+  },
+  "Availability": {
+    "StartDate": null,
+    "EndDate": null,
+    "StartDateAvailabilityType": 0,
+    "EndDateAvailabilityType": "2"
+  },
+  "DueDate": null,
+  "GroupTypeId": 8,
+  "DisplayInCalendar": true,
+  "NotificationEmail": "fixture@example.invalid",
+  "IsHidden": true,
+  "Assessment": {
+    "ScoreDenominator": 100,
+    "Rubrics": [
+      {
+        "Id": 7
+      }
+    ]
+  },
+  "IsAnonymous": true,
+  "DropboxType": 1,
+  "SubmissionType": 0,
+  "CompletionType": 0,
+  "SubmissionRule": 2,
+  "GradeItemId": 10,
+  "AllowOnlyUsersWithSpecialAccess": true,
+  "Attachments": [
+    {
+      "FileId": 88
+    }
+  ],
+  "TotalFiles": 3,
+  "ActivityId": "assignment-fixture"
+}
