@@ -5,7 +5,7 @@ require('dotenv').config();
 const axios = require('axios');
 const { createHash } = require('node:crypto');
 const lti = require('ltijs').Provider;
-const { createBrightspaceAuth } = require('./src/shared/auth');
+const { createBrightspaceAuth, logOAuthConfiguration } = require('./src/shared/auth');
 const { databaseConfig } = require('./src/shared/database');
 const { createBrightspaceGet, hasScope } = require('./src/shared/client');
 const { createRateLimitedHttp, createMongoGate, rateLimitKey } = require('./src/shared/rateLimit');
@@ -37,9 +37,13 @@ if (missingScopes.length) throw new Error(`BS_OAUTH2_SCOPES must include: ${miss
 if (!/^\d+$/.test(String(port)) || port < 1 || port > 65535) throw new Error('PORT must be a valid TCP port.');
 
 const namespace = createHash('sha256').update(`${brightspace.origin}|${BS_OAUTH2_CLIENT_ID}`).digest('hex');
+const oauthTokenEndpoint = BS_OAUTH2_TOKEN_ENDPOINT || 'https://auth.brightspace.com/core/connect/token';
 const oauth = createBrightspaceAuth({ clientId: BS_OAUTH2_CLIENT_ID, scope: BS_OAUTH2_SCOPES,
   kid: BS_OAUTH2_KEY_ID, privateKeyPem: BS_OAUTH2_PRIVATE_KEY,
-  tokenEndpoint: BS_OAUTH2_TOKEN_ENDPOINT || 'https://auth.brightspace.com/core/connect/token', http: axios });
+  tokenEndpoint: oauthTokenEndpoint, http: axios,
+  onDiagnostic: diagnostic => console.warn(`[oauth] token exchange rejected protocolCode=${diagnostic.protocolCode} cause=${diagnostic.cause}`) });
+logOAuthConfiguration({ clientId: BS_OAUTH2_CLIENT_ID, kid: BS_OAUTH2_KEY_ID,
+  tokenEndpoint: oauthTokenEndpoint, scope: BS_OAUTH2_SCOPES, jwks: oauth.jwks });
 const apiGate = createMongoGate({ uri: DB_MONGODB_URL, key: rateLimitKey(BS_URL, BS_OAUTH2_CLIENT_ID) });
 const apiHttp = createRateLimitedHttp({ http: axios, gate: apiGate, baseUrl: BS_URL });
 const get = createBrightspaceGet({ http: apiHttp, oauth, baseUrl: BS_URL, retries: 2 });

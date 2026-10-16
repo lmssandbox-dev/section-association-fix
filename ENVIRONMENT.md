@@ -38,6 +38,8 @@ Bootstrap sequence: deploy with these settings empty; register the tool in Brigh
 
 The OAuth application needs the two scopes listed above granted. The linked Brightspace Service User also needs permission to read organizational structure and Manage Courses permission to update Course Offerings. Tenant administrators should verify both in a test environment.
 
+For the Service User Client Credentials flow, the signed client assertion's `aud` must exactly match `BS_OAUTH2_TOKEN_ENDPOINT`. With the standard endpoint, use `https://auth.brightspace.com/core/connect/token`. This is the Server-to-Server Service User flow; do not use the LTI Advantage service-token audience `https://api.brightspace.com/auth/token` here. The application publishes the corresponding public key at `/.well-known/brightspace-jwks.json`; its JWK `kid` is derived from `BS_OAUTH2_KEY_ID` and its public key from `BS_OAUTH2_PRIVATE_KEY`.
+
 ## Feature settings
 
 | Setting | Default | Purpose |
