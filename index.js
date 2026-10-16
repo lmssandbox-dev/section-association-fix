@@ -13,25 +13,24 @@ const { createSectionAssociationClient } = require('./src/sectionAssociations/cl
 const { createSectionAssociationStore } = require('./src/sectionAssociations/store');
 const { createReconciler } = require('./src/sectionAssociations/reconciler');
 const { createSectionAssociationService } = require('./src/sectionAssociations/service');
+const { validateRequiredEnvironment, ltiConfiguration, registerBrightspacePlatform,
+  installPublicBootstrapEndpoints } = require('./src/sectionAssociations/config');
 
 const env = process.env;
 const port = Number(env.PORT || 3000);
 const {
-  DB_MONGODB_URL, APP_LTI_SECRET, BS_URL, BS_NAME, BS_LTI_CLIENT_ID, BS_LTI_AUTH_ENDPOINT, BS_LTI_TOKEN_ENDPOINT, BS_LTI_KEYSET_URL,
+  DB_MONGODB_URL, APP_LTI_SECRET, BS_URL,
   BS_OAUTH2_CLIENT_ID, BS_OAUTH2_PRIVATE_KEY, BS_OAUTH2_KEY_ID, BS_OAUTH2_TOKEN_ENDPOINT,
-  BS_OAUTH2_SCOPES, D2L_API_LP_VERSION
+  BS_OAUTH2_SCOPES
 } = env;
-
-const required = { DB_MONGODB_URL, APP_LTI_SECRET, BS_URL, BS_LTI_CLIENT_ID, BS_LTI_AUTH_ENDPOINT, BS_LTI_TOKEN_ENDPOINT, BS_LTI_KEYSET_URL,
-  BS_OAUTH2_CLIENT_ID, BS_OAUTH2_PRIVATE_KEY, BS_OAUTH2_KEY_ID, BS_OAUTH2_SCOPES, D2L_API_LP_VERSION };
-const missing = Object.entries(required).filter(([, value]) => !String(value || '').trim()).map(([key]) => key);
-if (missing.length) throw new Error(`Missing required environment settings: ${missing.join(', ')}`);
+validateRequiredEnvironment(env);
+const D2L_API_LP_VERSION = process.env.D2L_API_LP_VERSION;
+const ltiConfig = ltiConfiguration(env);
 databaseConfig(DB_MONGODB_URL);
 const brightspace = new URL(BS_URL);
 if (brightspace.protocol !== 'https:' || brightspace.username || brightspace.password || brightspace.search || brightspace.hash) {
   throw new Error('BS_URL must be the Brightspace HTTPS origin without credentials, query, or fragment.');
 }
-if (!/^\d+\.\d+$/.test(D2L_API_LP_VERSION)) throw new Error('D2L_API_LP_VERSION must use the form major.minor.');
 const missingScopes = ['organizations:organization:read', 'orgunits:course:update'].filter(scope => !hasScope(BS_OAUTH2_SCOPES, scope));
 if (missingScopes.length) throw new Error(`BS_OAUTH2_SCOPES must include: ${missingScopes.join(', ')}`);
 if (!/^\d+$/.test(String(port)) || port < 1 || port > 65535) throw new Error('PORT must be a valid TCP port.');
@@ -56,27 +55,24 @@ const service = createSectionAssociationService({ client, store, reconciler, sta
 lti.setup(APP_LTI_SECRET, databaseConfig(DB_MONGODB_URL), {
   appRoute: '/', loginRoute: '/login', cookies: { secure: true, sameSite: 'None' }, devMode: false
 });
-lti.whitelist({ route: '/.well-known/brightspace-jwks.json', method: 'get' }, { route: '/ping', method: 'get' });
-lti.app.get('/.well-known/brightspace-jwks.json', (_req, res) => res.json(oauth.jwks));
-lti.app.get('/ping', (_req, res) => res.type('text/plain').send('Section Association service is running.'));
+installPublicBootstrapEndpoints(lti, oauth.jwks);
 lti.onConnect((_token, _req, res) => res.type('html').send('<main><h1>Section Association cleanup</h1><p>Administrative tools are not enabled yet.</p></main>'));
-
-async function registerBrightspace() {
-  await lti.registerPlatform({ url: BS_URL, name: BS_NAME || 'Brightspace', clientId: BS_LTI_CLIENT_ID,
-    authenticationEndpoint: BS_LTI_AUTH_ENDPOINT, accesstokenEndpoint: BS_LTI_TOKEN_ENDPOINT,
-    authConfig: { method: 'JWK_SET', key: BS_LTI_KEYSET_URL } });
-}
 
 async function start() {
   try {
     await lti.deploy({ port });
-    await registerBrightspace();
+    if (ltiConfig.complete) console.log('LTI configured: Brightspace platform registration enabled.');
+    else console.log('LTI setup mode: Brightspace LTI registration is not fully configured.');
     console.log(`Section Association cleanup service listening on ${port}; dry-run=${dryRun}.`);
     void service.fastTick();
     const fastTimer = setInterval(() => { void service.fastTick(); }, fastMinutes * 60000);
     const recoveryTimer = setInterval(() => { void service.recoveryTick(); }, recoveryHours * 60 * 60000);
     fastTimer.unref?.();
     recoveryTimer.unref?.();
+    if (ltiConfig.complete) {
+      try { await registerBrightspacePlatform(lti, ltiConfig); }
+      catch { console.error('Brightspace LTI platform registration failed; Section Association processing remains active.'); }
+    }
   } catch (error) {
     console.error(`Section Association service startup failed: ${String(error?.message || 'unknown error').replace(/[\r\n]/g, ' ')}`);
     process.exit(1);

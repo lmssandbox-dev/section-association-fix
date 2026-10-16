@@ -18,9 +18,13 @@ The fast loop discovers every 15 minutes and handles stable new associations. Th
 
 ## Authentication
 
-Background calls use Brightspace Server-to-Server OAuth 2.0 client credentials with a signed private-key JWT. LTI 1.3 registration and launch support remain available as the boundary for a future admin portal; no worker action depends on an LTI user session.
+Background calls use Brightspace Server-to-Server OAuth 2.0 client credentials with a signed private-key JWT. LTI 1.3 registration is optional at startup; no worker action depends on an LTI user session.
 
 The service account needs OAuth scopes `organizations:organization:read` and `orgunits:course:update`, plus Brightspace organizational-structure read access and Manage Courses permission to update Course Offerings. These scopes must be granted to the OAuth application and listed in `BS_OAUTH2_SCOPES`.
+
+## LTI bootstrap
+
+Deploy first with the `BS_LTI_*` settings empty. The service starts in LTI setup mode, runs the Section Association worker, and serves `/ping` and `/.well-known/brightspace-jwks.json`. Register the tool in Brightspace using the public application keyset URL `https://<your-render-service>.onrender.com/.well-known/brightspace-jwks.json` (or the equivalent URL on your configured public domain). After Brightspace returns the LTI Client ID and Deployment ID, configure all five `BS_LTI_*` values and redeploy. The next startup registers the Brightspace platform and enables LTI launches. Partial LTI configuration is treated as setup mode.
 
 ## Run
 
