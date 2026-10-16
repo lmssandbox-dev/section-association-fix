@@ -2,7 +2,7 @@
 
 ## Components
 
-`index.js` is the composition root. It validates environment configuration, creates the service-account OAuth client, passes all Brightspace traffic through the existing authenticated GET and Mongo-backed rate-limited HTTP stack, wires the section-association feature, and starts the LTI provider and scheduled service.
+`index.js` is the web composition root. `src/sectionAssociations/runtime.js` builds the shared service-account OAuth client, Mongo-backed rate-limited HTTP stack, store, and Section Association service; both `index.js` and `scripts/run-section-association.js` use it. The web composition starts the LTI provider and selects cron or internal triggering without duplicating worker logic.
 
 `src/sectionAssociations/client.js` contains bounded bookmark pagination and feature-specific API calls. Its PUT path is restricted to `/d2l/api/lp/{version}/courses/{numericId}`. `rules.js` enforces the exact association-code pattern and group suffix. `resolver.js` validates every child and resolves exact offering codes. `reconciler.js` checks and prepares all target course records before any PUT, then performs fresh GET → full PUT → verification GET. `store.js` keeps namespaced association metadata and baseline state in dedicated MongoDB collections. `service.js` owns discovery and scheduled passes.
 
@@ -26,7 +26,7 @@ If a PUT response is lost or otherwise uncertain, the worker performs a read-bac
 
 The first successful discovery obtains a Mongo-backed baseline lease, records all matching associations as baseline records, and performs no writes. The lease prevents concurrent application instances from classifying the same first-run population differently. If baseline persistence fails, its lease is released or allowed to expire and no reconciliation starts.
 
-Subsequent fast discovery runs every 15 minutes. New records receive `firstSeenAt` and wait ten minutes before processing. The four-hour recovery loop revisits incomplete records through the same discovery and reconciliation functions. Completed items are skipped. Intervals and stability duration can be configured with the documented environment settings.
+New records receive `firstSeenAt` and wait ten minutes before processing. In internal trigger mode, fast discovery runs immediately and then every configured interval; the independent recovery timer runs at its configured cadence. In cron mode, each `scripts/run-section-association.js` invocation runs one fast cycle and checks namespaced Mongo scheduler metadata to decide whether recovery is due. `section_association_meta` stores the cron lease and `lastRecoveryAt`; only successful recovery advances that timestamp. Overlapping cron executions contend on an atomic lease and later invocations skip while it is held. Both trigger modes call the same discovery and reconciliation functions. Intervals and stability duration use the documented environment settings.
 
 ## Persistence
 

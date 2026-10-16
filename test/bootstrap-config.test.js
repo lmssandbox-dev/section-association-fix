@@ -4,8 +4,10 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   REQUIRED_ENVIRONMENT, LTI_ENVIRONMENT, validateRequiredEnvironment,
-  ltiConfiguration, registerBrightspacePlatform, installPublicBootstrapEndpoints
+  ltiConfiguration, registerBrightspacePlatform, installPublicBootstrapEndpoints,
+  sectionAssociationTriggerMode, validateWorkerEnvironment
 } = require('../src/sectionAssociations/config');
+const { startSectionAssociationTrigger } = require('../src/sectionAssociations/trigger');
 
 function validEnvironment(overrides = {}) {
   return {
@@ -95,4 +97,30 @@ test('public bootstrap routes expose ping and only the supplied public JWKS', ()
   routes.get('/ping')({}, response);
   assert.equal(response.contentType, 'text/plain');
   assert.match(response.body, /running/);
+});
+
+test('trigger mode defaults to cron and rejects ambiguous values', () => {
+  assert.equal(sectionAssociationTriggerMode({}), 'cron');
+  assert.equal(sectionAssociationTriggerMode({ SECTION_ASSOCIATION_FIX_TRIGGER_MODE: 'internal' }), 'internal');
+  assert.throws(() => sectionAssociationTriggerMode({ SECTION_ASSOCIATION_FIX_TRIGGER_MODE: 'automatic' }), /must be either cron or internal/);
+});
+
+test('cron trigger does not start internal scheduler while internal trigger does', () => {
+  let calls = 0;
+  const logs = [];
+  const scheduler = () => { calls++; return { started: true }; };
+  assert.equal(startSectionAssociationTrigger({ mode: 'cron', service: {}, scheduler, logger: { log: value => logs.push(value) } }), null);
+  assert.equal(calls, 0);
+  assert.equal(startSectionAssociationTrigger({ mode: 'internal', service: {}, scheduler, logger: { log: value => logs.push(value) } }).started, true);
+  assert.equal(calls, 1);
+  assert.deepEqual(logs, ['[section-association] trigger mode=cron internal scheduler disabled', '[section-association] trigger mode=internal']);
+});
+
+test('cron worker validation does not require APP_LTI_SECRET or any LTI registration values', () => {
+  const env = Object.fromEntries(['DB_MONGODB_URL','BS_URL','BS_OAUTH2_CLIENT_ID','BS_OAUTH2_PRIVATE_KEY','BS_OAUTH2_KEY_ID',
+    'BS_OAUTH2_TOKEN_ENDPOINT','BS_OAUTH2_SCOPES','D2L_API_LP_VERSION','SECTION_ASSOCIATION_FIX_DRY_RUN'].map(key => [key, 'configured']));
+  env.D2L_API_LP_VERSION = '1.53';
+  assert.equal(validateWorkerEnvironment(env), true);
+  delete env.BS_OAUTH2_CLIENT_ID;
+  assert.throws(() => validateWorkerEnvironment(env), /BS_OAUTH2_CLIENT_ID/);
 });

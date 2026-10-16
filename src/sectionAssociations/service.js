@@ -47,7 +47,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     if (busy) {
       logEvent(logger, 'warn', 'fast cycle skipped', { reason: 'already-running' });
       logEvent(logger, 'info', 'fast cycle finished', { status: 'skipped', elapsedMs: Math.max(0, now() - startedAt) });
-      return;
+      return { status: 'skipped' };
     }
     busy = true;
     let phase = 'discovery';
@@ -66,7 +66,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
           stabilityLogged.clear();
         }
         succeeded = true;
-        return;
+        return { status: 'completed' };
       }
       const time = now();
       for (const item of associations) {
@@ -95,12 +95,14 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
       }
       logDiscovery(stats);
       succeeded = true;
+      return { status: 'completed' };
     } catch (error) {
       const errorPhase = error?.phase || phase;
       const endpoint = error?.endpoint || (errorPhase === 'oauth' ? 'oauth-token' : ['discovery', 'oauth/api-read'].includes(errorPhase) ? 'association-candidates' : undefined);
       logEvent(logger, 'error', 'fast cycle failed', safeErrorFields(error, {
         phase: errorPhase, endpoint, elapsedMs: Math.max(0, now() - startedAt)
       }));
+      return { status: 'failed', phase: errorPhase, code: error?.code };
     } finally {
       busy = false;
       if (succeeded) logEvent(logger, 'info', 'fast cycle completed', stats);
@@ -115,7 +117,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     if (busy) {
       logEvent(logger, 'warn', 'recovery cycle skipped', { reason: 'already-running' });
       logEvent(logger, 'info', 'recovery cycle finished', { status: 'skipped', elapsedMs: Math.max(0, now() - startedAt) });
-      return;
+      return { status: 'skipped' };
     }
     busy = true;
     let phase = 'discovery';
@@ -134,7 +136,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
           stabilityLogged.clear();
         }
         succeeded = true;
-        return;
+        return { status: 'completed' };
       }
       for (const item of associations) {
         const id = String(item.Identifier ?? item.OrgUnitId);
@@ -165,12 +167,14 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
         phase = 'database';
       }
       succeeded = true;
+      return { status: 'completed' };
     } catch (error) {
       const errorPhase = error?.phase || phase;
       const endpoint = error?.endpoint || (errorPhase === 'oauth' ? 'oauth-token' : ['discovery', 'oauth/api-read'].includes(errorPhase) ? 'association-candidates' : undefined);
       logEvent(logger, 'error', 'recovery cycle failed', safeErrorFields(error, {
         phase: errorPhase, endpoint, elapsedMs: Math.max(0, now() - startedAt)
       }));
+      return { status: 'failed', phase: errorPhase, code: error?.code };
     } finally {
       busy = false;
       if (succeeded) logEvent(logger, 'info', 'recovery cycle completed', { pending: stats.pending, blocked: stats.blocked, completed: stats.completed });

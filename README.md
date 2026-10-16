@@ -22,6 +22,14 @@ Background calls use Brightspace Server-to-Server OAuth 2.0 client credentials w
 
 The service account needs OAuth scopes `organizations:organization:read` and `orgunits:course:update`, plus Brightspace organizational-structure read access and Manage Courses permission to update Course Offerings. These scopes must be granted to the OAuth application and listed in `BS_OAUTH2_SCOPES`.
 
+## Hosting / Trigger Modes
+
+`SECTION_ASSOCIATION_FIX_TRIGGER_MODE=cron` is the default for Render Free and other sleeping web services. The web service hosts LTI and bootstrap endpoints without in-process recurring timers. Configure one Render Cron Job from this repository on `*/15 * * * *` with command `npm run cron:section-association`. Every run performs one fast cycle and uses persisted Mongo metadata to run recovery only when the four-hour interval is due.
+
+Set `SECTION_ASSOCIATION_FIX_TRIGGER_MODE=internal` for future always-on hosting. The web process then starts an immediate fast cycle and the existing independent recurring fast and recovery timers; no external Cron Job is required. Both modes use the same service and reconciliation engine.
+
+To migrate cron → always-on: upgrade the web service, set trigger mode to `internal`, disable/delete the Cron Job, deploy, and confirm the internal-mode startup, immediate cycle, next fast cycle, and recovery timing. Keep the same Mongo state, baseline, OAuth credentials, Service User, and reconciliation engine. To migrate always-on → cron: set mode to `cron`, deploy, enable one external Cron Job at the schedule above, and keep the same Mongo/OAuth configuration and association state.
+
 ## LTI bootstrap
 
 Deploy first with the `BS_LTI_*` settings empty. The service starts in LTI setup mode, runs the Section Association worker, and serves `/ping` and `/.well-known/brightspace-jwks.json`. Register the tool in Brightspace using the public application keyset URL `https://<your-render-service>.onrender.com/.well-known/brightspace-jwks.json` (or the equivalent URL on your configured public domain). After Brightspace returns the LTI Client ID and Deployment ID, configure all five `BS_LTI_*` values and redeploy. The next startup registers the Brightspace platform and enables LTI launches. Partial LTI configuration is treated as setup mode.

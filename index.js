@@ -3,28 +3,22 @@
 require('dotenv').config();
 
 const axios = require('axios');
-const { createHash } = require('node:crypto');
 const lti = require('ltijs').Provider;
-const { createBrightspaceAuth, logOAuthConfiguration } = require('./src/shared/auth');
 const { databaseConfig } = require('./src/shared/database');
-const { createBrightspaceGet, hasScope } = require('./src/shared/client');
-const { createRateLimitedHttp, createMongoGate, rateLimitKey } = require('./src/shared/rateLimit');
-const { createSectionAssociationClient } = require('./src/sectionAssociations/client');
-const { createSectionAssociationStore } = require('./src/sectionAssociations/store');
-const { createReconciler } = require('./src/sectionAssociations/reconciler');
-const { createSectionAssociationService } = require('./src/sectionAssociations/service');
-const { startSectionAssociationScheduler } = require('./src/sectionAssociations/scheduler');
+const { hasScope } = require('./src/shared/client');
+const { startSectionAssociationTrigger } = require('./src/sectionAssociations/trigger');
+const { createSectionAssociationRuntime, positiveInteger } = require('./src/sectionAssociations/runtime');
 const { validateRequiredEnvironment, ltiConfiguration, registerBrightspacePlatform,
-  installPublicBootstrapEndpoints } = require('./src/sectionAssociations/config');
+  installPublicBootstrapEndpoints, sectionAssociationTriggerMode } = require('./src/sectionAssociations/config');
 
 const env = process.env;
 const port = Number(env.PORT || 3000);
 const {
   DB_MONGODB_URL, APP_LTI_SECRET, BS_URL,
-  BS_OAUTH2_CLIENT_ID, BS_OAUTH2_PRIVATE_KEY, BS_OAUTH2_KEY_ID, BS_OAUTH2_TOKEN_ENDPOINT,
   BS_OAUTH2_SCOPES
 } = env;
 validateRequiredEnvironment(env);
+const triggerMode = sectionAssociationTriggerMode(env);
 const D2L_API_LP_VERSION = process.env.D2L_API_LP_VERSION;
 const ltiConfig = ltiConfiguration(env);
 databaseConfig(DB_MONGODB_URL);
@@ -36,25 +30,8 @@ const missingScopes = ['organizations:organization:read', 'orgunits:course:updat
 if (missingScopes.length) throw new Error(`BS_OAUTH2_SCOPES must include: ${missingScopes.join(', ')}`);
 if (!/^\d+$/.test(String(port)) || port < 1 || port > 65535) throw new Error('PORT must be a valid TCP port.');
 
-const namespace = createHash('sha256').update(`${brightspace.origin}|${BS_OAUTH2_CLIENT_ID}`).digest('hex');
-const oauthTokenEndpoint = BS_OAUTH2_TOKEN_ENDPOINT || 'https://auth.brightspace.com/core/connect/token';
-const oauth = createBrightspaceAuth({ clientId: BS_OAUTH2_CLIENT_ID, scope: BS_OAUTH2_SCOPES,
-  kid: BS_OAUTH2_KEY_ID, privateKeyPem: BS_OAUTH2_PRIVATE_KEY,
-  tokenEndpoint: oauthTokenEndpoint, http: axios,
-  onDiagnostic: diagnostic => console.warn(`[oauth] token exchange rejected protocolCode=${diagnostic.protocolCode} cause=${diagnostic.cause}`) });
-logOAuthConfiguration({ clientId: BS_OAUTH2_CLIENT_ID, kid: BS_OAUTH2_KEY_ID,
-  tokenEndpoint: oauthTokenEndpoint, scope: BS_OAUTH2_SCOPES, jwks: oauth.jwks });
-const apiGate = createMongoGate({ uri: DB_MONGODB_URL, key: rateLimitKey(BS_URL, BS_OAUTH2_CLIENT_ID) });
-const apiHttp = createRateLimitedHttp({ http: axios, gate: apiGate, baseUrl: BS_URL });
-const get = createBrightspaceGet({ http: apiHttp, oauth, baseUrl: BS_URL, retries: 2 });
-const client = createSectionAssociationClient({ get, http: apiHttp, oauth, baseUrl: BS_URL, lpVersion: D2L_API_LP_VERSION });
-const store = createSectionAssociationStore({ uri: DB_MONGODB_URL, namespace });
-const dryRun = !/^(false|0|no)$/i.test(env.SECTION_ASSOCIATION_FIX_DRY_RUN || 'true');
-const stabilityMinutes = positiveInteger(env.SECTION_ASSOCIATION_FIX_STABILITY_MINUTES, 10);
-const fastMinutes = positiveInteger(env.SECTION_ASSOCIATION_FIX_FAST_INTERVAL_MINUTES, 15);
-const recoveryHours = positiveInteger(env.SECTION_ASSOCIATION_FIX_RECOVERY_INTERVAL_HOURS, 4);
-const reconciler = createReconciler({ client, store, dryRun });
-const service = createSectionAssociationService({ client, store, reconciler, stabilityMinutes });
+const runtime = createSectionAssociationRuntime({ env, http: axios });
+const { oauth, service, fastIntervalMinutes: fastMinutes, recoveryIntervalHours: recoveryHours, dryRun } = runtime;
 let sectionAssociationScheduler;
 
 // LTI remains available as the future protected admin layer. The worker never uses an LTI token.
@@ -70,7 +47,7 @@ async function start() {
     if (ltiConfig.complete) console.log('LTI configured: Brightspace platform registration enabled.');
     else console.log('LTI setup mode: Brightspace LTI registration is not fully configured.');
     console.log(`Section Association cleanup service listening on ${port}; dry-run=${dryRun}.`);
-    sectionAssociationScheduler = startSectionAssociationScheduler({ service,
+    sectionAssociationScheduler = startSectionAssociationTrigger({ mode: triggerMode, service,
       fastIntervalMinutes: fastMinutes, recoveryIntervalHours: recoveryHours });
     if (ltiConfig.complete) {
       try { await registerBrightspacePlatform(lti, ltiConfig); }
@@ -82,12 +59,5 @@ async function start() {
   }
 }
 
-function positiveInteger(value, fallback) {
-  if (value == null || value === '') return fallback;
-  const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 10080) throw new Error('Section Association schedule settings must be positive whole numbers.');
-  return parsed;
-}
-
 if (require.main === module) void start();
-module.exports = { start, positiveInteger };
+module.exports = { start, positiveInteger, triggerMode };

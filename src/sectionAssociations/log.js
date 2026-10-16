@@ -1,6 +1,7 @@
 'use strict';
 
 const EVENTS = new Set([
+  'cron started', 'cron completed', 'cron failed', 'cron skipped', 'recovery due',
   'scheduler started', 'fast cycle started', 'fast cycle completed', 'fast cycle failed', 'fast cycle finished', 'fast cycle skipped',
   'recovery cycle started', 'recovery cycle completed', 'recovery cycle failed', 'recovery cycle finished', 'recovery cycle skipped',
   'discovery completed', 'baseline recorded', 'reconcile started',
@@ -11,7 +12,7 @@ const EVENTS = new Set([
 const FIELDS = new Set([
   'candidates', 'new', 'alreadyKnown', 'pending', 'completed', 'blocked', 'fastIntervalMinutes', 'recoveryIntervalHours',
   'associationId', 'targetId', 'code', 'children', 'targets', 'action',
-  'isActive', 'reason', 'skipped', 'phase', 'code', 'protocolCode', 'httpStatus', 'endpoint', 'elapsedMs', 'status', 'fatal'
+  'isActive', 'reason', 'skipped', 'phase', 'code', 'protocolCode', 'httpStatus', 'endpoint', 'elapsedMs', 'status', 'fatal', 'due'
 ]);
 
 const PHASES = new Set(['discovery', 'database', 'oauth/api-read', 'oauth', 'reconciliation', 'scheduler']);
@@ -38,6 +39,7 @@ function safeValue(key, value, event) {
   if (key === 'endpoint') return ['association-candidates', 'oauth-token', 'brightspace-api'].includes(value) ? value : null;
   if (key === 'status') return ['completed', 'failed', 'skipped'].includes(value) ? value : null;
   if (key === 'fatal') return typeof value === 'boolean' ? String(value) : null;
+  if (key === 'due') return typeof value === 'boolean' ? String(value) : null;
   if (key === 'action') return ['would-inactivate', 'already-inactive', 'read-back-required'].includes(value) ? value : null;
   if (key === 'isActive') return value === false ? 'false' : null;
   return null;

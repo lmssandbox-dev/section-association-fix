@@ -1,6 +1,7 @@
 'use strict';
 
 const { MongoClient } = require('mongodb');
+const { randomUUID } = require('node:crypto');
 
 function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date.now }) {
   const client = mongoClient || new MongoClient(uri, { serverSelectionTimeoutMS: 10000, socketTimeoutMS: 15000 });
@@ -72,8 +73,47 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
     const { associations } = await collections();
     return associations.find({ namespace, status: { $ne: 'completed' }, baseline: { $ne: true } }).toArray();
   }
+  const cronMetaId = `cron:${namespace}`;
+  async function acquireCronLease(leaseMs = 120000) {
+    const { meta } = await collections();
+    const time = new Date(now());
+    const token = randomUUID();
+    try {
+      const result = await meta.findOneAndUpdate({ _id: cronMetaId,
+        $or: [{ leaseUntil: { $lte: time } }, { leaseUntil: { $exists: false } }] },
+      { $set: { leaseToken: token, leaseUntil: new Date(time.getTime() + leaseMs) },
+        $setOnInsert: { namespace } }, { upsert: true, returnDocument: 'after' });
+      return result.value?.leaseToken === token ? token : null;
+    } catch (error) {
+      if (error.code === 11000) return null;
+      throw error;
+    }
+  }
+  async function renewCronLease(token, leaseMs = 120000) {
+    const { meta } = await collections();
+    const time = new Date(now());
+    const result = await meta.updateOne({ _id: cronMetaId, leaseToken: token, leaseUntil: { $gt: time } },
+      { $set: { leaseUntil: new Date(time.getTime() + leaseMs) } });
+    if (result.matchedCount !== 1) throw Object.assign(new Error('Section Association cron lease lost.'), { code: 'CRON_LEASE_LOST' });
+  }
+  async function releaseCronLease(token) {
+    const { meta } = await collections();
+    await meta.updateOne({ _id: cronMetaId, leaseToken: token }, { $unset: { leaseToken: '', leaseUntil: '' } });
+  }
+  async function recoveryDue(intervalMs) {
+    const { meta } = await collections();
+    const state = await meta.findOne({ _id: cronMetaId }, { projection: { lastRecoveryAt: 1 } });
+    return !Number.isFinite(state?.lastRecoveryAt) || now() - state.lastRecoveryAt >= intervalMs;
+  }
+  async function markRecoveryCompleted(token) {
+    const { meta } = await collections();
+    const result = await meta.updateOne({ _id: cronMetaId, leaseToken: token, leaseUntil: { $gt: new Date(now()) } },
+      { $set: { lastRecoveryAt: now() } });
+    if (result.matchedCount !== 1) throw Object.assign(new Error('Section Association cron lease lost.'), { code: 'CRON_LEASE_LOST' });
+  }
   async function close() { if (!mongoClient) await client.close(); }
-  return { get, record, baselineStatus, beginBaseline, finishBaseline, releaseBaseline, listUncompleted, close };
+  return { get, record, baselineStatus, beginBaseline, finishBaseline, releaseBaseline, listUncompleted,
+    acquireCronLease, renewCronLease, releaseCronLease, recoveryDue, markRecoveryCompleted, close };
 }
 
 module.exports = { createSectionAssociationStore };
