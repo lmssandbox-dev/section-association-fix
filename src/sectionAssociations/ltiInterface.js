@@ -5,27 +5,48 @@ const { deploymentGuard } = require('../shared/deploymentGuard');
 const PAGE = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Section Association Fix</title><style>
-:root{color-scheme:light;--ink:#202a35;--muted:#5d6975;--line:#dce2e8;--surface:#fff;--accent:#075985}
-*{box-sizing:border-box}body{margin:0;background:#f5f7f9;color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
-main{max-width:760px;margin:32px auto;padding:0 18px}h1{font-size:1.45rem;margin:0 0 18px}h2{font-size:1rem;margin:0 0 12px}
-section{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:16px;margin:12px 0}
-dl{display:grid;grid-template-columns:minmax(145px,1fr) 2fr;gap:7px 14px;margin:0}dt{color:var(--muted)}dd{margin:0;overflow-wrap:anywhere}
-button{border:0;border-radius:5px;padding:9px 14px;background:var(--accent);color:#fff;font:inherit;cursor:pointer}button:focus-visible{outline:3px solid #7dd3fc;outline-offset:2px}
-#notice{min-height:1.5em;color:var(--muted);margin:8px 0 0}.muted{color:var(--muted)}@media(max-width:520px){main{margin:18px auto}section{padding:13px}dl{grid-template-columns:1fr;gap:0}dd{margin:0 0 8px}}
-</style></head><body><main><h1>Section Association Fix</h1>
-<section><h2>Service status</h2><dl><dt>Availability</dt><dd id="availability">Loading</dd><dt>Worker</dt><dd id="worker">Loading</dd><dt>Latest execution</dt><dd id="latest">Loading</dd></dl></section>
-<section><h2>Latest execution</h2><dl><dt>Associations checked</dt><dd id="checked">Unavailable</dd><dt>Already compliant</dt><dd id="compliant">Unavailable</dd><dt>Corrections applied</dt><dd id="corrections">Unavailable</dd><dt>Errors</dt><dd id="errors">Unavailable</dd><dt>Coverage</dt><dd id="coverage">Unavailable</dd><dt>CSV report</dt><dd>Unavailable</dd></dl></section>
-<section><h2>Actions</h2><button id="refresh" type="button">Refresh</button><p id="notice" role="status" aria-live="polite"></p><p class="muted">Validation and corrective actions are not available in this interface.</p></section>
+:root{color-scheme:light;--ink:#202a35;--muted:#5c6670;--line:#cdd5dc;--surface:#fff;--page:#f5f6f7;--accent:#006fbf;--ok:#287d3c;--warn:#8a5a00;--bad:#b21f2d}
+*{box-sizing:border-box}body{margin:0;background:var(--page);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:820px;margin:24px auto;padding:0 20px}header{margin:0 0 16px}h1{font-size:1.45rem;line-height:1.25;font-weight:600;margin:0}h2{font-size:1rem;line-height:1.35;font-weight:600;margin:0 0 14px}
+section{background:var(--surface);border:1px solid var(--line);border-radius:4px;padding:18px;margin:12px 0}
+.status-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 24px}.status-item,.execution-item{min-width:0}.label{display:block;color:var(--muted);font-size:.875rem;margin-bottom:2px}.state{display:inline-flex;align-items:center;gap:8px;font-weight:600}.state::before{content:"";width:9px;height:9px;flex:0 0 9px;border-radius:50%;background:#68737d}.state.available::before,.state.idle::before{background:var(--ok)}.state.running::before{background:var(--accent)}.state.error::before,.state.unavailable::before{background:var(--bad)}.state.unknown::before{background:#68737d}
+.execution-meta{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px 24px;margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}.execution-value{overflow-wrap:anywhere}
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));border-top:1px solid var(--line);border-left:1px solid var(--line)}.metric{min-width:0;padding:12px;border-right:1px solid var(--line);border-bottom:1px solid var(--line)}.metric.backlog{background:#f0f7fc;border-top:3px solid var(--accent);padding-top:9px}.metric-value{display:block;font-size:1.45rem;line-height:1.25;font-weight:600;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}.metric-label{display:block;color:var(--muted);font-size:.875rem;margin-top:4px}.coverage-note,.empty-state{color:var(--muted);margin:12px 0 0}.empty-state{margin:0}
+.actions{display:flex;align-items:center;gap:14px;flex-wrap:wrap}button{border:1px solid #006fbf;border-radius:4px;padding:8px 16px;background:var(--accent);color:#fff;font:inherit;font-weight:600;cursor:pointer}button:hover{background:#005a9e}button:focus-visible{outline:3px solid #1f7fba;outline-offset:3px}#updated,#notice{color:var(--muted);font-size:.875rem;margin:0}#notice{min-height:1.5em;margin-top:10px}.placeholder{color:var(--muted)}[hidden]{display:none!important}
+@media(max-width:520px){main{margin:16px auto;padding:0 12px}section{padding:14px}.status-list{grid-template-columns:1fr 1fr;gap:10px 14px}.execution-meta{grid-template-columns:1fr;gap:8px}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.actions{gap:10px}}
+</style></head><body><main><header><h1>Section Association Fix</h1></header>
+<section aria-labelledby="service-heading"><h2 id="service-heading">Service status</h2><div class="status-list">
+<div class="status-item"><span class="label">Availability</span><span id="availability" class="state unknown" role="status">Loading</span></div>
+<div class="status-item"><span class="label">Worker</span><span id="worker" class="state unknown" role="status">Loading</span></div></div>
+<div id="executionMeta" class="execution-meta" hidden>
+<div class="execution-item"><span class="label">Last execution</span><span id="latestDate" class="execution-value placeholder">—</span></div>
+<div class="execution-item"><span class="label">Outcome</span><span id="outcome" class="execution-value placeholder">—</span></div>
+<div class="execution-item"><span class="label">Source</span><span id="source" class="execution-value placeholder">—</span></div>
+</div></section>
+<section aria-labelledby="latest-heading"><h2 id="latest-heading">Latest execution</h2><p id="empty" class="empty-state" hidden>No maintenance execution recorded yet.</p>
+<div id="metrics" class="metrics" hidden>
+<div class="metric"><span id="checked" class="metric-value">—</span><span class="metric-label">Associations checked</span></div>
+<div class="metric"><span id="compliant" class="metric-value">—</span><span class="metric-label">Already compliant</span></div>
+<div class="metric"><span id="corrections" class="metric-value">—</span><span class="metric-label">Corrections applied</span></div>
+<div class="metric"><span id="errors" class="metric-value">—</span><span class="metric-label">Errors</span></div>
+<div id="backlogMetric" class="metric backlog"><span id="backlog" class="metric-value">—</span><span class="metric-label">Remaining historical backlog</span></div>
+</div><p id="coverageNote" class="coverage-note" hidden></p></section>
+<section aria-labelledby="actions-heading"><h2 id="actions-heading">Actions</h2><div class="actions"><button id="refresh" type="button">Refresh</button><span id="updated" aria-live="polite">Not updated yet</span></div><p id="notice" role="status" aria-live="polite"></p></section>
 </main><script>
 const ltiToken=__LTI_TOKEN__;
-const fields=['availability','worker','latest','checked','compliant','corrections','errors','coverage'];
 function set(id,value){document.getElementById(id).textContent=value}
-function unavailable(message,worker='Unavailable'){set('availability','Unavailable');set('worker',worker);set('latest','Unavailable');for(const id of fields.slice(3))set(id,'Unavailable');set('notice',message)}
+function neutral(id){set(id,'—')}
+function statusText(value){if(typeof value!=='string'||!value.trim())return 'Unknown';return value.trim().replace(/(^|[-_\\s])\\w/g,letter=>letter.toUpperCase()).replace(/-/g,' ')}
+function renderState(id,value,category){const node=document.getElementById(id);const label=statusText(value);node.textContent=label;const state=label.toLowerCase();node.className='state '+(category==='availability'?(state==='available'?'available':'unavailable'):['running','idle','error'].includes(state)?state:'unknown')}
+function clearExecution(){document.getElementById('executionMeta').hidden=true;document.getElementById('metrics').hidden=true;document.getElementById('empty').hidden=true;document.getElementById('coverageNote').hidden=true;for(const id of ['latestDate','outcome','source','checked','compliant','corrections','errors','backlog'])neutral(id)}
+function unavailable(message,worker='Unavailable'){renderState('availability','Unavailable','availability');renderState('worker',worker,'worker');clearExecution();set('updated','');set('notice',message)}
+function formatDate(value){if(!value)return '—';const date=new Date(value);return Number.isNaN(date.getTime())?'—':new Intl.DateTimeFormat(undefined,{dateStyle:'medium',timeStyle:'short'}).format(date)}
+function metricValue(id,value){set(id,Number.isSafeInteger(value)&&value>=0?String(value):'—')}
 async function refresh(){set('notice','Refreshing…');try{const response=await fetch('/api/section-association/status',{credentials:'same-origin',headers:{Accept:'application/json',Authorization:'Bearer '+ltiToken}});if(!response.ok){if(response.status===401)unavailable('LTI session expired. Relaunch this tool from Brightspace.','Authentication required');else if(response.status===403)unavailable('This LTI deployment is not authorized.','Not authorized');else if(response.status>=500)unavailable('Status service temporarily unavailable. Retry shortly.','Unavailable');else unavailable('Status request failed (HTTP '+response.status+').');return}const data=await response.json();
-set('availability',data.availability);set('worker',data.worker);const execution=data.latestExecution;
-if(!execution){set('latest','No maintenance execution recorded yet.');for(const id of fields.slice(3))set(id,'Unavailable')}
-else{const source=execution.source==='manual'?'Manual maintenance':'Automatic maintenance';const started=execution.startedAt?new Date(execution.startedAt).toLocaleString():'Unavailable';const completed=execution.completedAt?new Date(execution.completedAt).toLocaleString():'Unavailable';set('latest',source+' · Started '+started+' · Finished '+completed+' · '+(execution.status||'Outcome unavailable'));set('checked',String(execution.associationsChecked??'Unavailable'));set('compliant',String(execution.alreadyCompliant??'Unavailable'));set('corrections',String(execution.correctionsApplied??'Unavailable'));set('errors',String(execution.errors??'Unavailable'));set('coverage',execution.coverage?.type==='bounded-cycle'?'Bounded cycle; historical backlog remaining: '+execution.coverage.remainingHistoricalBacklog+' (full scan completion is not tracked)':'Unavailable')}
-set('notice','Updated');
+renderState('availability',data.availability,'availability');renderState('worker',data.worker,'worker');const execution=data.latestExecution;
+if(!execution){clearExecution();document.getElementById('empty').hidden=false}
+else{document.getElementById('executionMeta').hidden=false;document.getElementById('metrics').hidden=false;document.getElementById('empty').hidden=true;set('latestDate',formatDate(execution.startedAt));set('outcome',execution.status?statusText(execution.status):'—');set('source',execution.source==='manual'?'Manual maintenance':execution.source==='automatic'?'Automatic maintenance':'—');metricValue('checked',execution.associationsChecked);metricValue('compliant',execution.alreadyCompliant);metricValue('corrections',execution.correctionsApplied);metricValue('errors',execution.errors);const coverage=execution.coverage;const hasBacklog=coverage?.type==='bounded-cycle'&&Number.isSafeInteger(coverage.remainingHistoricalBacklog)&&coverage.remainingHistoricalBacklog>=0;set('backlog',hasBacklog?String(coverage.remainingHistoricalBacklog):'—');document.getElementById('coverageNote').hidden=coverage?.type!=='bounded-cycle';if(coverage?.type==='bounded-cycle')set('coverageNote','Bounded cycle; full-scan completion is not tracked.')}
+set('updated','Last updated '+new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit'}).format(new Date()));set('notice','');
 }catch{unavailable('Could not reach the status service. Check your connection and retry.')}}
 document.getElementById('refresh').addEventListener('click',refresh);refresh();
 </script></body></html>`;
