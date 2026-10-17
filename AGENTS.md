@@ -1,45 +1,30 @@
 # Project guide
 
-Brightspace Section Association Fix is a Node.js LTI 1.3 service that discovers IPSIS Section Association Course Offerings, resolves their grouped sections to original standalone Course Offerings, and inactivates those originals.
+Brightspace Section Association Fix is a Node.js 22 service that discovers IPSIS Section Association Course Offerings, resolves grouped sections to original standalone Course Offerings, and inactivates those originals.
 
 ## Architecture
 
-- `index.js` validates web configuration, wires the LTI provider, and selects cron or internal trigger mode. `src/sectionAssociations/runtime.js` wires the shared OAuth service account, rate-limited transport, MongoDB state, and Section Association service for both web and one-shot cron execution.
-- `src/shared/` contains Brightspace service-account OAuth, HTTPS/API transport, MongoDB URL validation, and the shared cross-process API rate gate.
-- `src/sectionAssociations/` contains discovery rules, exact-code resolution, safe Course Offering updates, persistence, scheduling, and reconciliation.
-- `test/section-associations.test.js` covers feature safety rules.
+- `index.js` composes web configuration, optional LTI setup, and trigger mode.
+- `src/shared/` contains service-account OAuth, HTTPS/API transport, Mongo URL validation, and shared rate limiting.
+- `src/sectionAssociations/` contains discovery, resolution, validation, persistence, scheduling, and one reconciliation engine shared by cron and internal modes.
+- The recurring Section Association Fix worker is the production processing path; historical baseline records are included in its bounded work selection.
 
-The background worker uses only the OAuth service account. LTI remains a shell for a future protected admin portal and is not required for reconciliation.
+The worker uses only the Brightspace OAuth service account. LTI is not required for reconciliation.
 
-## Hosting / Trigger Modes
+## Trigger modes
 
-`SECTION_ASSOCIATION_FIX_TRIGGER_MODE=cron` is the default for sleeping web services. The web service has no in-process recurring timers; configure one Render Cron Job on `*/15 * * * *` with `npm run cron:section-association`. Each one-shot run executes the shared fast cycle and uses Mongo-persisted recovery timing and a cross-process lease to avoid overlapping work. Keep the Render cadence aligned with `SECTION_ASSOCIATION_FIX_FAST_INTERVAL_MINUTES`.
+`SECTION_ASSOCIATION_FIX_TRIGGER_MODE=cron` is the default for sleeping web services. Configure one Render Cron Job on `*/15 * * * *` using `npm run cron:section-association`. Each invocation runs one bounded fast cycle and the independent recovery cycle when due. The default reconciliation limit is 50 per run.
 
-Set the mode to `internal` only for always-on hosting. The web process starts the existing immediate fast tick and recurring fast/recovery timers; no external Cron Job is needed.
+Use `internal` only on always-on hosting; it starts an immediate fast cycle and recurring fast/recovery timers. Both modes share the same service, lease, and reconciliation engine. Never run the external cron while internal timers are active.
 
-Cron → always-on: upgrade the web plan; set mode to `internal`; disable/delete the Cron Job; deploy; verify the mode log, immediate fast cycle, next interval cycle, and recovery timing. Do not reset Mongo state or baseline. Keep the same OAuth credentials, Service User, and reconciliation engine.
+## Eligibility and status
 
-Always-on → cron: set mode to `cron`; deploy; create/enable one external Cron Job; retain the same Mongo/OAuth configuration and reconciliation/baseline state.
+`baseline: true` is audit metadata and never permanently excludes a valid association. New associations wait the configured stability window (default ten minutes); historical baseline records do not. Records are processed through the same validation and reconciler. Legacy completed records without positive successful verification evidence are eligible automatically. Verified completed records are re-read every 24 hours by default.
 
-## Historical Backfill
+Every association requires a Course Offering with the exact code pattern `^\\d{6}-\\d{2}-\\d{4}-I0001$`, at least one direct Group child, valid five-digit child suffixes, and exactly one distinct Course Offering for every derived code. Validate all targets before writing. Inactive targets are no-ops. The only Brightspace mutation is a full Course Offering PUT changing `IsActive` from true to false, followed by verification. Never replay an uncertain write.
 
-The recurring worker must continue excluding `baseline: true` records. Historical cleanup is available only through `npm run backfill:section-associations -- --dry-run` or explicit `--apply`; never trigger it at startup or from cron. Dry-run defaults to all baseline associations. Apply defaults to 50 (`--max-associations` controls either mode), and a Mongo worker lease prevents it from overlapping a cron run or another backfill.
-
-Review the CSV in `reports/section-association-backfill-<timestamp>-<run-id>.csv` after every run. Recommended sequence: full dry-run, inspect summary and blocked cases, spot-check ready records, apply batches of 50, review each report, run dry-run again, then investigate any remaining blocked/ready records. Backfill progress belongs only in `backfill*` fields; retain `baseline: true` and all normal worker status fields. Apply must reuse the existing resolver, client and `courseUpdatePayload`, verify every PUT, and never replay an uncertain request. Already-inactive targets are no-ops. There is no rollback implementation.
-
-## Safety rules
-
-- Discover with `orgUnitType=3&orgUnitCode=I0001`, follow every `PagingInfo.Bookmark`, and locally require `^\\d{6}-\\d{2}-\\d{4}-I0001$`.
-- A first successful discovery writes a baseline of existing associations and performs no reconciliation. Only later discoveries are eligible.
-- Wait at least ten minutes from `firstSeenAt` before reconciliation.
-- Reconcile only Course Offerings with matching association codes, at least one direct Group child, valid five-digit child suffixes, and exactly one Course Offering for every derived exact code.
-- Finish every association, child, lookup, and current-course validation before the first write.
-- The only Brightspace mutation is Course Offering `IsActive: true` to `false`. Immediately before each write, GET the current course, preserve its fields, convert Description to RichTextInput, and PUT the full body. GET again and verify inactive.
-- On an uncertain PUT result, read the Course Offering before deciding its outcome. Never replay an uncertain write.
-- Dry-run uses the same reconciliation path, reports intended inactivations, and sends no PUT requests.
-- State is operational metadata, not proof of Brightspace state. Read current Brightspace records before every update.
-- Do not rename offerings, move groups, change enrollments or mappings, or delete records.
+Dry-run is the default and sends zero PUTs. If active targets remain, keep the record pending for later live processing. Do not change OAuth, LTI, discovery, association rules, Mongo state semantics, reconciliation, or scheduler intervals without explicit task scope.
 
 ## Development
 
-Use Node.js 22. Run `npm test` and `npm run check`. See `README.md`, `TECHNICAL.md`, and `ENVIRONMENT.md` for operations and configuration.
+Run `npm test` and `npm run check`. Keep real secrets out of source control. See `README.md`, `ENVIRONMENT.md`, and `TECHNICAL.md` for configuration and operations.

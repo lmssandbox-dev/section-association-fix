@@ -4,61 +4,36 @@ This service detects Course Offerings created by IPSIS Section Association proce
 
 ## How it works
 
-The worker searches `GET /d2l/api/lp/{version}/orgstructure/?orgUnitType=3&orgUnitCode=I0001`, follows all bookmark pages, and filters results using `^\\d{6}-\\d{2}-\\d{4}-I0001$`. For each eligible association, it reads all direct children. Each must be a Group whose code ends in `-` and exactly five digits. Removing that suffix produces the original Course Offering code, which must resolve through exact-code search to exactly one Course Offering.
+The worker searches `GET /d2l/api/lp/{version}/orgstructure/?orgUnitType=3&orgUnitCode=I0001`, follows every bookmark page, and filters results using `^\\d{6}-\\d{2}-\\d{4}-I0001$`. Each valid association must be a Course Offering with at least one direct Group child; each child code must end in a hyphen and exactly five digits. Removing that suffix produces an original Course Offering code that must resolve to exactly one Course Offering.
 
-The worker validates the complete set before writing. It then checks each current Course Offering. Active records are updated with a full PUT payload built from the immediately preceding GET, changing only `IsActive` to `false`; the result is read back and verified. Brightspace RichText Description values are converted to the RichTextInput format expected by PUT.
+The worker validates the complete target set before writing. It re-reads each current Course Offering, skips already-inactive records, and only changes `IsActive` to `false` through a full PUT followed by a verification GET. Dry-run performs the same discovery and validation but sends no PUTs; active targets stay pending for later live processing.
 
-## Safety and rollout
+## Unified processing and safety
 
-`SECTION_ASSOCIATION_FIX_DRY_RUN=true` is the default. Dry-run discovers, resolves, validates, and reports `would-inactivate` outcomes without sending PUT requests. It shares the production reconciler and remains pending so the same association can be processed after dry-run is disabled.
+The first successful discovery records the current association population with `baseline: true` for audit history. Baseline status does not permanently exclude an association: historical and new records use the same reconciler. Historical records do not wait through the new-association stability window. New records wait `SECTION_ASSOCIATION_FIX_STABILITY_MINUTES` (default 10).
 
-On the first successful discovery, the service records the associations already present as a baseline and does not reconcile any of them. Historical cleanup remains excluded from recurring automation. Associations first seen after baseline wait ten minutes before processing.
+Each scheduled run handles at most `SECTION_ASSOCIATION_FIX_MAX_RECONCILIATIONS_PER_RUN` associations (default 50), prioritizing new and pending work, then historical records, then controlled blocked retries and due completed re-verification. Previously completed records without positive verification evidence are eligible automatically. Completed associations are re-read every `SECTION_ASSOCIATION_FIX_COMPLETED_REVERIFY_HOURS` (default 24); if a target is active again, it is reconciled through the normal validation and update path.
 
-The fast loop discovers every 15 minutes and handles stable new associations. The recovery loop runs every four hours and retries incomplete work through the same discovery/reconciliation logic. Completed associations are skipped during ordinary runs. MongoDB records last-seen/check times and outcomes; Brightspace remains the source of truth.
+Dry-run and live processing share the same engine. Every target is checked before the first write. The only mutation is Course Offering `IsActive: true` to `false`; uncertain writes are read back and never blindly replayed. MongoDB is an operational work ledger, not proof of Brightspace state.
 
 ## Authentication
 
-Background calls use Brightspace Server-to-Server OAuth 2.0 client credentials with a signed private-key JWT. LTI 1.3 registration is optional at startup; no worker action depends on an LTI user session.
-
-The service account needs OAuth scopes `organizations:organization:read` and `orgunits:course:update`, plus Brightspace organizational-structure read access and Manage Courses permission to update Course Offerings. These scopes must be granted to the OAuth application and listed in `BS_OAUTH2_SCOPES`.
+Background calls use Brightspace Server-to-Server OAuth 2.0 client credentials with a signed private-key JWT. LTI 1.3 registration is optional at startup and is unrelated to worker authentication. The service account needs `organizations:organization:read` and `orgunits:course:update`, plus Brightspace organizational-structure read access and Manage Courses permission.
 
 ## Hosting / Trigger Modes
 
-`SECTION_ASSOCIATION_FIX_TRIGGER_MODE=cron` is the default for Render Free and other sleeping web services. The web service hosts LTI and bootstrap endpoints without in-process recurring timers. Configure one Render Cron Job from this repository on `*/15 * * * *` with command `npm run cron:section-association`. Every run performs one fast cycle and uses persisted Mongo metadata to run recovery only when the four-hour interval is due.
+`SECTION_ASSOCIATION_FIX_TRIGGER_MODE=cron` is the default for Render Free and other sleeping web services. Configure one Render Cron Job from this repository on `*/15 * * * *` with command `npm run cron:section-association`. Each invocation performs one bounded fast cycle and runs recovery when its independent four-hour schedule is due.
 
-Cron and historical backfill share one namespaced Mongo lease. It is renewed every minute, lasts 10 minutes, and is explicitly released with an awaited database update when an invocation finishes; expiry is crash protection. Lease events are logged without credentials. Run `npm run section-association:lease-status` to read the current lease key, owner, acquisition/expiry times, and expiry state without modifying MongoDB.
+Cron and the worker use a namespaced Mongo lease. It is renewed during work and explicitly released after success or failure; expiry is crash protection. Run `npm run section-association:lease-status` to inspect its state without modifying MongoDB.
 
-Set `SECTION_ASSOCIATION_FIX_TRIGGER_MODE=internal` for future always-on hosting. The web process then starts an immediate fast cycle and the existing independent recurring fast and recovery timers; no external Cron Job is required. Both modes use the same service and reconciliation engine.
-
-To migrate cron → always-on: upgrade the web service, set trigger mode to `internal`, disable/delete the Cron Job, deploy, and confirm the internal-mode startup, immediate cycle, next fast cycle, and recovery timing. Keep the same Mongo state, baseline, OAuth credentials, Service User, and reconciliation engine. To migrate always-on → cron: set mode to `cron`, deploy, enable one external Cron Job at the schedule above, and keep the same Mongo/OAuth configuration and association state.
+Set `SECTION_ASSOCIATION_FIX_TRIGGER_MODE=internal` only on always-on hosting. The web process starts an immediate fast cycle and recurring fast/recovery timers. Both modes use the same service and reconciliation engine.
 
 ## LTI bootstrap
 
-Deploy first with the `BS_LTI_*` settings empty. The service starts in LTI setup mode, runs the Section Association worker, and serves `/ping` and `/.well-known/brightspace-jwks.json`. Register the tool in Brightspace using the public application keyset URL `https://<your-render-service>.onrender.com/.well-known/brightspace-jwks.json` (or the equivalent URL on your configured public domain). After Brightspace returns the LTI Client ID and Deployment ID, configure all five `BS_LTI_*` values and redeploy. The next startup registers the Brightspace platform and enables LTI launches. Partial LTI configuration is treated as setup mode.
+Deploy first with the `BS_LTI_*` settings empty. The application starts in LTI setup mode, runs the Section Association worker, and serves `/ping` and `/.well-known/brightspace-jwks.json`. Register the tool in Brightspace using the public application keyset URL `https://<your-render-service>.onrender.com/.well-known/brightspace-jwks.json` (or the equivalent configured public domain). Then add the returned LTI Client ID and Deployment ID, plus all required platform endpoints, and redeploy. LTI launches are enabled after the complete configuration is present.
 
 ## Run
 
-Use Node.js 22, install with `npm ci`, copy `.env.example` to `.env`, and provide tenant credentials. Run `npm test` and `npm run check`; start with `npm start`. Keep dry-run enabled until logs confirm the expected targets. Set `SECTION_ASSOCIATION_FIX_DRY_RUN=false` only when ready to permit inactivation.
+Use Node.js 22, install with `npm ci`, copy `.env.example` to `.env`, and provide credentials. Run `npm test` and `npm run check`; start with `npm start`. Keep dry-run enabled until logs confirm the expected targets. Set `SECTION_ASSOCIATION_FIX_DRY_RUN=false` only when ready to permit inactivation.
 
-See [ENVIRONMENT.md](ENVIRONMENT.md) for configuration and [TECHNICAL.md](TECHNICAL.md) for reconciliation and persistence details.
-
-## Historical Backfill
-
-Baseline associations are excluded from normal cron/internal processing to protect existing courses. Historical cleanup is available only as an explicit one-shot command and reads only records marked `baseline: true` in MongoDB. No startup or recurring worker automatically includes them.
-
-Start with a full dry-run:
-
-```sh
-npm run backfill:section-associations -- --dry-run
-```
-
-Dry-run validates live Brightspace data and performs no PUTs. It scans all baseline records unless `--max-associations` is supplied. Apply defaults to batches of 50 and requires the explicit `--apply` flag:
-
-```sh
-npm run backfill:section-associations -- --apply
-npm run backfill:section-associations -- --apply --max-associations 50
-```
-
-Each run writes a CSV under `reports/section-association-backfill-<timestamp>-<run-id>.csv`. Review the summary and blocked rows, spot-check ready cases in Brightspace, apply in small batches, and review each CSV. Re-run dry-run afterward and confirm the remaining ready count is zero or understood. Blocked records stay inspectable and can be retried after correction. Backfill metadata is stored separately from normal worker status, and the baseline marker remains true. Reruns inspect current target state and skip already-inactive offerings. Rollback is not implemented.
-
-Recommended procedure: (1) run full dry-run; (2) review summary; (3) inspect blocked cases; (4) spot-check ready cases; (5) apply in batches of about 50; (6) review each batch CSV; (7) rerun dry-run; (8) confirm remaining ready count is zero or understood; (9) leave blocked cases for separate investigation. Normal cron behavior remains unchanged.
+See [ENVIRONMENT.md](ENVIRONMENT.md) for configuration and [TECHNICAL.md](TECHNICAL.md) for persistence and scheduling details.

@@ -4,7 +4,7 @@ const { logEvent, safeErrorFields } = require('./log');
 
 async function runSectionAssociationCron({ service, store, recoveryIntervalHours, logger = console,
   now = Date.now, setIntervalFn = setInterval, clearIntervalFn = clearInterval,
-  leaseMs = 10 * 60 * 1000, heartbeatMs = 60 * 1000 }) {
+  leaseMs = 10 * 60 * 1000, heartbeatMs = 60 * 1000, maxReconciliationsPerRun = 50 }) {
   const startedAt = now();
   logEvent(logger, 'info', 'cron started');
   let token;
@@ -32,7 +32,7 @@ async function runSectionAssociationCron({ service, store, recoveryIntervalHours
     }, heartbeatMs);
 
     phase = 'discovery';
-    const fast = await service.fastTick();
+    const fast = await service.fastTick({ maxReconciliations: maxReconciliationsPerRun });
     if (fast?.status && fast.status !== 'completed') throw Object.assign(new Error('Fast cycle did not complete.'), {
       phase: fast.phase || 'discovery', code: fast.code || 'FAST_CYCLE_FAILED'
     });
@@ -42,12 +42,13 @@ async function runSectionAssociationCron({ service, store, recoveryIntervalHours
     logEvent(logger, 'info', 'recovery due', { due });
     if (due) {
       phase = 'discovery';
-      const recovery = await service.recoveryTick();
+      const remaining = Math.max(0, maxReconciliationsPerRun - (fast?.processedThisRun || 0));
+      const recovery = await service.recoveryTick({ maxReconciliations: remaining });
       if (recovery?.status && recovery.status !== 'completed') throw Object.assign(new Error('Recovery cycle did not complete.'), {
         phase: recovery.phase || 'discovery', code: recovery.code || 'RECOVERY_CYCLE_FAILED'
       });
       phase = 'database';
-      await store.markRecoveryCompleted(token);
+      if (recovery?.recoveryComplete !== false) await store.markRecoveryCompleted(token);
     }
     if (heartbeatFailure) throw Object.assign(new Error('Cron lease renewal failed.'), { phase: 'database', code: 'CRON_LEASE_RENEWAL_FAILED' });
     const elapsedMs = Math.max(0, now() - startedAt);
@@ -73,7 +74,7 @@ async function runSectionAssociationCron({ service, store, recoveryIntervalHours
 }
 
 function safeLeaseFields(lease) {
-  return { owner: lease?.owner === 'cron' || lease?.owner === 'backfill' ? lease.owner : 'unknown',
+  return { owner: lease?.owner === 'cron' ? lease.owner : 'unknown',
     expiresAt: lease?.expiresAt instanceof Date ? lease.expiresAt.toISOString() : null };
 }
 

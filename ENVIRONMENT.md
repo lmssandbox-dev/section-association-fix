@@ -7,108 +7,74 @@ Configure these values in `.env` for local use and in the service host for deplo
 | Setting | Purpose |
 | --- | --- |
 | `DB_MONGODB_URL` | MongoDB connection URI with an explicit application database name. |
-| `APP_LTI_SECRET` | Application-internal secret used by ltijs; it is not a Brightspace LTI registration credential. |
+| `APP_LTI_SECRET` | Application-internal secret used by ltijs; not a Brightspace LTI registration credential. |
 | `PORT` | HTTP port; defaults to `3000`. |
-| `BS_URL` | Brightspace HTTPS origin, such as `https://tenant.brightspace.com`. |
+| `BS_URL` | Brightspace HTTPS origin. |
 | `BS_NAME` | Optional Brightspace display name. |
-| `BS_OAUTH2_CLIENT_ID` | Brightspace OAuth application/service-account client ID. |
+| `BS_OAUTH2_CLIENT_ID` | OAuth application/service-account client ID. |
 | `BS_OAUTH2_PRIVATE_KEY` | RSA private key PEM used for signed JWT client authentication. |
 | `BS_OAUTH2_KEY_ID` | Key ID registered for that private key. |
-| `BS_OAUTH2_TOKEN_ENDPOINT` | OAuth token endpoint; required. |
+| `BS_OAUTH2_TOKEN_ENDPOINT` | OAuth token endpoint. |
 | `BS_OAUTH2_SCOPES` | Must include `organizations:organization:read` and `orgunits:course:update`. |
 | `D2L_API_LP_VERSION` | Brightspace Learning Platform API version in `major.minor` form. |
-| `SECTION_ASSOCIATION_FIX_TRIGGER_MODE` | `cron` by default. Use `internal` only when the web service is always on. |
+| `SECTION_ASSOCIATION_FIX_TRIGGER_MODE` | `cron` by default; use `internal` only on always-on hosting. |
 
-The Section Association worker starts with these settings and does not require an LTI launch.
+The background worker uses the OAuth service account and does not require an LTI launch or LTI registration configuration.
 
 ## Optional LTI registration
 
-All five settings below must be present to register the Brightspace platform and enable LTI launches. If none or only some are present, the service starts in LTI setup mode, skips platform registration, and continues serving the public bootstrap endpoints and running the worker.
+All five settings below must be present to register the Brightspace platform and enable LTI launches. If none or only some are present, the service starts in setup mode, skips platform registration, and continues serving `/ping`, the public JWKS endpoint, and the Section Association worker.
 
 | Setting | Purpose |
 | --- | --- |
-| `BS_LTI_CLIENT_ID` | Client ID Brightspace returns when registering this tool. |
-| `BS_LTI_DEPLOYMENT_ID` | Deployment ID Brightspace returns for this tool. |
+| `BS_LTI_CLIENT_ID` | Client ID returned by Brightspace during tool registration. |
+| `BS_LTI_DEPLOYMENT_ID` | Deployment ID returned by Brightspace. |
 | `BS_LTI_AUTH_ENDPOINT` | Brightspace platform OIDC authorization endpoint. |
 | `BS_LTI_TOKEN_ENDPOINT` | Brightspace platform access-token endpoint. |
-| `BS_LTI_KEYSET_URL` | Brightspace platform keyset URL used by ltijs to validate platform requests. |
+| `BS_LTI_KEYSET_URL` | Brightspace platform keyset URL used to validate platform requests. |
 
-Bootstrap sequence: deploy with these settings empty; register the tool in Brightspace using the application's public keyset URL `https://<your-render-service>.onrender.com/.well-known/brightspace-jwks.json`; add the returned LTI Client ID and Deployment ID along with the platform endpoints; redeploy. The service then registers the platform. The application's public JWKS URL is distinct from `BS_LTI_KEYSET_URL`, which points to the Brightspace platform's keyset.
+Bootstrap sequence: deploy with the `BS_LTI_*` settings empty; register the tool in Brightspace using the public application keyset URL `https://<your-render-service>.onrender.com/.well-known/brightspace-jwks.json`; add the returned LTI Client ID and Deployment ID with all platform endpoints; redeploy. The application's public JWKS URL is distinct from `BS_LTI_KEYSET_URL`, which points to Brightspace's keyset.
 
 ## Service-account permissions
 
-The OAuth application needs the two scopes listed above granted. The linked Brightspace Service User also needs permission to read organizational structure and Manage Courses permission to update Course Offerings. Tenant administrators should verify both in a test environment.
+For the Server-to-Server Service User Client Credentials flow, the signed assertion `aud` must exactly match `BS_OAUTH2_TOKEN_ENDPOINT`; the standard endpoint is `https://auth.brightspace.com/core/connect/token`. This differs from the LTI Advantage service-token audience. The public JWKS endpoint publishes the matching public key, never the private key.
 
-For the Service User Client Credentials flow, the signed client assertion's `aud` must exactly match `BS_OAUTH2_TOKEN_ENDPOINT`. With the standard endpoint, use `https://auth.brightspace.com/core/connect/token`. This is the Server-to-Server Service User flow; do not use the LTI Advantage service-token audience `https://api.brightspace.com/auth/token` here. The application publishes the corresponding public key at `/.well-known/brightspace-jwks.json`; its JWK `kid` is derived from `BS_OAUTH2_KEY_ID` and its public key from `BS_OAUTH2_PRIVATE_KEY`.
+The OAuth application needs the two scopes above. Its linked Brightspace Service User needs permission to read organizational structure and Manage Courses permission to update Course Offerings.
 
-## Feature settings
+## Section Association settings
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `SECTION_ASSOCIATION_FIX_DRY_RUN` | `true` | Resolve and report intended inactivations without PUT requests. Set to `false` to enable writes. |
-| `SECTION_ASSOCIATION_FIX_FAST_INTERVAL_MINUTES` | `15` | Fast discovery cadence. |
-| `SECTION_ASSOCIATION_FIX_STABILITY_MINUTES` | `10` | Minimum age from first discovery before processing. |
-| `SECTION_ASSOCIATION_FIX_RECOVERY_INTERVAL_HOURS` | `4` | Recovery cadence for incomplete associations. |
+| `SECTION_ASSOCIATION_FIX_DRY_RUN` | `true` | Resolve and report intended inactivations without PUT requests. |
+| `SECTION_ASSOCIATION_FIX_FAST_INTERVAL_MINUTES` | `15` | Fast discovery/reconciliation cadence. |
+| `SECTION_ASSOCIATION_FIX_STABILITY_MINUTES` | `10` | Minimum age for newly discovered associations. Historical records do not wait. |
+| `SECTION_ASSOCIATION_FIX_RECOVERY_INTERVAL_HOURS` | `4` | Independent recovery cadence for blocked/retry work. |
+| `SECTION_ASSOCIATION_FIX_MAX_RECONCILIATIONS_PER_RUN` | `50` | Maximum associations processed by a scheduled run. |
+| `SECTION_ASSOCIATION_FIX_COMPLETED_REVERIFY_HOURS` | `24` | Re-read cadence for completed associations. |
 
 ## Hosting / Trigger Modes
 
 ### Cron mode (default)
 
-Use `SECTION_ASSOCIATION_FIX_TRIGGER_MODE=cron` for Render Free or any web service that can sleep. The web service continues to host LTI and the public bootstrap endpoints, but does not start in-process timers. Configure one Render Cron Job using the same repository and MongoDB/OAuth configuration:
+Use `SECTION_ASSOCIATION_FIX_TRIGGER_MODE=cron` for sleeping hosting. Configure one Render Cron Job:
 
 - Schedule: `*/15 * * * *`
 - Command: `npm run cron:section-association`
 
-Each invocation runs one fast cycle, then checks the namespaced Mongo scheduler metadata to decide whether the four-hour recovery cycle is due. Recovery completion time is saved only after a successful recovery run. Cron requires `DB_MONGODB_URL`, `BS_URL`, `BS_OAUTH2_CLIENT_ID`, `BS_OAUTH2_PRIVATE_KEY`, `BS_OAUTH2_KEY_ID`, `BS_OAUTH2_TOKEN_ENDPOINT`, `BS_OAUTH2_SCOPES`, `D2L_API_LP_VERSION`, `SECTION_ASSOCIATION_FIX_DRY_RUN`, and the Section Association timing settings as needed. It does not require `APP_LTI_SECRET` or any `BS_LTI_*` setting. Keep the Render Cron schedule consistent with `SECTION_ASSOCIATION_FIX_FAST_INTERVAL_MINUTES` (default 15).
+Each invocation runs one bounded fast cycle and checks Mongo scheduler metadata for due recovery. Recovery progress advances only after all due work is processed. Align the Render schedule with `SECTION_ASSOCIATION_FIX_FAST_INTERVAL_MINUTES`.
 
-MongoDB holds an atomic namespaced cron lease and the last successful recovery time. Cron and historical backfill use the same lease key, so they cannot overlap. The lease lasts 10 minutes and is renewed every minute while work runs; successful and failed invocations explicitly await release, while expiry provides crash recovery. A lease release failure is logged and the lease remains protected until its expiry. Inspect the lease without modifying it using `npm run section-association:lease-status`; the command needs `DB_MONGODB_URL`, `BS_URL`, and `BS_OAUTH2_CLIENT_ID`.
+Cron and worker processing share an atomic namespaced Mongo lease, renewed while running and explicitly awaited on release. Expiry is crash protection. Inspect without modifying state with `npm run section-association:lease-status`.
 
 ### Internal mode
 
-Use `SECTION_ASSOCIATION_FIX_TRIGGER_MODE=internal` only on always-on hosting. The web process runs an immediate fast cycle, then repeats fast and recovery cycles using the configured minute/hour intervals. No external Cron Job is needed.
+Use `SECTION_ASSOCIATION_FIX_TRIGGER_MODE=internal` only on always-on hosting. The web process runs an immediate cycle followed by configured fast and recovery timers.
 
-### Cron → always-on migration
+### Trigger migration
 
-1. Upgrade the web service to an always-on plan.
-2. Set `SECTION_ASSOCIATION_FIX_TRIGGER_MODE=internal`.
-3. Disable or delete the Render Cron Job.
-4. Deploy and confirm the startup log says `[section-association] trigger mode=internal`.
-5. Confirm the immediate fast cycle, a second cycle after the configured interval, and recovery timing.
-6. Do not reset Mongo state or recreate the baseline. Keep the same OAuth credentials, Service User, and reconciliation engine.
+Cron → always-on: upgrade the web service, set mode to `internal`, disable/delete the Cron Job, deploy, and confirm cycles. Always-on → cron: set mode to `cron`, deploy, then enable one external Cron Job. Keep Mongo state, credentials, baseline metadata, and the same reconciliation engine.
 
-### Always-on → cron migration
+## Unified historical and new processing
 
-1. Set `SECTION_ASSOCIATION_FIX_TRIGGER_MODE=cron` and deploy the web service.
-2. Create or enable the external Render Cron Job with the schedule and command above.
-3. Use the same MongoDB and OAuth configuration. Do not change reconciliation or baseline state.
+Historical baseline associations are included by the normal worker and use the same reconciliation, validation, dry-run, and apply behavior as new work. The baseline marker remains audit metadata. Each run is capped by `SECTION_ASSOCIATION_FIX_MAX_RECONCILIATIONS_PER_RUN`; new and pending records are prioritized, historical records follow, and blocked retry/completed re-verification work is handled by recovery. Legacy completed records without successful verification evidence are eligible for automatic processing.
 
-## Historical Backfill
-
-Baseline records are deliberately protected from the recurring worker. Historical backfill is manual and explicit; it selects only Mongo association records with `baseline: true` and never changes the baseline marker or normal worker status. The command uses the same backend Mongo/OAuth/Brightspace configuration as the worker and does not require `APP_LTI_SECRET` or `BS_LTI_*` values.
-
-First run:
-
-```sh
-npm run backfill:section-associations -- --dry-run
-```
-
-Dry-run scans every baseline association by default, performs live validation, reports target actions, and sends zero PUTs. Apply requires explicit `--apply` and defaults to a conservative 50-association batch:
-
-```sh
-npm run backfill:section-associations -- --apply
-npm run backfill:section-associations -- --apply --max-associations 50
-```
-
-Every run writes a CSV to `reports/section-association-backfill-<timestamp>-<run-id>.csv`. Review it before and after each batch. Ready means every target passed validation and at least one remains active; already-compliant means all targets are inactive; blocked cases include a safe reason and remain retryable. Apply re-reads each target, skips inactive records, uses the existing full PUT transformation, and verifies the result. Reruns are idempotent against live state. Rollback is not implemented.
-
-Recommended operation: full dry-run → review summary and blocked rows → spot-check ready cases → apply in batches of 50 → review each CSV → run dry-run again → confirm no unexplained ready cases remain → investigate blocked cases separately. The recurring 15-minute cron does not include historical associations and is unchanged.
-
-
-## OAuth scopes and permissions summary
-
-Required OAuth scopes:
-
-- `organizations:organization:read` for orgstructure, children, and exact-code reads.
-- `orgunits:course:update` for Course Offering update requests.
-
-Required Service User permissions: organizational structure read access and Manage Courses permission for Course Offering updates. Brightspace also enforces tenant-specific visibility and access controls on each request.
+Dry-run sends zero PUTs. A record with any active target remains pending so it can be processed when dry-run is disabled. Live updates only inactivate active targets and verify each write. Already-inactive targets are no-ops. Review operational logs and Mongo reports/state as appropriate; there is no rollback implementation.

@@ -56,9 +56,9 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
     const baselineAt = new Date(now());
     const baselineResult = records.length ? await associations.bulkWrite(records.map(item => ({ updateOne: {
       filter: { namespace, associationOrgUnitId: String(item.id) },
-      update: { $setOnInsert: { namespace, associationOrgUnitId: String(item.id), associationCode: item.code,
-        firstSeenAt: baselineAt, lastSeenAt: baselineAt, lastCheckedAt: baselineAt, processedAt: baselineAt,
-        status: 'completed', baseline: true, lastError: null } }, upsert: true
+      update: { $set: { associationCode: item.code, lastSeenAt: baselineAt },
+        $setOnInsert: { namespace, associationOrgUnitId: String(item.id), firstSeenAt: baselineAt,
+          status: 'pending', baseline: true, lastError: null } }, upsert: true
     } })), { ordered: false }) : { upsertedCount: 0, matchedCount: 0 };
     const result = await meta.updateOne({ _id: metaId, leaseToken: token, state: { $ne: 'ready' } },
       { $set: { state: 'ready', completedAt: baselineAt }, $unset: { leaseToken: '', leaseUntil: '' } });
@@ -69,24 +69,111 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
     const { meta } = await collections();
     await meta.updateOne({ _id: `baseline:${namespace}`, leaseToken: token }, { $unset: { leaseToken: '', leaseUntil: '' } });
   }
-  async function listUncompleted() {
+  async function recordDiscovery(id, code) {
     const { associations } = await collections();
-    return associations.find({ namespace, status: { $ne: 'completed' }, baseline: { $ne: true } }).toArray();
+    const time = new Date(now());
+    const filter = { namespace, associationOrgUnitId: String(id) };
+    const update = { $set: { associationCode: code, lastSeenAt: time },
+      $setOnInsert: { namespace, associationOrgUnitId: String(id), firstSeenAt: time,
+        status: 'pending', baseline: false, lastError: null } };
+    try {
+      const result = await associations.updateOne(filter, update, { upsert: true });
+      return (result.upsertedCount || 0) > 0;
+    }
+    catch (error) {
+      if (error.code !== 11000) throw error;
+      await associations.updateOne(filter, { $set: update.$set });
+      return false;
+    }
   }
-  async function listBaselineAssociations(limit, associationId) {
-    const { associations } = await collections();
-    const filter = { namespace, baseline: true };
-    if (associationId !== undefined) filter.associationOrgUnitId = String(associationId);
-    let cursor = associations.find(filter).sort({ firstSeenAt: 1, associationOrgUnitId: 1 });
-    if (Number.isSafeInteger(limit) && limit > 0) cursor = cursor.limit(limit);
-    return cursor.toArray();
+  const sortOrder = { lastCheckedAt: 1, firstSeenAt: 1, associationOrgUnitId: 1 };
+  async function queryBucket(associations, filter, limit, workType) {
+    if (limit <= 0) return [];
+    const rows = await associations.find(filter).sort(sortOrder).limit(limit).toArray();
+    return rows.map(item => ({ ...item, workType }));
   }
-  async function recordBackfill(id, fields) {
+  async function listFastWork({ limit, stabilityCutoff }) {
     const { associations } = await collections();
-    const allowed = ['backfillLastCheckedAt', 'backfillProcessedAt', 'backfillStatus', 'backfillLastError', 'backfillTargets'];
-    const safe = Object.fromEntries(Object.entries(fields).filter(([key]) => allowed.includes(key)));
-    const result = await associations.updateOne({ namespace, associationOrgUnitId: String(id), baseline: true }, { $set: safe });
-    return result.matchedCount === 1;
+    const selected = [];
+    const seen = new Set();
+    const buckets = [
+      ['new', { namespace, baseline: { $ne: true }, status: 'pending', lastCheckedAt: { $exists: false }, firstSeenAt: { $lte: stabilityCutoff } }],
+      ['pending', { namespace, baseline: { $ne: true }, status: 'pending', lastCheckedAt: { $exists: true } }],
+      ['historical', { namespace, baseline: true, $or: [
+        { status: 'pending' },
+        { status: 'completed', $or: [{ reconciliationVersion: { $ne: 1 } },
+          { lastReconciledAt: { $exists: false } }, { lastVerifiedAt: { $exists: false } }] }
+      ] }]
+    ];
+    for (const [workType, filter] of buckets) {
+      const remaining = limit - selected.length;
+      for (const item of await queryBucket(associations, filter, remaining, workType)) {
+        const id = String(item.associationOrgUnitId);
+        if (!seen.has(id)) { seen.add(id); selected.push(item); }
+      }
+      if (selected.length >= limit) break;
+    }
+    return selected;
+  }
+  async function listWaitingNew({ stabilityCutoff, limit = 1000 }) {
+    const { associations } = await collections();
+    return associations.find({ namespace, baseline: { $ne: true }, status: 'pending',
+      lastCheckedAt: { $exists: false }, firstSeenAt: { $gt: stabilityCutoff } })
+      .sort(sortOrder).limit(limit).toArray();
+  }
+  async function listRecoveryWork({ limit, stabilityCutoff, blockedBefore, reverifyBefore }) {
+    const { associations } = await collections();
+    const selected = [];
+    const seen = new Set();
+    const buckets = [
+      ['new', { namespace, baseline: { $ne: true }, status: 'pending', lastCheckedAt: { $exists: false }, firstSeenAt: { $lte: stabilityCutoff } }],
+      ['pending', { namespace, baseline: { $ne: true }, status: 'pending', lastCheckedAt: { $exists: true } }],
+      ['historical', { namespace, baseline: true, $or: [
+        { status: 'pending' },
+        { status: 'completed', $or: [{ reconciliationVersion: { $ne: 1 } },
+          { lastReconciledAt: { $exists: false } }, { lastVerifiedAt: { $exists: false } }] }
+      ] }],
+      ['blocked', { namespace, status: 'blocked', $or: [{ lastCheckedAt: { $lte: blockedBefore } }, { lastCheckedAt: { $exists: false } }] }],
+      ['reverify', { namespace, status: 'completed', reconciliationVersion: 1, lastVerifiedAt: { $lte: reverifyBefore } }]
+    ];
+    for (const [workType, filter] of buckets) {
+      const remaining = limit - selected.length;
+      for (const item of await queryBucket(associations, filter, remaining, workType)) {
+        const id = String(item.associationOrgUnitId);
+        if (!seen.has(id)) { seen.add(id); selected.push(item); }
+      }
+      if (selected.length >= limit) break;
+    }
+    return selected;
+  }
+  async function countHistoricalBacklog() {
+    const { associations } = await collections();
+    return associations.countDocuments({ namespace, baseline: true,
+      $or: [{ status: 'pending' }, { status: 'blocked' }, { status: 'completed', $or: [
+        { reconciliationVersion: { $ne: 1 } }, { lastReconciledAt: { $exists: false } },
+        { lastVerifiedAt: { $exists: false } }
+      ] }] });
+  }
+  async function countDueCompleted(reverifyBefore) {
+    const { associations } = await collections();
+    return associations.countDocuments({ namespace, status: 'completed', reconciliationVersion: 1,
+      lastVerifiedAt: { $lte: reverifyBefore } });
+  }
+  async function countRecoveryWork({ stabilityCutoff, blockedBefore, reverifyBefore }) {
+    const { associations } = await collections();
+    const queries = [
+      { namespace, baseline: { $ne: true }, status: 'pending', lastCheckedAt: { $exists: false }, firstSeenAt: { $lte: stabilityCutoff } },
+      { namespace, baseline: { $ne: true }, status: 'pending', lastCheckedAt: { $exists: true } },
+      { namespace, baseline: true, $or: [
+        { status: 'pending' },
+        { status: 'completed', $or: [{ reconciliationVersion: { $ne: 1 } },
+          { lastReconciledAt: { $exists: false } }, { lastVerifiedAt: { $exists: false } }] }
+      ] },
+      { namespace, status: 'blocked', $or: [{ lastCheckedAt: { $lte: blockedBefore } }, { lastCheckedAt: { $exists: false } }] },
+      { namespace, status: 'completed', reconciliationVersion: 1, lastVerifiedAt: { $lte: reverifyBefore } }
+    ];
+    const counts = await Promise.all(queries.map(filter => associations.countDocuments(filter)));
+    return counts.reduce((sum, count) => sum + count, 0);
   }
   const cronMetaId = `cron:${namespace}`;
   async function acquireCronLease(leaseMs = 120000, owner = 'cron') {
@@ -140,8 +227,8 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
     if (result.matchedCount !== 1) throw Object.assign(new Error('Section Association cron lease lost.'), { code: 'CRON_LEASE_LOST' });
   }
   async function close() { if (!mongoClient) await client.close(); }
-  return { get, record, baselineStatus, beginBaseline, finishBaseline, releaseBaseline, listUncompleted,
-    listBaselineAssociations, recordBackfill,
+  return { get, record, baselineStatus, beginBaseline, finishBaseline, releaseBaseline, recordDiscovery,
+    listFastWork, listWaitingNew, listRecoveryWork, countHistoricalBacklog, countDueCompleted, countRecoveryWork,
     acquireCronLease, renewCronLease, releaseCronLease, cronLeaseStatus, recoveryDue, markRecoveryCompleted, close };
 }
 

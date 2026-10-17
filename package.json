@@ -11,12 +11,11 @@
   "scripts": {
     "start": "node index.js",
     "cron:section-association": "node scripts/run-section-association.js",
-    "backfill:section-associations": "node scripts/backfill-section-associations.js",
     "section-association:lease-status": "node scripts/section-association-lease-status.js",
     "api-gate:state": "node scripts/api-gate-state-report.js",
     "mongodb:latency": "node scripts/mongodb-latency-report.js",
     "test": "node --test test/*.test.js",
-    "check": "node --check index.js && node --check src/sectionAssociations/config.js && node --check src/sectionAssociations/log.js && node --check src/sectionAssociations/service.js && node --check src/sectionAssociations/store.js && node --check src/sectionAssociations/runtime.js && node --check src/sectionAssociations/cron.js && node --check src/sectionAssociations/trigger.js && node --check src/sectionAssociations/backfill.js && node --check src/sectionAssociations/client.js && node --check src/sectionAssociations/resolver.js && node --check src/sectionAssociations/reconciler.js && node --check src/sectionAssociations/rules.js && node --check scripts/backfill-section-associations.js && node --check scripts/run-section-association.js && node --check scripts/section-association-lease-status.js && node --check scripts/api-gate-state-report.js && node --check scripts/mongodb-latency-report.js && node --check src/shared/auth.js && node --check src/shared/client.js && node --check src/shared/database.js && node --check src/shared/rateLimit.js && node --check src/shared/concurrentGate.js && node --check src/shared/diagnostics.js"
+    "check": "node --check index.js && node --check src/sectionAssociations/config.js && node --check src/sectionAssociations/log.js && node --check src/sectionAssociations/service.js && node --check src/sectionAssociations/store.js && node --check src/sectionAssociations/runtime.js && node --check src/sectionAssociations/cron.js && node --check src/sectionAssociations/trigger.js && node --check src/sectionAssociations/client.js && node --check src/sectionAssociations/resolver.js && node --check src/sectionAssociations/reconciler.js && node --check src/sectionAssociations/rules.js && node --check scripts/run-section-association.js && node --check scripts/section-association-lease-status.js && node --check scripts/api-gate-state-report.js && node --check scripts/mongodb-latency-report.js && node --check src/shared/auth.js && node --check src/shared/client.js && node --check src/shared/database.js && node --check src/shared/rateLimit.js && node --check src/shared/concurrentGate.js && node --check src/shared/diagnostics.js"
   },
   "dependencies": {
     "axios": "^1.8.4",

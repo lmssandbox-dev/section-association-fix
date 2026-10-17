@@ -4,6 +4,8 @@ const { isAssociation } = require('./rules');
 const { resolveTargets } = require('./resolver');
 const { logEvent } = require('./log');
 
+const RECONCILIATION_VERSION = 1;
+
 function richTextInput(description) {
   if (description == null) throw new Error('Course Description has an unsupported format.');
   if (typeof description === 'string') return { Content: description, Type: 'Text' };
@@ -28,12 +30,15 @@ function createReconciler({ client, store, dryRun = true, now = Date.now, logger
   async function reconcileAssociation(associationOrgUnitId, { force = false, associationCode: requestedCode } = {}) {
     const id = String(associationOrgUnitId);
     const existing = await store.get(id);
-    if (!force && existing?.status === 'completed') return { status: 'completed', skipped: true };
+    if (!force && hasVerifiedCompletion(existing)) return { status: 'completed', skipped: true };
     let associationCode = requestedCode || existing?.associationCode || '';
     let childCount = 0;
     let currentTargetId = '';
     let writeOutcomeUncertain = false;
     let uncertainLogged = false;
+    let writesAttempted = 0;
+    let writesVerified = 0;
+    let alreadyInactive = 0;
     if (associationCode) logEvent(logger, 'info', 'reconcile started', { associationId: id, code: associationCode });
     try {
       const association = await client.orgUnit(id);
@@ -50,7 +55,7 @@ function createReconciler({ client, store, dryRun = true, now = Date.now, logger
       for (const target of targets) {
         currentTargetId = target.id;
         const current = await client.course(target.id);
-        if (current?.IsActive === false) prepared.push({ target, current, payload: null, status: 'already-inactive' });
+        if (current?.IsActive === false) { prepared.push({ target, current, payload: null, status: 'already-inactive' }); alreadyInactive++; }
         else if (current?.IsActive === true) {
           let payload;
           try { payload = courseUpdatePayload(current); }
@@ -73,6 +78,7 @@ function createReconciler({ client, store, dryRun = true, now = Date.now, logger
         // Re-read immediately before this target's write and build from that current record.
         const latest = await client.course(target.id);
         if (latest?.IsActive === false) {
+          alreadyInactive++;
           outcomes.push({ ...target, status: 'already-inactive' });
           logEvent(logger, 'info', 'target already compliant', { associationId: id, targetId: target.id });
           continue;
@@ -84,6 +90,7 @@ function createReconciler({ client, store, dryRun = true, now = Date.now, logger
 
         logEvent(logger, 'info', 'update starting', { associationId: id, targetId: target.id, code: target.code });
         writeOutcomeUncertain = true;
+        writesAttempted++;
         try {
           await client.putCourse(target.id, payload);
         } catch (writeError) {
@@ -96,6 +103,7 @@ function createReconciler({ client, store, dryRun = true, now = Date.now, logger
               writeOutcomeUncertain = false;
               uncertainLogged = false;
               outcomes.push({ ...target, status: 'verified-inactive' });
+              writesVerified++;
               logEvent(logger, 'info', 'update verified', { associationId: id, targetId: target.id, isActive: false });
               continue;
             }
@@ -110,16 +118,20 @@ function createReconciler({ client, store, dryRun = true, now = Date.now, logger
         }
         writeOutcomeUncertain = false;
         outcomes.push({ ...target, status: 'verified-inactive' });
+        writesVerified++;
         logEvent(logger, 'info', 'update verified', { associationId: id, targetId: target.id, isActive: false });
       }
-      const status = dryRun ? 'pending' : 'completed';
       const checkedAt = new Date(now());
+      const fullyVerified = outcomes.length > 0 && outcomes.every(item => ['already-inactive', 'verified-inactive'].includes(item.status));
+      const status = fullyVerified ? 'completed' : 'pending';
       await store.record(id, {
         associationCode: association.Code, lastCheckedAt: checkedAt,
-        processedAt: dryRun ? null : checkedAt, status, lastError: null,
+        processedAt: fullyVerified ? checkedAt : null, status, lastError: null,
+        ...(fullyVerified ? { lastReconciledAt: checkedAt, lastVerifiedAt: checkedAt,
+          reconciliationVersion: RECONCILIATION_VERSION } : {}),
         dryRun, outcomes
       });
-      return { status, dryRun, targets: outcomes };
+      return { status, dryRun, targets: outcomes, writesAttempted, writesVerified, alreadyInactive };
     } catch (error) {
       const status = error.blocked || error.validationFailure ? 'blocked' : 'pending';
       if (error.blocked || error.validationFailure) logEvent(logger, 'warn', 'blocked', { associationId: id, code: associationCode, reason: error.reason || 'validation-failed' });
@@ -127,10 +139,15 @@ function createReconciler({ client, store, dryRun = true, now = Date.now, logger
         if (!uncertainLogged) logEvent(logger, 'warn', 'uncertain outcome', { associationId: id, targetId: currentTargetId, action: 'read-back-required' });
       } else logEvent(logger, 'warn', 'reconcile failed', { associationId: id, reason: error.reason || 'api-request-failed' });
       await store.record(id, { lastCheckedAt: new Date(now()), status, lastError: safeError(error), processedAt: null });
-      return { status, error: safeError(error) };
+      return { status, error: safeError(error), writesAttempted, writesVerified, alreadyInactive };
     }
   }
   return { reconcileAssociation };
+}
+
+function hasVerifiedCompletion(record) {
+  return record?.status === 'completed' && record.reconciliationVersion === RECONCILIATION_VERSION &&
+    record.lastReconciledAt instanceof Date && record.lastVerifiedAt instanceof Date;
 }
 
 function blocked(reason, message) { return Object.assign(new Error(message), { blocked: true, reason }); }
@@ -139,4 +156,4 @@ function safeError(error) {
   return String(error?.message || 'Reconciliation failed').replace(/https?:\/\/\S+/g, '[URL]').replace(/[\r\n\0-\x1f]/g, ' ').slice(0, 240);
 }
 
-module.exports = { createReconciler, richTextInput, courseUpdatePayload };
+module.exports = { createReconciler, richTextInput, courseUpdatePayload, RECONCILIATION_VERSION, hasVerifiedCompletion };

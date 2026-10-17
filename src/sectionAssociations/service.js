@@ -3,9 +3,13 @@
 const { isAssociation } = require('./rules');
 const { logEvent, safeErrorFields } = require('./log');
 
-function createSectionAssociationService({ client, store, reconciler, stabilityMinutes = 10, now = Date.now, logger = console }) {
+function createSectionAssociationService({ client, store, reconciler, stabilityMinutes = 10,
+  maxReconciliationsPerRun = 50, recoveryIntervalHours = 4, completedReverifyHours = 24,
+  now = Date.now, logger = console }) {
   let busy = false;
   const stabilityLogged = new Set();
+  const recoveryIntervalMs = recoveryIntervalHours * 60 * 60 * 1000;
+  const completedReverifyMs = completedReverifyHours * 60 * 60 * 1000;
 
   async function discover() {
     const candidates = await client.associationCandidates();
@@ -18,14 +22,13 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     try {
       const counts = await store.finishBaseline(token, associations.map(item => ({ id: item.Identifier ?? item.OrgUnitId, code: item.Code })));
       const result = { newlyRecorded: counts?.newlyRecorded || 0, alreadyKnown: counts?.alreadyKnown || 0 };
-      logEvent(logger, 'info', 'discovery completed', { candidates: associations.length, new: result.newlyRecorded, alreadyKnown: result.alreadyKnown });
-      logEvent(logger, 'info', 'baseline recorded', { completed: associations.length });
+      logEvent(logger, 'info', 'baseline recorded', { candidates: associations.length });
       return result;
     } catch (error) { await store.releaseBaseline(token); throw error; }
   }
 
   function logDiscovery(stats) {
-    logEvent(logger, 'info', 'discovery completed', { candidates: stats.candidates, new: stats.new, alreadyKnown: stats.alreadyKnown });
+    logEvent(logger, 'info', 'discovery completed', { candidates: stats.discovered, new: stats.new, alreadyKnown: stats.alreadyKnown });
   }
 
   function logStabilityWait(id) {
@@ -38,149 +41,113 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     if (result?.status === 'completed') stats.completed++;
     else if (result?.status === 'blocked') stats.blocked++;
     else stats.pending++;
+    stats.writesAttempted += result?.writesAttempted || 0;
+    stats.writesVerified += result?.writesVerified || 0;
+    stats.alreadyInactive += result?.alreadyInactive || 0;
   }
 
-  async function fastTick() {
+  async function prepareDiscovery(stats, setPhase = () => {}) {
+    const associations = await discover();
+    stats.discovered = associations.length;
+    setPhase('database');
+    let baseline = await store.baselineStatus();
+    if (!baseline || baseline.state !== 'ready') {
+      const counts = await bootstrap(associations);
+      if (!counts) {
+        baseline = await store.baselineStatus();
+        if (!baseline || baseline.state !== 'ready') return false;
+      } else {
+        stats.new += counts.newlyRecorded;
+        stats.alreadyKnown += counts.alreadyKnown;
+      }
+    }
+    if (baseline?.state === 'ready') {
+      for (const item of associations) {
+        const isNew = await store.recordDiscovery(item.Identifier ?? item.OrgUnitId, item.Code);
+        if (isNew) stats.new++;
+        else stats.alreadyKnown++;
+      }
+    }
+    logDiscovery(stats);
+    return true;
+  }
+
+  async function processWork(items, stats) {
+    for (const item of items) {
+      const id = String(item.associationOrgUnitId);
+      stabilityLogged.delete(id);
+      const result = await reconciler.reconcileAssociation(id, { associationCode: item.associationCode, force: true });
+      stats.processedThisRun++;
+      countStatus(stats, result);
+    }
+  }
+
+  function newStats(discovered = 0) {
+    return { candidates: discovered, discovered, new: 0, alreadyKnown: 0, pending: 0, historicalPending: 0,
+      blocked: 0, completed: 0, dueForReverification: 0, processedThisRun: 0, remainingHistoricalBacklog: 0,
+      writesAttempted: 0, writesVerified: 0, alreadyInactive: 0 };
+  }
+
+  async function runCycle({ recovery = false, maxReconciliations = maxReconciliationsPerRun } = {}) {
     const startedAt = now();
-    logEvent(logger, 'info', 'fast cycle started');
-    const stats = { candidates: 0, new: 0, alreadyKnown: 0, pending: 0, completed: 0, blocked: 0 };
+    const name = recovery ? 'recovery cycle' : 'fast cycle';
+    logEvent(logger, 'info', `${name} started`);
+    const stats = newStats();
     if (busy) {
-      logEvent(logger, 'warn', 'fast cycle skipped', { reason: 'already-running' });
-      logEvent(logger, 'info', 'fast cycle finished', { status: 'skipped', elapsedMs: Math.max(0, now() - startedAt) });
-      return { status: 'skipped' };
+      logEvent(logger, 'warn', `${name} skipped`, { reason: 'already-running' });
+      logEvent(logger, 'info', `${name} finished`, { status: 'skipped', elapsedMs: Math.max(0, now() - startedAt) });
+      return { status: 'skipped', processedThisRun: 0 };
     }
     busy = true;
     let phase = 'discovery';
     let succeeded = false;
+    let recoveryComplete = true;
     try {
-      const associations = await discover();
-      stats.candidates = associations.length;
-      phase = 'database';
-      const baseline = await store.baselineStatus();
-      if (!baseline || baseline.state !== 'ready') {
-        const counts = await bootstrap(associations);
-        if (counts) {
-          stats.new = counts.newlyRecorded;
-          stats.alreadyKnown = counts.alreadyKnown;
-          stats.completed = associations.length;
-          stabilityLogged.clear();
-        }
+      if (!await prepareDiscovery(stats, value => { phase = value; })) {
         succeeded = true;
-        return { status: 'completed' };
+        return { status: 'completed', ...stats, recoveryComplete: false };
       }
+      phase = 'database';
       const time = now();
-      for (const item of associations) {
-        const id = String(item.Identifier ?? item.OrgUnitId);
-        const saved = await store.get(id);
-        if (saved) stats.alreadyKnown++;
-        else stats.new++;
-        if (saved?.status === 'completed' || saved?.baseline) {
-          await store.record(id, { associationCode: item.Code, status: saved.status, lastCheckedAt: saved.lastCheckedAt, processedAt: saved.processedAt, lastError: saved.lastError, baseline: saved.baseline });
-          stats.completed++;
-          stabilityLogged.delete(id);
-          continue;
-        }
-        await store.record(id, { associationCode: item.Code, status: saved?.status || 'pending', lastError: saved?.lastError || null });
-        const current = await store.get(id);
-        if (time - new Date(current.firstSeenAt).getTime() < stabilityMinutes * 60000) {
+      const stabilityCutoff = new Date(time - stabilityMinutes * 60000);
+      stats.historicalPending = await store.countHistoricalBacklog();
+      if (recovery) {
+        const reverifyBefore = new Date(time - completedReverifyMs);
+        stats.dueForReverification = await store.countDueCompleted(reverifyBefore);
+        const items = await store.listRecoveryWork({ limit: maxReconciliations,
+          stabilityCutoff, blockedBefore: new Date(time - recoveryIntervalMs),
+          reverifyBefore });
+        await processWork(items, stats);
+        recoveryComplete = await store.countRecoveryWork({ stabilityCutoff,
+          blockedBefore: new Date(time - recoveryIntervalMs), reverifyBefore }) === 0;
+        if (!recoveryComplete) logEvent(logger, 'warn', 'recovery deferred', { reason: 'work-remains' });
+      } else {
+        for (const item of await store.listWaitingNew({ stabilityCutoff })) {
           stats.pending++;
-          logStabilityWait(id);
-          continue;
+          logStabilityWait(item.associationOrgUnitId);
         }
-        stabilityLogged.delete(id);
-        phase = 'reconciliation';
-        const result = await reconciler.reconcileAssociation(id, { associationCode: item.Code });
-        countStatus(stats, result);
-        phase = 'database';
+        const items = await store.listFastWork({ limit: maxReconciliations, stabilityCutoff });
+        await processWork(items, stats);
       }
-      logDiscovery(stats);
+      stats.remainingHistoricalBacklog = await store.countHistoricalBacklog();
       succeeded = true;
-      return { status: 'completed' };
+      return { status: 'completed', ...stats, recoveryComplete };
     } catch (error) {
       const errorPhase = error?.phase || phase;
       const endpoint = error?.endpoint || (errorPhase === 'oauth' ? 'oauth-token' : ['discovery', 'oauth/api-read'].includes(errorPhase) ? 'association-candidates' : undefined);
-      logEvent(logger, 'error', 'fast cycle failed', safeErrorFields(error, {
+      logEvent(logger, 'error', recovery ? 'recovery cycle failed' : 'fast cycle failed', safeErrorFields(error, {
         phase: errorPhase, endpoint, elapsedMs: Math.max(0, now() - startedAt)
       }));
-      return { status: 'failed', phase: errorPhase, code: error?.code };
+      return { status: 'failed', phase: errorPhase, code: error?.code, processedThisRun: stats.processedThisRun };
     } finally {
       busy = false;
-      if (succeeded) logEvent(logger, 'info', 'fast cycle completed', stats);
-      logEvent(logger, 'info', 'fast cycle finished', { status: succeeded ? 'completed' : 'failed', elapsedMs: Math.max(0, now() - startedAt) });
+      if (succeeded) logEvent(logger, 'info', recovery ? 'recovery cycle completed' : 'fast cycle completed', stats);
+      logEvent(logger, 'info', `${name} finished`, { status: succeeded ? 'completed' : 'failed', elapsedMs: Math.max(0, now() - startedAt) });
     }
   }
 
-  async function recoveryTick() {
-    const startedAt = now();
-    logEvent(logger, 'info', 'recovery cycle started');
-    const stats = { candidates: 0, new: 0, alreadyKnown: 0, pending: 0, completed: 0, blocked: 0 };
-    if (busy) {
-      logEvent(logger, 'warn', 'recovery cycle skipped', { reason: 'already-running' });
-      logEvent(logger, 'info', 'recovery cycle finished', { status: 'skipped', elapsedMs: Math.max(0, now() - startedAt) });
-      return { status: 'skipped' };
-    }
-    busy = true;
-    let phase = 'discovery';
-    let succeeded = false;
-    try {
-      const associations = await discover();
-      stats.candidates = associations.length;
-      phase = 'database';
-      const baseline = await store.baselineStatus();
-      if (!baseline || baseline.state !== 'ready') {
-        const counts = await bootstrap(associations);
-        if (counts) {
-          stats.new = counts.newlyRecorded;
-          stats.alreadyKnown = counts.alreadyKnown;
-          stats.completed = associations.length;
-          stabilityLogged.clear();
-        }
-        succeeded = true;
-        return { status: 'completed' };
-      }
-      for (const item of associations) {
-        const id = String(item.Identifier ?? item.OrgUnitId);
-        const saved = await store.get(id);
-        if (!saved) {
-          stats.new++;
-          await store.record(id, { associationCode: item.Code, status: 'pending', lastError: null });
-        } else {
-          stats.alreadyKnown++;
-          if (saved.status === 'completed' || saved.baseline) stats.completed++;
-          await store.record(id, { associationCode: item.Code, status: saved.status, processedAt: saved.processedAt,
-            lastCheckedAt: saved.lastCheckedAt, lastError: saved.lastError, baseline: saved.baseline });
-        }
-      }
-      logDiscovery(stats);
-      const items = await store.listUncompleted();
-      for (const item of items) {
-        phase = 'reconciliation';
-        const id = item.associationOrgUnitId;
-        if (now() - new Date(item.firstSeenAt).getTime() < stabilityMinutes * 60000) {
-          stats.pending++;
-          logStabilityWait(id);
-          continue;
-        }
-        stabilityLogged.delete(id);
-        const result = await reconciler.reconcileAssociation(id, { associationCode: item.associationCode });
-        countStatus(stats, result);
-        phase = 'database';
-      }
-      succeeded = true;
-      return { status: 'completed' };
-    } catch (error) {
-      const errorPhase = error?.phase || phase;
-      const endpoint = error?.endpoint || (errorPhase === 'oauth' ? 'oauth-token' : ['discovery', 'oauth/api-read'].includes(errorPhase) ? 'association-candidates' : undefined);
-      logEvent(logger, 'error', 'recovery cycle failed', safeErrorFields(error, {
-        phase: errorPhase, endpoint, elapsedMs: Math.max(0, now() - startedAt)
-      }));
-      return { status: 'failed', phase: errorPhase, code: error?.code };
-    } finally {
-      busy = false;
-      if (succeeded) logEvent(logger, 'info', 'recovery cycle completed', { pending: stats.pending, blocked: stats.blocked, completed: stats.completed });
-      logEvent(logger, 'info', 'recovery cycle finished', { status: succeeded ? 'completed' : 'failed', elapsedMs: Math.max(0, now() - startedAt) });
-    }
-  }
+  async function fastTick(options) { return runCycle(options); }
+  async function recoveryTick(options) { return runCycle({ ...options, recovery: true }); }
 
   return { discover, fastTick, recoveryTick };
 }

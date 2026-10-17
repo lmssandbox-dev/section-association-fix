@@ -41,7 +41,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-test('successful cron releases its shared lease so backfill can acquire immediately', async () => {
+test('successful cron releases its shared lease promptly', async () => {
   const now = { value: 1000 };
   const { store } = memoryMongo(now);
   const logs = [];
@@ -52,7 +52,7 @@ test('successful cron releases its shared lease so backfill can acquire immediat
   assert.deepEqual(await store.cronLeaseStatus(), { leaseKey: 'cron:tenant-hash', owner: 'unknown', acquiredAt: null, expiresAt: null, expired: true });
   assert.ok(logs.includes('[section-association] lease acquired owner=cron expiresAt=1970-01-01T00:10:01.000Z'));
   assert.ok(logs.includes('[section-association] lease released owner=cron'));
-  assert.ok(await store.acquireCronLease(600000, 'backfill'));
+  assert.ok(await store.acquireCronLease(600000, 'cron'));
 });
 
 test('failed cron also awaits lease release', async () => {
@@ -63,7 +63,7 @@ test('failed cron also awaits lease release', async () => {
   assert.equal((await store.cronLeaseStatus()).expired, true);
 });
 
-test('cron and backfill cannot overlap; an expired crashed lease can be reclaimed but an active one cannot', async () => {
+test('concurrent cron runs cannot overlap; expired leases can be reclaimed but active leases cannot', async () => {
   const now = { value: 1000 };
   const { store } = memoryMongo(now);
   const started = deferred();
@@ -71,17 +71,17 @@ test('cron and backfill cannot overlap; an expired crashed lease can be reclaime
   const cronRun = runSectionAssociationCron({ service: { async fastTick() { started.resolve(); await finish.promise; return { status: 'completed' }; } },
     store, recoveryIntervalHours: 4, logger: { info() {}, warn() {}, error() {} }, setIntervalFn: () => 1, clearIntervalFn() {} });
   await started.promise;
-  assert.equal(await store.acquireCronLease(600000, 'backfill'), null);
+  assert.equal(await store.acquireCronLease(600000, 'cron'), null);
   finish.resolve();
   await cronRun;
-  assert.ok(await store.acquireCronLease(600000, 'backfill'));
+  assert.ok(await store.acquireCronLease(600000, 'cron'));
 
   const stale = memoryMongo(now);
   assert.ok(await stale.store.acquireCronLease(500, 'cron'));
   now.value += 501;
-  const replacement = await stale.store.acquireCronLease(600000, 'backfill');
+  const replacement = await stale.store.acquireCronLease(600000, 'cron');
   assert.ok(replacement);
-  assert.equal((await stale.store.cronLeaseStatus()).owner, 'backfill');
+  assert.equal((await stale.store.cronLeaseStatus()).owner, 'cron');
 });
 
 test('cron entrypoint waits for run finalization and lease release before closing runtime', async () => {

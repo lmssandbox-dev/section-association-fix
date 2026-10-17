@@ -29,10 +29,13 @@ function createSectionAssociationRuntime({ env = process.env, http, logger = con
   const stabilityMinutes = positiveInteger(env.SECTION_ASSOCIATION_FIX_STABILITY_MINUTES, 10);
   const fastIntervalMinutes = positiveInteger(env.SECTION_ASSOCIATION_FIX_FAST_INTERVAL_MINUTES, 15);
   const recoveryIntervalHours = positiveInteger(env.SECTION_ASSOCIATION_FIX_RECOVERY_INTERVAL_HOURS, 4);
+  const maxReconciliationsPerRun = positiveInteger(env.SECTION_ASSOCIATION_FIX_MAX_RECONCILIATIONS_PER_RUN, 50);
+  const completedReverifyHours = positiveInteger(env.SECTION_ASSOCIATION_FIX_COMPLETED_REVERIFY_HOURS, 24);
   const reconciler = createReconciler({ client, store, dryRun, logger });
-  const service = createSectionAssociationService({ client, store, reconciler, stabilityMinutes, logger });
+  const service = createSectionAssociationService({ client, store, reconciler, stabilityMinutes,
+    recoveryIntervalHours, maxReconciliationsPerRun, completedReverifyHours, logger });
   return { oauth, apiGate, client, store, reconciler, service, namespace, dryRun,
-    fastIntervalMinutes, recoveryIntervalHours,
+    fastIntervalMinutes, recoveryIntervalHours, maxReconciliationsPerRun, completedReverifyHours,
     async close() { await Promise.allSettled([store.close(), apiGate.close()]); } };
 }
 

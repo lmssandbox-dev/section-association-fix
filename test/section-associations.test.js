@@ -4,7 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { ASSOCIATION_CODE, isAssociation, originalOfferingCode } = require('../src/sectionAssociations/rules');
 const { resolveTargets } = require('../src/sectionAssociations/resolver');
-const { createReconciler, courseUpdatePayload } = require('../src/sectionAssociations/reconciler');
+const { createReconciler, courseUpdatePayload, hasVerifiedCompletion, RECONCILIATION_VERSION } = require('../src/sectionAssociations/reconciler');
 const { createSectionAssociationClient } = require('../src/sectionAssociations/client');
 const { createSectionAssociationService } = require('../src/sectionAssociations/service');
 const { createBrightspaceGet } = require('../src/shared/client');
@@ -37,6 +37,47 @@ function memoryStore(now = () => Date.now()) {
     records.set(String(id), { ...prior, ...data, associationOrgUnitId: String(id),
       firstSeenAt: prior?.firstSeenAt || new Date(now()), lastSeenAt: new Date(now()) });
   } };
+}
+function serviceMemoryStore(now = () => Date.now()) {
+  const records = new Map();
+  const store = {
+    records,
+    async baselineStatus() { return { state: 'ready' }; },
+    async recordDiscovery(id, code) {
+      const key = String(id);
+      const prior = records.get(key);
+      records.set(key, { ...prior, namespace: 'tenant', associationOrgUnitId: key, associationCode: code,
+        firstSeenAt: prior?.firstSeenAt || new Date(now()), lastSeenAt: new Date(now()),
+        status: prior?.status || 'pending', baseline: prior?.baseline || false });
+      return !prior;
+    },
+    async listWaitingNew({ stabilityCutoff }) {
+      return [...records.values()].filter(item => item.baseline !== true && item.status === 'pending' &&
+        !item.lastCheckedAt && item.firstSeenAt > stabilityCutoff);
+    },
+    async listFastWork({ limit, stabilityCutoff }) {
+      const rows = [...records.values()].filter(item => item.status === 'pending' &&
+        (item.baseline === true || item.lastCheckedAt || item.firstSeenAt <= stabilityCutoff));
+      return rows.slice(0, limit);
+    },
+    async listRecoveryWork({ limit, blockedBefore, reverifyBefore, stabilityCutoff }) {
+      const rows = [...records.values()].filter(item => item.status === 'pending' ||
+        (item.status === 'blocked' && (!item.lastCheckedAt || item.lastCheckedAt <= blockedBefore)) ||
+        (item.status === 'completed' && item.reconciliationVersion === 1 && item.lastVerifiedAt <= reverifyBefore) ||
+        (item.baseline === true && (!item.lastVerifiedAt || item.reconciliationVersion !== 1)) ||
+        (item.baseline !== true && item.status === 'pending' && item.firstSeenAt <= stabilityCutoff));
+      return rows.slice(0, limit);
+    },
+    async countHistoricalBacklog() { return [...records.values()].filter(item => item.baseline === true && (!item.lastVerifiedAt || item.reconciliationVersion !== 1)).length; },
+    async countDueCompleted() { return 0; },
+    async countRecoveryWork() { return 0; },
+    async record(id, fields) {
+      const key = String(id);
+      records.set(key, { ...records.get(key), ...fields, associationOrgUnitId: key,
+        lastCheckedAt: new Date(now()), firstSeenAt: records.get(key)?.firstSeenAt || new Date(now()) });
+    }
+  };
+  return store;
 }
 function captureLogger() {
   const lines = [];
@@ -122,6 +163,38 @@ test('inactive offerings are left alone; active offerings use GET/PUT/GET verifi
   assert.deepEqual(result.targets.map(target => target.status), ['verified-inactive', 'already-inactive']);
   assert.equal(writes.length, 1);
   assert.equal(writes[0].body.IsActive, false);
+});
+
+test('all-inactive dry-run records positive verification evidence and completed records are skipped until due', async () => {
+  const inactive = api({ course: async () => courseRecord({ IsActive: false }) });
+  const store = memoryStore(() => 123456);
+  const completed = await createReconciler({ client: inactive.client, store, dryRun: true, now: () => 123456 })
+    .reconcileAssociation('33664', { associationCode: association.Code });
+  assert.equal(completed.status, 'completed');
+  assert.equal(inactive.writes.length, 0);
+  const evidence = await store.get('33664');
+  assert.equal(evidence.reconciliationVersion, RECONCILIATION_VERSION);
+  assert.ok(evidence.lastReconciledAt instanceof Date);
+  assert.ok(evidence.lastVerifiedAt instanceof Date);
+  assert.equal(hasVerifiedCompletion(evidence), true);
+
+  let reads = 0;
+  const skipped = await createReconciler({ client: { async orgUnit() { reads++; } }, store, dryRun: false })
+    .reconcileAssociation('33664');
+  assert.deepEqual(skipped, { status: 'completed', skipped: true });
+  assert.equal(reads, 0);
+});
+
+test('reverification uses the normal resolver and re-inactivates a target that became active', async () => {
+  const { client, writes } = api();
+  const store = memoryStore();
+  await store.record('33664', { associationCode: association.Code, status: 'completed', baseline: true,
+    reconciliationVersion: RECONCILIATION_VERSION, lastReconciledAt: new Date(1), lastVerifiedAt: new Date(1) });
+  const result = await createReconciler({ client, store, dryRun: false }).reconcileAssociation('33664', { force: true });
+  assert.equal(result.status, 'completed');
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].id, '100');
+  assert.equal((await store.get('33664')).baseline, true);
 });
 
 test('post-PUT state must verify inactive', async () => {
@@ -261,26 +334,34 @@ test('Mongo-backed API gate failures during discovery retain their database clas
   assert.equal(logger.lines.join('\n').includes('mongodb://'), false);
 });
 
-test('first successful discovery baselines historical records without reconciliation', async () => {
+test('first successful discovery records baseline history and sends it through the shared reconciler', async () => {
   let ready = false;
-  const store = { async baselineStatus() { return ready ? { state: 'ready' } : null; }, async beginBaseline() { return 'token'; }, async finishBaseline(_token, rows) { ready = true; this.rows = rows; }, async releaseBaseline() {} };
+  const store = serviceMemoryStore(() => 10000000);
+  store.baselineStatus = async () => ready ? { state: 'ready' } : null;
+  store.beginBaseline = async () => 'token';
+  store.finishBaseline = async (_token, rows) => {
+    ready = true;
+    store.rows = rows;
+    for (const row of rows) store.records.set(String(row.id), { namespace: 'tenant', associationOrgUnitId: String(row.id),
+      associationCode: row.code, baseline: true, status: 'pending', firstSeenAt: new Date(10000000) });
+    return { newlyRecorded: rows.length, alreadyKnown: 0 };
+  };
+  store.releaseBaseline = async () => {};
   let reconciles = 0;
   const service = createSectionAssociationService({ client: { async associationCandidates() { return [association]; } }, store,
-    reconciler: { async reconcileAssociation() { reconciles++; } }, logger: { info() {} }, now: () => 10000000 });
+    reconciler: { async reconcileAssociation() { reconciles++; return { status: 'completed' }; } }, logger: { info() {} }, now: () => 10000000 });
   await service.fastTick();
   assert.equal(store.rows.length, 1);
-  assert.equal(reconciles, 0);
+  assert.equal(reconciles, 1);
 });
 
 test('pending associations wait ten minutes and completed associations are skipped', async () => {
   let time = 100000000;
-  const store = memoryStore(() => time);
-  store.baselineStatus = async () => ({ state: 'ready' });
-  store.beginBaseline = async () => null;
+  const store = serviceMemoryStore(() => time);
   const seen = [];
   const logger = captureLogger();
   const service = createSectionAssociationService({ client: { async associationCandidates() { return [association]; } }, store,
-    reconciler: { async reconcileAssociation(id) { seen.push(id); await store.record(id, { status: 'completed' }); return { status: 'completed' }; } },
+    reconciler: { async reconcileAssociation(id) { seen.push(id); await store.record(id, { status: 'completed', reconciliationVersion: 1, lastReconciledAt: new Date(time), lastVerifiedAt: new Date(time) }); return { status: 'completed' }; } },
     stabilityMinutes: 10, now: () => time, logger });
   await service.fastTick();
   assert.equal(seen.length, 0);
@@ -290,7 +371,7 @@ test('pending associations wait ten minutes and completed associations are skipp
   await service.fastTick();
   assert.deepEqual(seen, ['33664']);
   assert.equal(logger.lines.filter(line => line === '[section-association] pending associationId=33664 reason=stability-window').length, 1);
-  assert.ok(logger.lines.includes('[section-association] fast cycle completed candidates=1 new=0 alreadyKnown=1 pending=0 completed=1 blocked=0'));
+  assert.ok(logger.lines.some(line => line.startsWith('[section-association] fast cycle completed') && line.includes('completed=1')), logger.lines.join('\n'));
   await service.fastTick();
   assert.equal(seen.length, 1);
   assert.equal(logger.lines.filter(line => line === '[section-association] fast cycle started').length, 3);
@@ -299,19 +380,17 @@ test('pending associations wait ten minutes and completed associations are skipp
 
 test('recovery cycle logs discovery and outcome counters', async () => {
   const time = 100000000;
-  const store = memoryStore(() => time);
-  store.baselineStatus = async () => ({ state: 'ready' });
-  store.listUncompleted = async () => [...store.records.values()].filter(item => item.status !== 'completed');
-  await store.record('33664', { associationCode: association.Code, status: 'pending' });
-  store.records.get('33664').firstSeenAt = new Date(time - 10 * 60000);
+  const store = serviceMemoryStore(() => time);
+  await store.recordDiscovery('33664', association.Code);
+  store.records.get('33664').lastCheckedAt = new Date(time - 10 * 60000);
   const logger = captureLogger();
   const service = createSectionAssociationService({
     client: { async associationCandidates() { return [association]; } }, store,
-    reconciler: { async reconcileAssociation(id) { await store.record(id, { status: 'completed' }); return { status: 'completed' }; } },
+    reconciler: { async reconcileAssociation(id) { await store.record(id, { status: 'completed', reconciliationVersion: 1, lastReconciledAt: new Date(time), lastVerifiedAt: new Date(time) }); return { status: 'completed' }; } },
     now: () => time, logger
   });
   await service.recoveryTick();
   assert.ok(logger.lines.includes('[section-association] recovery cycle started'));
   assert.ok(logger.lines.includes('[section-association] discovery completed candidates=1 new=0 alreadyKnown=1'));
-  assert.ok(logger.lines.includes('[section-association] recovery cycle completed pending=0 blocked=0 completed=1'));
+  assert.ok(logger.lines.some(line => line.startsWith('[section-association] recovery cycle completed') && line.includes('completed=1')), logger.lines.join('\n'));
 });

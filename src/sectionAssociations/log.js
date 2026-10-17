@@ -1,7 +1,7 @@
 'use strict';
 
 const EVENTS = new Set([
-  'cron started', 'cron completed', 'cron failed', 'cron skipped', 'lease acquired', 'lease released', 'lease unavailable', 'lease release failed', 'recovery due',
+  'cron started', 'cron completed', 'cron failed', 'cron skipped', 'lease acquired', 'lease released', 'lease unavailable', 'lease release failed', 'recovery due', 'recovery deferred',
   'scheduler started', 'fast cycle started', 'fast cycle completed', 'fast cycle failed', 'fast cycle finished', 'fast cycle skipped',
   'recovery cycle started', 'recovery cycle completed', 'recovery cycle failed', 'recovery cycle finished', 'recovery cycle skipped',
   'discovery completed', 'baseline recorded', 'reconcile started',
@@ -10,7 +10,9 @@ const EVENTS = new Set([
   'reconcile failed'
 ]);
 const FIELDS = new Set([
-  'candidates', 'new', 'alreadyKnown', 'pending', 'completed', 'blocked', 'fastIntervalMinutes', 'recoveryIntervalHours',
+  'candidates', 'discovered', 'new', 'alreadyKnown', 'pending', 'historicalPending', 'completed', 'blocked',
+  'dueForReverification', 'processedThisRun', 'remainingHistoricalBacklog', 'writesAttempted', 'writesVerified', 'alreadyInactive',
+  'fastIntervalMinutes', 'recoveryIntervalHours',
   'associationId', 'targetId', 'code', 'children', 'targets', 'action',
   'isActive', 'reason', 'skipped', 'phase', 'code', 'protocolCode', 'httpStatus', 'endpoint', 'elapsedMs', 'status', 'fatal', 'due',
   'owner', 'expiresAt', 'acquiredAt', 'leaseKey', 'expired'
@@ -21,7 +23,9 @@ const PROTOCOL_CODES = new Set(['invalid_request', 'invalid_client', 'invalid_gr
   'unsupported_grant_type', 'invalid_scope', 'server_error', 'temporarily_unavailable']);
 
 function safeValue(key, value, event) {
-  if (['candidates', 'new', 'alreadyKnown', 'pending', 'completed', 'blocked', 'children', 'targets', 'skipped', 'fastIntervalMinutes', 'recoveryIntervalHours'].includes(key)) {
+  if (['candidates', 'discovered', 'new', 'alreadyKnown', 'pending', 'historicalPending', 'completed', 'blocked',
+    'dueForReverification', 'processedThisRun', 'remainingHistoricalBacklog', 'writesAttempted', 'writesVerified', 'alreadyInactive',
+    'children', 'targets', 'skipped', 'fastIntervalMinutes', 'recoveryIntervalHours'].includes(key)) {
     return Number.isSafeInteger(value) && value >= 0 ? String(value) : null;
   }
   if (key === 'associationId' || key === 'targetId') return /^\d{1,20}$/.test(String(value)) ? String(value) : null;
@@ -42,7 +46,7 @@ function safeValue(key, value, event) {
   if (key === 'fatal') return typeof value === 'boolean' ? String(value) : null;
   if (key === 'due') return typeof value === 'boolean' ? String(value) : null;
   if (key === 'expired') return typeof value === 'boolean' ? String(value) : null;
-  if (key === 'owner') return ['cron', 'backfill', 'unknown'].includes(value) ? value : null;
+  if (key === 'owner') return ['cron', 'unknown'].includes(value) ? value : null;
   if (key === 'leaseKey') return /^cron:[a-f0-9]{64}$/.test(String(value)) ? String(value) : null;
   if (key === 'expiresAt' || key === 'acquiredAt') {
     if (typeof value !== 'string') return null;

@@ -38,7 +38,7 @@ async function main(env = process.env) {
   }
 }
 
-function safeOwner(value) { return value === 'cron' || value === 'backfill' ? value : 'unknown'; }
+function safeOwner(value) { return value === 'cron' ? value : 'unknown'; }
 function formatDate(value) { return value instanceof Date && Number.isFinite(value.getTime()) ? value.toISOString() : 'unknown'; }
 
 if (require.main === module) void main().then(code => { process.exitCode = code; });
