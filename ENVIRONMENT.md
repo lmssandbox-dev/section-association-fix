@@ -35,6 +35,8 @@ All five settings below must be present to register the Brightspace platform and
 
 Bootstrap sequence: deploy with the `BS_LTI_*` settings empty; register the tool in Brightspace using the public application keyset URL `https://<your-render-service>.onrender.com/.well-known/brightspace-jwks.json`; add the returned LTI Client ID and Deployment ID with all platform endpoints; redeploy. The application's public JWKS URL is distinct from `BS_LTI_KEYSET_URL`, which points to Brightspace's keyset.
 
+After configuration, an LTI launch opens the read-only service status page. The endpoint checks the launch's validated deployment ID. Internal mode can report its in-memory latest cycle; cron mode only reports the active lease and cannot retrieve prior run metrics. Refresh is the only action. No CSV report, standalone validation action, cancellation, or LTI administrator allowlist is configured, so corrective controls are not available in the page.
+
 ## Service-account permissions
 
 For the Server-to-Server Service User Client Credentials flow, the signed assertion `aud` must exactly match `BS_OAUTH2_TOKEN_ENDPOINT`; the standard endpoint is `https://auth.brightspace.com/core/connect/token`. This differs from the LTI Advantage service-token audience. The public JWKS endpoint publishes the matching public key, never the private key.

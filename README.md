@@ -32,6 +32,10 @@ Set `SECTION_ASSOCIATION_FIX_TRIGGER_MODE=internal` only on always-on hosting. T
 
 Deploy first with the `BS_LTI_*` settings empty. The application starts in LTI setup mode, runs the Section Association worker, and serves `/ping` and `/.well-known/brightspace-jwks.json`. Register the tool in Brightspace using the public application keyset URL `https://<your-render-service>.onrender.com/.well-known/brightspace-jwks.json` (or the equivalent configured public domain). Then add the returned LTI Client ID and Deployment ID, plus all required platform endpoints, and redeploy. LTI launches are enabled after the complete configuration is present.
 
+## LTI status page
+
+An authenticated Brightspace launch opens a compact status page with service availability, worker state, and the latest observed bounded cycle details. In internal trigger mode, the page can show the current process's latest cycle counters. In cron mode, the web service can show whether the cron lease is active, but the one-shot cron process does not persist execution summaries; date, counts, and outcome are therefore unavailable between cron invocations. Cycle completion does not mean a complete scan; the worker is capped at 50 associations per run by default, and full-scan completion is not tracked. The page only supports Refresh. There is no existing CSV report, standalone read-only validation operation, safe cancellation, or configured LTI administrator allowlist, so no such controls or corrective trigger are exposed. The status API is protected by the validated LTI session and configured deployment ID.
+
 ## Run
 
 Use Node.js 22, install with `npm ci`, copy `.env.example` to `.env`, and provide credentials. Run `npm test` and `npm run check`; start with `npm start`. Keep dry-run enabled until logs confirm the expected targets. Set `SECTION_ASSOCIATION_FIX_DRY_RUN=false` only when ready to permit inactivation.

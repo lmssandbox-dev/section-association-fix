@@ -10,6 +10,7 @@ const { startSectionAssociationTrigger } = require('./src/sectionAssociations/tr
 const { createSectionAssociationRuntime, positiveInteger } = require('./src/sectionAssociations/runtime');
 const { validateRequiredEnvironment, ltiConfiguration, registerBrightspacePlatform,
   installPublicBootstrapEndpoints, sectionAssociationTriggerMode } = require('./src/sectionAssociations/config');
+const { registerSectionAssociationLtiInterface } = require('./src/sectionAssociations/ltiInterface');
 
 const env = process.env;
 const port = Number(env.PORT || 3000);
@@ -34,12 +35,25 @@ const runtime = createSectionAssociationRuntime({ env, http: axios });
 const { oauth, service, fastIntervalMinutes: fastMinutes, recoveryIntervalHours: recoveryHours, dryRun } = runtime;
 let sectionAssociationScheduler;
 
-// LTI remains available as the future protected admin layer. The worker never uses an LTI token.
 lti.setup(APP_LTI_SECRET, databaseConfig(DB_MONGODB_URL), {
   appRoute: '/', loginRoute: '/login', cookies: { secure: true, sameSite: 'None' }, devMode: false
 });
 installPublicBootstrapEndpoints(lti, oauth.jwks);
-lti.onConnect((_token, _req, res) => res.type('html').send('<main><h1>Section Association Fix</h1><p>Administrative tools are not enabled yet.</p></main>'));
+registerSectionAssociationLtiInterface(lti, { deploymentId: env.BS_LTI_DEPLOYMENT_ID,
+  async getStatus() {
+    if (sectionAssociationScheduler) {
+      const current = sectionAssociationScheduler.status();
+      const execution = current.latestExecution;
+      return { availability: 'Available', worker: current.state,
+        latestExecution: execution ? { ...execution, summary: `${execution.kind} ${execution.result.status} at ${execution.completedAt}` } : null };
+    }
+    try {
+      const lease = await runtime.store.cronLeaseStatus();
+      return { availability: 'Available', worker: lease.expired ? 'idle' : 'running', latestExecution: null };
+    } catch {
+      return { availability: 'Available', worker: 'unknown', latestExecution: null };
+    }
+  } });
 
 async function start() {
   try {

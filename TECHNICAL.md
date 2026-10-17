@@ -8,6 +8,8 @@
 
 The LTI provider is optional during bootstrap. Worker code uses only the Server-to-Server OAuth service account.
 
+When configured, the LTI launch page is a read-only monitor. Its JSON status endpoint is behind ltijs session validation and additionally checks the verified deployment ID. Internal scheduler state and latest cycle results exist only in web-process memory. In cron mode, the page can read the shared cron lease but no run summary is persisted. Counts describe a bounded cycle, not full-scan coverage; no CSV, standalone read-only validation, cancellation, or manual corrective endpoint exists. No administration permission mapping is configured, so the UI exposes no operation that mutates course offerings.
+
 ## Reconciliation algorithm
 
 1. Require association Course Offering type and code `^\\d{6}-\\d{2}-\\d{4}-I0001$`.
