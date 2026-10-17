@@ -8,7 +8,7 @@
 
 The LTI provider is optional during bootstrap. Worker code uses only the Server-to-Server OAuth service account.
 
-When configured, the LTI launch page is a read-only monitor. Its JSON status endpoint is behind ltijs session validation and additionally checks the verified deployment ID. Internal scheduler state and latest cycle results exist only in web-process memory. In cron mode, the page can read the shared cron lease but no run summary is persisted. Counts describe a bounded cycle, not full-scan coverage; no CSV, standalone read-only validation, cancellation, or manual corrective endpoint exists. No administration permission mapping is configured, so the UI exposes no operation that mutates course offerings.
+When configured, the LTI launch page is a read-only monitor. Each status fetch sends the launch-generated ltijs token in the `Authorization: Bearer` header and same-origin credentials. ltijs validates the token and session cookie before the route checks the verified deployment ID; neither check is bypassed. Without the Bearer token, ltijs rejects the request before the status handler because cookies alone do not identify the LTI request. A 401 in the page asks the user to relaunch through Brightspace; 5xx responses are reported as temporary service failures. Internal scheduler state and latest cycle results exist only in web-process memory. In cron mode, the page can read the shared cron lease but no run summary is persisted. Counts describe a bounded cycle, not full-scan coverage; no CSV, standalone read-only validation, cancellation, or manual corrective endpoint exists. No administration permission mapping is configured, so the UI exposes no operation that mutates course offerings.
 
 ## Reconciliation algorithm
 

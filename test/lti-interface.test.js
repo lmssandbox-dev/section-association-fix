@@ -2,7 +2,8 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { registerSectionAssociationLtiInterface } = require('../src/sectionAssociations/ltiInterface');
+const vm = require('node:vm');
+const { registerSectionAssociationLtiInterface, pageForLaunch } = require('../src/sectionAssociations/ltiInterface');
 
 function setup(getStatus = async () => ({ availability: 'Available', worker: 'idle', latestExecution: null })) {
   const routes = {};
@@ -42,15 +43,81 @@ test('status route rejects a mismatched deployment before reading status', async
   assert.equal(reads, 0);
 });
 
-test('LTI launch returns the minimal read-only interface for its verified deployment', () => {
+test('status route reports temporary status-source failures as service unavailable', async () => {
+  const { routes } = setup(async () => { throw new Error('internal detail'); });
+  const res = response();
+  res.locals.token = { deploymentId: 'deployment-1' };
+  await routes['/api/section-association/status']({}, res);
+  assert.equal(res.statusCode, 503);
+  assert.equal(res.body.availability, 'Unavailable');
+});
+
+test('LTI launch returns the interface with its ltijs request token for subsequent authenticated fetches', () => {
   const { onConnect } = setup();
   const res = response();
+  res.locals.ltik = 'signed-lti-token';
   onConnect({ deploymentId: 'deployment-1' }, {}, res);
   assert.equal(res.contentType, 'html');
   assert.match(res.body, /Service status/);
   assert.match(res.body, /Latest execution/);
   assert.match(res.body, /Refresh/);
+  assert.match(res.body, /Authorization:'Bearer '\+ltiToken/);
+  assert.match(res.body, /credentials:'same-origin'/);
   assert.match(res.body, /CSV report[\s\S]*Unavailable/);
   assert.match(res.body, /Validation and corrective actions are not available/);
   assert.doesNotMatch(res.body, /cancel|run correction/i);
+});
+
+test('LTI launch without ltijs request token cannot render an unusable page', () => {
+  const { onConnect } = setup();
+  const res = response();
+  onConnect({ deploymentId: 'deployment-1' }, {}, res);
+  assert.equal(res.statusCode, 401);
+  assert.match(res.body, /Relaunch this tool from Brightspace/);
+});
+
+async function runPage(fetchImpl) {
+  const html = pageForLaunch('signed-lti-token');
+  const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+  const ids = ['availability', 'worker', 'latest', 'checked', 'compliant', 'corrections', 'errors', 'coverage', 'notice', 'refresh'];
+  let finish;
+  const finished = new Promise(resolve => { finish = resolve; });
+  const elements = Object.fromEntries(ids.map(id => [id, {
+    value: '',
+    listeners: {},
+    addEventListener(event, handler) { this.listeners[event] = handler; },
+    set textContent(value) { this.value = value; if (id === 'notice' && value !== 'Refreshing…') finish(); },
+    get textContent() { return this.value; }
+  }]));
+  vm.runInNewContext(script, { document: { getElementById: id => elements[id] }, fetch: fetchImpl });
+  await finished;
+  return elements;
+}
+
+test('status fetch sends the launch token in ltijs-supported Authorization header and renders data', async () => {
+  let request;
+  const elements = await runPage(async (...args) => {
+    request = args;
+    return { ok: true, async json() { return { availability: 'Available', worker: 'idle', latestExecution: null }; } };
+  });
+  assert.equal(request[0], '/api/section-association/status');
+  assert.equal(request[1].credentials, 'same-origin');
+  assert.equal(request[1].headers.Authorization, 'Bearer signed-lti-token');
+  assert.equal(elements.worker.textContent, 'idle');
+  assert.equal(elements.notice.textContent, 'Updated');
+});
+
+test('authentication and temporary server failures clear loading fields and explain the failure', async () => {
+  for (const [status, expectedNotice, expectedWorker] of [
+    [401, /LTI session expired.*Relaunch/, 'Authentication required'],
+    [403, /deployment is not authorized/, 'Not authorized'],
+    [503, /temporarily unavailable.*Retry shortly/, 'Unavailable']
+  ]) {
+    const elements = await runPage(async () => ({ ok: false, status }));
+    assert.match(elements.notice.textContent, expectedNotice);
+    assert.equal(elements.worker.textContent, expectedWorker);
+    for (const id of ['availability', 'latest', 'checked', 'compliant', 'corrections', 'errors', 'coverage']) {
+      assert.notEqual(elements[id].textContent, 'Loading');
+    }
+  }
 });

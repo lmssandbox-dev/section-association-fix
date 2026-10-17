@@ -17,15 +17,22 @@ button{border:0;border-radius:5px;padding:9px 14px;background:var(--accent);colo
 <section><h2>Latest execution</h2><dl><dt>Associations checked</dt><dd id="checked">Unavailable</dd><dt>Already compliant</dt><dd id="compliant">Unavailable</dd><dt>Corrections applied</dt><dd id="corrections">Unavailable</dd><dt>Errors</dt><dd id="errors">Unavailable</dd><dt>Coverage</dt><dd id="coverage">Unavailable</dd><dt>CSV report</dt><dd>Unavailable</dd></dl></section>
 <section><h2>Actions</h2><button id="refresh" type="button">Refresh</button><p id="notice" role="status" aria-live="polite"></p><p class="muted">Validation and corrective actions are not available in this interface.</p></section>
 </main><script>
+const ltiToken=__LTI_TOKEN__;
 const fields=['availability','worker','latest','checked','compliant','corrections','errors','coverage'];
 function set(id,value){document.getElementById(id).textContent=value}
-async function refresh(){set('notice','Refreshing…');try{const response=await fetch('/api/section-association/status',{credentials:'same-origin',headers:{Accept:'application/json'}});if(!response.ok)throw new Error('Status request failed');const data=await response.json();
+function unavailable(message,worker='Unavailable'){set('availability','Unavailable');set('worker',worker);set('latest','Unavailable');for(const id of fields.slice(3))set(id,'Unavailable');set('notice',message)}
+async function refresh(){set('notice','Refreshing…');try{const response=await fetch('/api/section-association/status',{credentials:'same-origin',headers:{Accept:'application/json',Authorization:'Bearer '+ltiToken}});if(!response.ok){if(response.status===401)unavailable('LTI session expired. Relaunch this tool from Brightspace.','Authentication required');else if(response.status===403)unavailable('This LTI deployment is not authorized.','Not authorized');else if(response.status>=500)unavailable('Status service temporarily unavailable. Retry shortly.','Unavailable');else unavailable('Status request failed (HTTP '+response.status+').');return}const data=await response.json();
 set('availability',data.availability);set('worker',data.worker);set('latest',data.latestExecution?.summary||'Unavailable for this worker process');
 const result=data.latestExecution?.result; if(result){set('checked',String(result.processedThisRun??'Unavailable'));set('compliant',String(result.alreadyInactive??'Unavailable'));set('corrections',String(result.writesVerified??'Unavailable'));set('errors',String(result.blocked??(result.status==='failed'?'Execution failed':'Unavailable')));set('coverage',result.status==='failed'?'Execution failed':(result.remainingHistoricalBacklog>0?'Partial: historical backlog remains':'Bounded cycle; full scan completion is not tracked'));}
 else{for(const id of fields.slice(3))set(id,'Unavailable')};set('notice','Updated');
-}catch{set('availability','Unavailable');set('notice','Could not load status. Retry when the LTI session is active.')}}
+}catch{unavailable('Could not reach the status service. Check your connection and retry.')}}
 document.getElementById('refresh').addEventListener('click',refresh);refresh();
 </script></body></html>`;
+
+function pageForLaunch(ltik) {
+  const serializedToken = JSON.stringify(ltik).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+  return PAGE.replace('__LTI_TOKEN__', serializedToken);
+}
 
 function registerSectionAssociationLtiInterface(provider, { deploymentId, getStatus }) {
   const authorize = deploymentGuard(deploymentId);
@@ -36,8 +43,10 @@ function registerSectionAssociationLtiInterface(provider, { deploymentId, getSta
   });
   provider.onConnect((token, req, res) => {
     if (!authorize(token, req, res)) return;
-    res.set('Cache-Control', 'no-store').type('html').send(PAGE);
+    const ltik = res.locals?.ltik;
+    if (typeof ltik !== 'string' || !ltik) return res.status(401).send('LTI launch token unavailable. Relaunch this tool from Brightspace.');
+    res.set('Cache-Control', 'no-store').type('html').send(pageForLaunch(ltik));
   });
 }
 
-module.exports = { registerSectionAssociationLtiInterface };
+module.exports = { registerSectionAssociationLtiInterface, pageForLaunch };
