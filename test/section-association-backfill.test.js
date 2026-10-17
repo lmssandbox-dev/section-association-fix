@@ -7,6 +7,8 @@ const os = require('node:os');
 const path = require('node:path');
 const { createHistoricalBackfill, parseBackfillArgs, writeCsvReport, CSV_COLUMNS } = require('../src/sectionAssociations/backfill');
 const { createSectionAssociationStore } = require('../src/sectionAssociations/store');
+const { createSectionAssociationClient } = require('../src/sectionAssociations/client');
+const diagnosticFixture = require('./fixtures/section-association-33664.json');
 
 const association = { Identifier: 1, Code: '002521-01-2602-I0001', Type: { Code: 'Course Offering' } };
 const targetCodes = ['002521-01-2602-GS2-EL1S', '002521-01-2602-GS2-EL2S'];
@@ -58,10 +60,12 @@ function setup({ active = [true, true], resolve = () => true, children = null, c
 }
 
 test('backfill args default to dry-run and apply defaults to a batch of 50', () => {
-  assert.deepEqual(parseBackfillArgs([]), { mode: 'dry-run', apply: false, maxAssociations: undefined });
-  assert.deepEqual(parseBackfillArgs(['--apply']), { mode: 'apply', apply: true, maxAssociations: 50 });
-  assert.deepEqual(parseBackfillArgs(['--dry-run', '--max-associations', '12']), { mode: 'dry-run', apply: false, maxAssociations: 12 });
+  assert.deepEqual(parseBackfillArgs([]), { mode: 'dry-run', apply: false, maxAssociations: undefined, associationId: undefined });
+  assert.deepEqual(parseBackfillArgs(['--apply']), { mode: 'apply', apply: true, maxAssociations: 50, associationId: undefined });
+  assert.deepEqual(parseBackfillArgs(['--dry-run', '--max-associations', '12']), { mode: 'dry-run', apply: false, maxAssociations: 12, associationId: undefined });
+  assert.deepEqual(parseBackfillArgs(['--dry-run', '--association-id', '33664']), { mode: 'dry-run', apply: false, maxAssociations: 1, associationId: '33664' });
   assert.throws(() => parseBackfillArgs(['--apply', '--dry-run']), /exactly one/);
+  assert.throws(() => parseBackfillArgs(['--apply', '--association-id', '33664']), /only in dry-run/);
   assert.throws(() => parseBackfillArgs(['--max-associations', '0']), /positive whole number/);
 });
 
@@ -79,6 +83,74 @@ test('Mongo baseline query selects only historical baseline records in determini
   assert.equal(await store.recordBackfill('1', { backfillStatus: 'completed', status: 'pending', baseline: false }), true);
   assert.deepEqual(writeFilter, { namespace: 'tenant', associationOrgUnitId: '1', baseline: true });
   assert.deepEqual(writeUpdate, { $set: { backfillStatus: 'completed' } });
+});
+
+test('Mongo baseline selector filters one requested association before applying limit', async () => {
+  let filter;
+  const cursor = { sort() { return this; }, limit() { return this; }, async toArray() { return []; } };
+  const associations = { async createIndex() {}, find(value) { filter = value; return cursor; } };
+  const mongoClient = { db: () => ({ collection(name) { return name === 'section_associations' ? associations : {}; } }) };
+  const store = createSectionAssociationStore({ namespace: 'tenant', mongoClient });
+  await store.listBaselineAssociations(1, '33664');
+  assert.deepEqual(filter, { namespace: 'tenant', baseline: true, associationOrgUnitId: '33664' });
+});
+
+test('association 33664 paged Brightspace fixture resolves in dry-run without PUT', async () => {
+  const fixtureByUrl = new Map([
+    [`https://tenant.example/d2l/api/lp/1.53/orgstructure/33664`, diagnosticFixture.association],
+    [`https://tenant.example/d2l/api/lp/1.53/orgstructure/33664/children/paged/`, diagnosticFixture.children],
+    ...diagnosticFixture.lookups.map(item => [`https://tenant.example/d2l/api/lp/1.53/orgstructure/?exactOrgUnitCode=${encodeURIComponent(item.code)}`, item.response]),
+    ...Object.entries(diagnosticFixture.courses).map(([id, response]) => [`https://tenant.example/d2l/api/lp/1.53/courses/${id}`, response])
+  ]);
+  const puts = [];
+  const client = createSectionAssociationClient({ baseUrl: 'https://tenant.example', lpVersion: '1.53', oauth: {}, http: async request => puts.push(request),
+    get: async url => {
+      if (!fixtureByUrl.has(url)) throw new Error(`Unexpected fixture URL ${url}`);
+      return structuredClone(fixtureByUrl.get(url));
+    } });
+  const saved = { associationOrgUnitId: '33664', associationCode: diagnosticFixture.association.Code, baseline: true, status: 'completed' };
+  const store = { async baselineStatus() { return { state: 'ready' }; }, async listBaselineAssociations(limit, id) {
+    assert.equal(id, '33664'); assert.equal(limit, 1); return [saved];
+  }, async recordBackfill() { return true; } };
+  const logs = [];
+  const workflow = createHistoricalBackfill({ client, store, logger: { info: line => logs.push(line), warn: line => logs.push(line) } });
+  const result = await workflow.run(parseBackfillArgs(['--dry-run', '--association-id', '33664']));
+  assert.equal(result.summary.ready, 1);
+  assert.equal(result.summary.targetsFound, 2);
+  assert.deepEqual(result.rows.map(row => row.targetOrgUnitId), ['9679', '9680']);
+  assert.equal(result.summary.writesAttempted, 0);
+  assert.deepEqual(puts, []);
+  assert.ok(logs.some(line => line.includes('association ready associationId=33664')));
+});
+
+test('malformed paged response blocks safely with phase and shape diagnostics', async () => {
+  const h = setup({});
+  h.client.children = async () => { const error = new Error('Invalid Brightspace paging response.'); error.responseShape = { responseType: 'object', hasItems: false, hasPagingInfo: false }; throw error; };
+  await h.workflow.run({ apply: false });
+  const blockedLog = h.logs.find(line => line.includes('association blocked'));
+  assert.match(blockedLog, /reason=unexpected-brightspace-response phase=children/);
+  assert.match(blockedLog, /responseType=object hasItems=false hasPagingInfo=false/);
+  assert.equal(h.puts.length, 0);
+});
+
+test('Brightspace read errors retain the failing operation and safe status', async () => {
+  const h = setup();
+  h.client.course = async () => { const error = Object.assign(new Error('do not log this'), { code: 'API_READ_FAILED', status: 403 }); throw error; };
+  await h.workflow.run({ apply: false });
+  const blockedLog = h.logs.find(line => line.includes('association blocked'));
+  assert.match(blockedLog, /phase=course-read code=API_READ_FAILED httpStatus=403/);
+  assert.equal(blockedLog.includes('do not log this'), false);
+});
+
+test('missing Course Offering active state follows normal reconciler classification', async () => {
+  const h = setup();
+  const incomplete = targetCourse(10, targetCodes[0]);
+  delete incomplete.IsActive;
+  h.client.course = async () => incomplete;
+  await h.workflow.run({ apply: false });
+  const blockedLog = h.logs.find(line => line.includes('association blocked'));
+  assert.match(blockedLog, /reason=unresolved-target phase=course-read/);
+  assert.match(blockedLog, /hasIsActive=false isActiveType=undefined/);
 });
 
 test('dry-run classifies ready associations, reports targets, records metadata only, and never PUTs', async () => {

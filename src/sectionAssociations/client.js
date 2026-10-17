@@ -36,12 +36,20 @@ function createSectionAssociationClient({ get, http, oauth, baseUrl, lpVersion }
       if (seen.has(next) || seen.size >= 10000 || values.length >= 1000000) throw new Error('Brightspace pagination limit exceeded.');
       seen.add(next);
       const page = await getPage(next);
-      if (!page || !Array.isArray(page.Items) || !page.PagingInfo || typeof page.PagingInfo.HasMoreItems !== 'boolean') throw new Error('Invalid Brightspace paging response.');
+      if (!page || !Array.isArray(page.Items) || !page.PagingInfo || typeof page.PagingInfo.HasMoreItems !== 'boolean') {
+        const error = new Error('Invalid Brightspace paging response.');
+        error.responseShape = safeResponseShape(page);
+        throw error;
+      }
       values.push(...page.Items);
       if (values.length > 1000000) throw new Error('Brightspace result limit exceeded.');
       if (!page.PagingInfo.HasMoreItems) break;
       const bookmark = page.PagingInfo.Bookmark;
-      if ((typeof bookmark !== 'string' && typeof bookmark !== 'number') || String(bookmark) === '') throw new Error('Missing Brightspace paging bookmark.');
+      if ((typeof bookmark !== 'string' && typeof bookmark !== 'number') || String(bookmark) === '') {
+        const error = new Error('Missing Brightspace paging bookmark.');
+        error.responseShape = safeResponseShape(page);
+        throw error;
+      }
       const current = new URL(next);
       current.searchParams.set('bookmark', String(bookmark));
       next = current.href;
@@ -80,6 +88,15 @@ function createSectionAssociationClient({ get, http, oauth, baseUrl, lpVersion }
   }
 
   return { associationCandidates, orgUnit, children, exactCode, course, putCourse };
+}
+
+function safeResponseShape(value) {
+  if (value === null) return { responseType: 'null' };
+  if (Array.isArray(value)) return { responseType: 'array', itemCount: value.length };
+  if (typeof value !== 'object') return { responseType: typeof value };
+  const shape = { responseType: 'object', hasItems: Array.isArray(value.Items), hasPagingInfo: Boolean(value.PagingInfo) };
+  if (Array.isArray(value.Items)) shape.itemCount = value.Items.length;
+  return shape;
 }
 
 module.exports = { createSectionAssociationClient };

@@ -73,9 +73,11 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
     const { associations } = await collections();
     return associations.find({ namespace, status: { $ne: 'completed' }, baseline: { $ne: true } }).toArray();
   }
-  async function listBaselineAssociations(limit) {
+  async function listBaselineAssociations(limit, associationId) {
     const { associations } = await collections();
-    let cursor = associations.find({ namespace, baseline: true }).sort({ firstSeenAt: 1, associationOrgUnitId: 1 });
+    const filter = { namespace, baseline: true };
+    if (associationId !== undefined) filter.associationOrgUnitId = String(associationId);
+    let cursor = associations.find(filter).sort({ firstSeenAt: 1, associationOrgUnitId: 1 });
     if (Number.isSafeInteger(limit) && limit > 0) cursor = cursor.limit(limit);
     return cursor.toArray();
   }

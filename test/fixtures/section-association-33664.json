@@ -1,0 +1,52 @@
+{
+  "association": {
+    "Identifier": 33664,
+    "Code": "002521-01-2602-I0001",
+    "Type": { "Id": 3, "Code": "Course Offering" }
+  },
+  "children": {
+    "Items": [
+      {
+        "Identifier": 51001,
+        "Code": "002521-01-2602-GS2-EL1S-03229",
+        "Type": { "Id": 5, "Code": "Group" }
+      },
+      {
+        "Identifier": 51002,
+        "Code": "002521-01-2602-GS2-EL2S-03230",
+        "Type": { "Id": 5, "Code": "Group" }
+      }
+    ],
+    "PagingInfo": { "HasMoreItems": false }
+  },
+  "lookups": [
+    {
+      "code": "002521-01-2602-GS2-EL1S",
+      "response": {
+        "Items": [{ "Identifier": 9679, "Name": "Original Offering 9679", "Code": "002521-01-2602-GS2-EL1S", "Type": { "Id": 3, "Code": "Course Offering" } }],
+        "PagingInfo": { "HasMoreItems": false }
+      }
+    },
+    {
+      "code": "002521-01-2602-GS2-EL2S",
+      "response": {
+        "Items": [{ "Identifier": 9680, "Name": "Original Offering 9680", "Code": "002521-01-2602-GS2-EL2S", "Type": { "Id": 3, "Code": "Course Offering" } }],
+        "PagingInfo": { "HasMoreItems": false }
+      }
+    }
+  ],
+  "courses": {
+    "9679": {
+      "Identifier": 9679, "Type": { "Id": 3, "Code": "Course Offering" }, "Name": "Original Offering 9679",
+      "Code": "002521-01-2602-GS2-EL1S", "StartDate": null, "EndDate": null, "LocaleId": 1,
+      "ForceLocale": false, "ShowAddressBook": true, "IsActive": true,
+      "Description": { "Text": "Description" }, "CanSelfRegister": false
+    },
+    "9680": {
+      "Identifier": 9680, "Type": { "Id": 3, "Code": "Course Offering" }, "Name": "Original Offering 9680",
+      "Code": "002521-01-2602-GS2-EL2S", "StartDate": null, "EndDate": null, "LocaleId": 1,
+      "ForceLocale": false, "ShowAddressBook": true, "IsActive": true,
+      "Description": { "Text": "Description" }, "CanSelfRegister": false
+    }
+  }
+}

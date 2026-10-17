@@ -18,6 +18,7 @@ function parseBackfillArgs(args = []) {
   let mode = 'dry-run';
   let selectedMode = false;
   let maxAssociations;
+  let associationId;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--dry-run' || args[i] === '--apply') {
       if (selectedMode) throw new Error('Choose exactly one of --dry-run or --apply.');
@@ -30,9 +31,17 @@ function parseBackfillArgs(args = []) {
         throw new Error('--max-associations must be a positive whole number.');
       }
       maxAssociations = Number(value);
+    } else if (args[i] === '--association-id') {
+      if (associationId !== undefined) throw new Error('--association-id may be supplied only once.');
+      const value = args[++i];
+      if (!/^[1-9]\d*$/.test(String(value || '')) || !Number.isSafeInteger(Number(value))) {
+        throw new Error('--association-id must be a positive whole number.');
+      }
+      associationId = String(value);
     } else throw new Error(`Unknown backfill option: ${args[i]}`);
   }
-  return { mode, apply: mode === 'apply', maxAssociations: maxAssociations ?? (mode === 'apply' ? 50 : undefined) };
+  if (associationId && mode === 'apply') throw new Error('--association-id is available only in dry-run mode.');
+  return { mode, apply: mode === 'apply', maxAssociations: maxAssociations ?? (mode === 'apply' ? 50 : associationId ? 1 : undefined), associationId };
 }
 
 function createHistoricalBackfill({ client, store, logger = console, now = Date.now }) {
@@ -45,17 +54,47 @@ function createHistoricalBackfill({ client, store, logger = console, now = Date.
     let classification;
     let blockedReason = '';
     let errorCode = '';
+    let phase = 'association-read';
+    let responseShape;
+    let httpStatus = null;
     try {
       const association = await client.orgUnit(id);
+      responseShape = safeShape(association);
       liveCode = association?.Code || liveCode;
       if (association?.Type?.Code !== 'Course Offering') throw blocked('wrong-org-unit-type');
       if (!isAssociation(association)) throw blocked('invalid-association-code');
       const actualId = String(association.Identifier ?? association.OrgUnitId ?? '');
       if (!/^\d+$/.test(actualId) || actualId !== id) throw blocked('unresolved-target');
-      targets = await resolveTargets({ association, client });
+      const diagnosticClient = {
+        ...client,
+        async children(associationId) {
+          phase = 'children';
+          try {
+            const result = await client.children(associationId);
+            responseShape = safeShape(result);
+            return result;
+          } catch (error) { attachPhase(error, phase); throw error; }
+        },
+        async exactCode(code) {
+          phase = 'exact-code-lookup';
+          try {
+            const result = await client.exactCode(code);
+            responseShape = safeShape(result);
+            return result;
+          } catch (error) { attachPhase(error, phase); throw error; }
+        }
+      };
+      targets = await resolveTargets({ association, client: diagnosticClient });
       for (const target of targets) {
+        phase = 'course-read';
         const current = await client.course(target.id);
-        if (current?.IsActive !== true && current?.IsActive !== false) throw blocked('unexpected-brightspace-response');
+        responseShape = safeCourseShape(current);
+        if (current?.IsActive !== true && current?.IsActive !== false) {
+          // Match the production reconciler: missing active state is an unresolved target.
+          const error = blocked('unresolved-target');
+          error.responseShape = responseShape;
+          throw error;
+        }
         if (current?.Type?.Code && current.Type.Code !== 'Course Offering') throw blocked('wrong-target-org-unit-type');
         if (current.IsActive) {
           try { courseUpdatePayload(current); }
@@ -65,9 +104,12 @@ function createHistoricalBackfill({ client, store, logger = console, now = Date.
       }
       classification = prepared.some(item => item.current.IsActive) ? 'ready' : 'already-compliant';
     } catch (error) {
+      phase = error?.backfillPhase || phase;
       classification = 'blocked';
       blockedReason = safeReason(error);
       errorCode = safeCode(error);
+      httpStatus = safeHttpStatus(error);
+      responseShape = error?.responseShape || responseShape;
       prepared = [];
     }
 
@@ -158,11 +200,11 @@ function createHistoricalBackfill({ client, store, logger = console, now = Date.
     const persisted = await store.recordBackfill(id, metadata);
     if (!persisted) throw Object.assign(new Error('Baseline record disappeared during backfill.'), { code: 'BACKFILL_RECORD_LOST' });
 
-    return { rows, classification, blockedReason, targetsFound: targets.length, activeTargets,
+    return { rows, classification, blockedReason, phase, errorCode, httpStatus, responseShape, targetsFound: targets.length, activeTargets,
       alreadyInactiveTargets, writesAttempted, writesVerified, writesFailed, errors };
   }
 
-  async function run({ apply = false, maxAssociations } = {}) {
+  async function run({ apply = false, maxAssociations, associationId } = {}) {
     const summary = { associationsScanned: 0, ready: 0, alreadyCompliant: 0, blocked: 0,
       targetsFound: 0, activeTargets: 0, alreadyInactiveTargets: 0, writesAttempted: 0, writesVerified: 0, writesFailed: 0 };
     const rows = [];
@@ -170,7 +212,7 @@ function createHistoricalBackfill({ client, store, logger = console, now = Date.
     logger.info?.(`[section-association-backfill] run started mode=${apply ? 'apply' : 'dry-run'} maxAssociations=${maxAssociations ?? 'all'}`);
     const baseline = await store.baselineStatus();
     if (baseline?.state !== 'ready') throw new Error('Historical backfill requires a completed MongoDB baseline.');
-    const records = await store.listBaselineAssociations(maxAssociations);
+    const records = await store.listBaselineAssociations(maxAssociations, associationId);
     for (const record of records) {
       const result = await processAssociation(record, { apply });
       summary.associationsScanned++;
@@ -178,7 +220,7 @@ function createHistoricalBackfill({ client, store, logger = console, now = Date.
       for (const key of ['targetsFound', 'activeTargets', 'alreadyInactiveTargets', 'writesAttempted', 'writesVerified', 'writesFailed']) summary[key] += result[key];
       summary.errors += result.errors;
       rows.push(...result.rows);
-      if (result.classification === 'blocked') logger.warn?.(`[section-association-backfill] association blocked associationId=${record.associationOrgUnitId} reason=${result.blockedReason}`);
+      if (result.classification === 'blocked') logger.warn?.(`[section-association-backfill] association blocked associationId=${record.associationOrgUnitId} reason=${result.blockedReason} phase=${result.phase}${result.errorCode ? ` code=${result.errorCode}` : ''}${result.httpStatus ? ` httpStatus=${result.httpStatus}` : ''}${formatShape(result.responseShape)}`);
       else logger.info?.(`[section-association-backfill] association ${result.classification === 'already-compliant' ? 'already-compliant' : 'ready'} associationId=${record.associationOrgUnitId} code=${safeLogCode(record.associationCode)} targets=${result.targetsFound} activeTargets=${result.activeTargets}`);
       for (const row of result.rows) if (row.result === 'would-inactivate') {
         logger.info?.(`[section-association-backfill] target associationId=${row.associationOrgUnitId} targetId=${row.targetOrgUnitId} code=${safeLogCode(row.targetCode)} currentIsActive=true action=would-inactivate`);
@@ -223,5 +265,26 @@ function safeCode(error) {
   return /^(?:[A-Z][A-Z0-9_]{0,63}|[1-5]\d\d)$/.test(String(value || '')) ? String(value) : 'BACKFILL_ERROR';
 }
 function safeLogCode(value) { return /^[A-Za-z0-9-]{1,100}$/.test(String(value || '')) ? String(value) : '[redacted]'; }
+function safeShape(value) {
+  if (value === null) return { responseType: 'null' };
+  if (Array.isArray(value)) return { responseType: 'array', itemCount: value.length };
+  if (typeof value !== 'object') return { responseType: typeof value };
+  const shape = { responseType: 'object', hasItems: Array.isArray(value.Items), hasPagingInfo: Boolean(value.PagingInfo) };
+  if (Array.isArray(value.Items)) shape.itemCount = value.Items.length;
+  return shape;
+}
+function safeCourseShape(value) {
+  const shape = safeShape(value);
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    shape.hasType = Boolean(value.Type && typeof value.Type === 'object');
+    shape.hasTypeCode = typeof value.Type?.Code === 'string';
+    shape.hasIsActive = Object.hasOwn(value, 'IsActive');
+    shape.isActiveType = typeof value.IsActive;
+  }
+  return shape;
+}
+function formatShape(shape) { return shape ? Object.entries(shape).map(([key, value]) => ` ${key}=${value}`).join('') : ''; }
+function attachPhase(error, phase) { if (error && typeof error === 'object') error.backfillPhase ||= phase; }
+function safeHttpStatus(error) { return Number.isInteger(error?.status) && error.status >= 100 && error.status <= 599 ? error.status : null; }
 
 module.exports = { CSV_COLUMNS, parseBackfillArgs, createHistoricalBackfill, writeCsvReport };
