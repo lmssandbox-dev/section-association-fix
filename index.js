@@ -41,18 +41,16 @@ lti.setup(APP_LTI_SECRET, databaseConfig(DB_MONGODB_URL), {
 installPublicBootstrapEndpoints(lti, oauth.jwks);
 registerSectionAssociationLtiInterface(lti, { deploymentId: env.BS_LTI_DEPLOYMENT_ID,
   async getStatus() {
+    let worker = 'unknown';
     if (sectionAssociationScheduler) {
-      const current = sectionAssociationScheduler.status();
-      const execution = current.latestExecution;
-      return { availability: 'Available', worker: current.state,
-        latestExecution: execution ? { ...execution, summary: `${execution.kind} ${execution.result.status} at ${execution.completedAt}` } : null };
+      worker = sectionAssociationScheduler.status().state;
+    } else {
+      try {
+        const lease = await runtime.store.cronLeaseStatus();
+        worker = lease.expired ? 'idle' : 'running';
+      } catch { /* Keep worker state unknown if lease storage is temporarily unavailable. */ }
     }
-    try {
-      const lease = await runtime.store.cronLeaseStatus();
-      return { availability: 'Available', worker: lease.expired ? 'idle' : 'running', latestExecution: null };
-    } catch {
-      return { availability: 'Available', worker: 'unknown', latestExecution: null };
-    }
+    return { availability: 'Available', worker, latestExecution: await runtime.store.latestMaintenanceExecution() };
   } });
 
 async function start() {
@@ -61,7 +59,7 @@ async function start() {
     if (ltiConfig.complete) console.log('LTI configured: Brightspace platform registration enabled.');
     else console.log('LTI setup mode: Brightspace LTI registration is not fully configured.');
     console.log(`Section Association Fix service listening on ${port}; dry-run=${dryRun}.`);
-    sectionAssociationScheduler = startSectionAssociationTrigger({ mode: triggerMode, service,
+    sectionAssociationScheduler = startSectionAssociationTrigger({ mode: triggerMode, service, store: runtime.store,
       fastIntervalMinutes: fastMinutes, recoveryIntervalHours: recoveryHours });
     if (ltiConfig.complete) {
       try { await registerBrightspacePlatform(lti, ltiConfig); }

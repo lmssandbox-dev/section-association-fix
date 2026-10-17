@@ -41,6 +41,11 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     if (result?.status === 'completed') stats.completed++;
     else if (result?.status === 'blocked') stats.blocked++;
     else stats.pending++;
+    stats.associationsChecked++;
+    if (Array.isArray(result?.targets) && result.targets.length > 0 &&
+        result.targets.every(target => target.status === 'already-inactive')) stats.associationsAlreadyCompliant++;
+    if ((result?.writesVerified || 0) > 0) stats.correctionsApplied++;
+    if (result?.status === 'blocked' || result?.error) stats.errors++;
     stats.writesAttempted += result?.writesAttempted || 0;
     stats.writesVerified += result?.writesVerified || 0;
     stats.alreadyInactive += result?.alreadyInactive || 0;
@@ -84,7 +89,8 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
 
   function newStats(discovered = 0) {
     return { candidates: discovered, discovered, new: 0, alreadyKnown: 0, pending: 0, historicalPending: 0,
-      blocked: 0, completed: 0, dueForReverification: 0, processedThisRun: 0, remainingHistoricalBacklog: 0,
+      blocked: 0, completed: 0, dueForReverification: 0, processedThisRun: 0, remainingHistoricalBacklog: null,
+      associationsChecked: 0, associationsAlreadyCompliant: 0, correctionsApplied: 0, errors: 0,
       writesAttempted: 0, writesVerified: 0, alreadyInactive: 0 };
   }
 
@@ -138,7 +144,8 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
       logEvent(logger, 'error', recovery ? 'recovery cycle failed' : 'fast cycle failed', safeErrorFields(error, {
         phase: errorPhase, endpoint, elapsedMs: Math.max(0, now() - startedAt)
       }));
-      return { status: 'failed', phase: errorPhase, code: error?.code, processedThisRun: stats.processedThisRun };
+      stats.errors++;
+      return { status: 'failed', phase: errorPhase, code: error?.code, ...stats };
     } finally {
       busy = false;
       if (succeeded) logEvent(logger, 'info', recovery ? 'recovery cycle completed' : 'fast cycle completed', stats);

@@ -1,20 +1,27 @@
 'use strict';
 
 const { logEvent, safeErrorFields } = require('./log');
+const { startMaintenanceExecution, buildMaintenanceExecutionSummary, persistMaintenanceExecution } = require('./executionSummary');
 
 async function runSectionAssociationCron({ service, store, recoveryIntervalHours, logger = console,
   now = Date.now, setIntervalFn = setInterval, clearIntervalFn = clearInterval,
-  leaseMs = 10 * 60 * 1000, heartbeatMs = 60 * 1000, maxReconciliationsPerRun = 50 }) {
+  leaseMs = 10 * 60 * 1000, heartbeatMs = 60 * 1000, maxReconciliationsPerRun = 50,
+  source = 'automatic' }) {
   const startedAt = now();
+  const execution = startMaintenanceExecution(source, now);
   logEvent(logger, 'info', 'cron started');
   let token;
   let heartbeat;
   let heartbeatFailure = false;
   let heartbeatRunning = false;
   let phase = 'database';
+  let executionStatus = 'failed';
+  let executionErrors = 0;
+  const results = [];
   try {
     token = await store.acquireCronLease(leaseMs, 'cron');
     if (!token) {
+      executionStatus = 'skipped';
       let lease = {};
       try { lease = safeLeaseFields(await store.cronLeaseStatus()); } catch { /* Preserve the safe skip path. */ }
       logEvent(logger, 'warn', 'lease unavailable', { owner: lease.owner || 'unknown', expiresAt: lease.expiresAt || 'unknown' });
@@ -33,6 +40,7 @@ async function runSectionAssociationCron({ service, store, recoveryIntervalHours
 
     phase = 'discovery';
     const fast = await service.fastTick({ maxReconciliations: maxReconciliationsPerRun });
+    results.push(fast);
     if (fast?.status && fast.status !== 'completed') throw Object.assign(new Error('Fast cycle did not complete.'), {
       phase: fast.phase || 'discovery', code: fast.code || 'FAST_CYCLE_FAILED'
     });
@@ -44,6 +52,7 @@ async function runSectionAssociationCron({ service, store, recoveryIntervalHours
       phase = 'discovery';
       const remaining = Math.max(0, maxReconciliationsPerRun - (fast?.processedThisRun || 0));
       const recovery = await service.recoveryTick({ maxReconciliations: remaining });
+      results.push(recovery);
       if (recovery?.status && recovery.status !== 'completed') throw Object.assign(new Error('Recovery cycle did not complete.'), {
         phase: recovery.phase || 'discovery', code: recovery.code || 'RECOVERY_CYCLE_FAILED'
       });
@@ -53,8 +62,10 @@ async function runSectionAssociationCron({ service, store, recoveryIntervalHours
     if (heartbeatFailure) throw Object.assign(new Error('Cron lease renewal failed.'), { phase: 'database', code: 'CRON_LEASE_RENEWAL_FAILED' });
     const elapsedMs = Math.max(0, now() - startedAt);
     logEvent(logger, 'info', 'cron completed', { status: 'completed', elapsedMs });
+    executionStatus = 'completed';
     return { status: 'completed', exitCode: 0 };
   } catch (error) {
+    if (!results.some(result => result?.status === 'failed' && Number.isSafeInteger(result.errors))) executionErrors = 1;
     const elapsedMs = Math.max(0, now() - startedAt);
     logEvent(logger, 'error', 'cron failed', safeErrorFields(error, { phase: error?.phase || phase, elapsedMs }));
     return { status: 'failed', exitCode: 1 };
@@ -70,6 +81,8 @@ async function runSectionAssociationCron({ service, store, recoveryIntervalHours
         logEvent(logger, 'error', 'lease release failed', { owner: 'cron', code });
       }
     }
+    await persistMaintenanceExecution(store, buildMaintenanceExecutionSummary(execution,
+      { status: executionStatus, results, executionErrors, now }), logger);
   }
 }
 

@@ -22,7 +22,7 @@ function matches(record, filter) {
   return true;
 }
 
-function makeStore(records) {
+function makeStore(records, metaDocuments = new Map()) {
   const associations = {
     createIndex: async () => {},
     find(filter) {
@@ -46,16 +46,33 @@ function makeStore(records) {
     },
     async countDocuments(filter) { return records.filter(record => matches(record, filter)).length; }
   };
-  const meta = { async findOne() { return null; } };
+  const meta = {
+    async findOne(filter) { return structuredClone(metaDocuments.get(filter._id) || null); },
+    async updateOne(filter, update, options = {}) {
+      let doc = metaDocuments.get(filter._id);
+      const eligible = !doc || !filter.$or || filter.$or.some(part =>
+        (part.startedAt?.$lte && doc.startedAt <= part.startedAt.$lte) ||
+        (part.startedAt?.$exists === false && doc.startedAt === undefined));
+      if (!eligible) {
+        if (options.upsert) throw Object.assign(new Error('duplicate key'), { code: 11000 });
+        return { matchedCount: 0, upsertedCount: 0 };
+      }
+      const inserted = !doc;
+      if (!doc) { doc = { _id: filter._id }; metaDocuments.set(filter._id, doc); }
+      Object.assign(doc, structuredClone(update.$set));
+      if (update.$unset) for (const key of Object.keys(update.$unset)) delete doc[key];
+      return { matchedCount: inserted ? 0 : 1, upsertedCount: inserted ? 1 : 0 };
+    }
+  };
   const mongoClient = { db: () => ({ collection(name) { return name === 'section_association_meta' ? meta : associations; } }) };
-  return createSectionAssociationStore({ namespace: 'tenant', mongoClient });
+  return { store: createSectionAssociationStore({ namespace: 'tenant', mongoClient }), metaDocuments, mongoClient };
 }
 
 const date = minutes => new Date(1_000_000 + minutes * 60_000);
 const item = (id, fields = {}) => ({ namespace: 'tenant', associationOrgUnitId: String(id), firstSeenAt: date(0), status: 'pending', baseline: false, ...fields });
 
 test('legacy baseline completed records without verification evidence are eligible and selection is bounded/deterministic', async () => {
-  const store = makeStore([
+  const { store } = makeStore([
     item(9, { baseline: true, status: 'completed' }),
     item(3, { baseline: true, status: 'completed', reconciliationVersion: 1, lastReconciledAt: date(0), lastVerifiedAt: date(0) }),
     item(2, { firstSeenAt: date(-20) }),
@@ -73,7 +90,7 @@ test('legacy baseline completed records without verification evidence are eligib
 
 test('legacy baseline completion leaves the eligible set after verified evidence is persisted', async () => {
   const legacy = item(81, { baseline: true, status: 'completed' });
-  const store = makeStore([legacy]);
+  const { store } = makeStore([legacy]);
   const args = { limit: 10, stabilityCutoff: date(0) };
   assert.deepEqual((await store.listFastWork(args)).map(row => row.associationOrgUnitId), ['81']);
   legacy.lastReconciledAt = date(1);
@@ -84,7 +101,7 @@ test('legacy baseline completion leaves the eligible set after verified evidence
 });
 
 test('new work is prioritized before historical work and due completed records are selected only in recovery', async () => {
-  const store = makeStore([
+  const { store } = makeStore([
     item(20, { baseline: true, status: 'completed' }),
     item(10, { firstSeenAt: date(-20) }),
     item(30, { status: 'completed', reconciliationVersion: 1, lastReconciledAt: date(-30), lastVerifiedAt: date(-25) })
@@ -98,7 +115,7 @@ test('new work is prioritized before historical work and due completed records a
 });
 
 test('baseline marker remains audit metadata and historical work is not gated by stability time', async () => {
-  const store = makeStore([item(77, { baseline: true, status: 'pending', firstSeenAt: date(-500) })]);
+  const { store } = makeStore([item(77, { baseline: true, status: 'pending', firstSeenAt: date(-500) })]);
   const selected = await store.listFastWork({ limit: 1, stabilityCutoff: date(-1000) });
   assert.equal(selected.length, 1);
   assert.equal(selected[0].baseline, true);
@@ -106,7 +123,7 @@ test('baseline marker remains audit metadata and historical work is not gated by
 });
 
 test('bounded selection advances past recently checked pending records', async () => {
-  const store = makeStore([
+  const { store } = makeStore([
     item(1, { baseline: true, lastCheckedAt: date(20) }),
     item(2, { baseline: true, lastCheckedAt: date(30) }),
     item(3, { baseline: true })
@@ -116,10 +133,22 @@ test('bounded selection advances past recently checked pending records', async (
 });
 
 test('blocked associations enter recovery only after their retry interval', async () => {
-  const store = makeStore([item(91, { status: 'blocked', lastCheckedAt: date(0) })]);
+  const { store } = makeStore([item(91, { status: 'blocked', lastCheckedAt: date(0) })]);
   const args = { limit: 10, stabilityCutoff: date(100), blockedBefore: date(-10), reverifyBefore: date(-100) };
   assert.deepEqual(await store.listRecoveryWork(args), []);
   const retry = await store.listRecoveryWork({ ...args, blockedBefore: date(1) });
   assert.deepEqual(retry.map(row => row.associationOrgUnitId), ['91']);
   assert.equal(retry[0].workType, 'blocked');
+});
+
+test('latest maintenance summary is shared across store instances and ordered by start timestamp across sources', async () => {
+  const { store, metaDocuments, mongoClient } = makeStore([]);
+  const automatic = { executionId: 'auto-1', source: 'automatic', startedAt: date(10), completedAt: date(11), status: 'completed', associationsChecked: 2 };
+  const manual = { executionId: 'manual-1', source: 'manual', startedAt: date(12), completedAt: date(13), status: 'failed', errors: 1 };
+  assert.equal(await store.saveMaintenanceExecution(automatic), true);
+  assert.equal(await store.saveMaintenanceExecution(manual), true);
+  assert.equal(await store.saveMaintenanceExecution({ ...automatic, executionId: 'old-auto', startedAt: date(9) }), false);
+  const restartedStore = createSectionAssociationStore({ namespace: 'tenant', mongoClient });
+  assert.deepEqual(await restartedStore.latestMaintenanceExecution(), manual);
+  assert.equal(metaDocuments.size, 1);
 });

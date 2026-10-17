@@ -1,8 +1,9 @@
 'use strict';
 
 const { logEvent, safeErrorFields } = require('./log');
+const { startMaintenanceExecution, buildMaintenanceExecutionSummary, persistMaintenanceExecution } = require('./executionSummary');
 
-function startSectionAssociationScheduler({ service, fastIntervalMinutes, recoveryIntervalHours,
+function startSectionAssociationScheduler({ service, store, fastIntervalMinutes, recoveryIntervalHours,
   setIntervalFn = setInterval, logger = console }) {
   const fastIntervalMs = fastIntervalMinutes * 60000;
   const recoveryIntervalMs = recoveryIntervalHours * 60 * 60000;
@@ -22,8 +23,10 @@ function startSectionAssociationScheduler({ service, fastIntervalMinutes, recove
     }
     fastRunning = true;
     const startedAt = Date.now();
+    const execution = startMaintenanceExecution('automatic');
+    let result;
     try {
-      const result = await service.fastTick();
+      result = await service.fastTick();
       latestExecution = { kind: 'Fast cycle', completedAt: new Date().toISOString(), result };
       return result;
     }
@@ -34,8 +37,13 @@ function startSectionAssociationScheduler({ service, fastIntervalMinutes, recove
       }));
       logEvent(logger, 'info', 'fast cycle finished', { status: 'failed', elapsedMs });
       latestExecution = { kind: 'Fast cycle', completedAt: new Date().toISOString(), result: { status: 'failed' } };
+      result = { failed: true, errors: 1 };
       return { failed: true };
-    } finally { fastRunning = false; }
+    } finally {
+      if (store) await persistMaintenanceExecution(store, buildMaintenanceExecutionSummary(execution,
+        { status: result?.status || (result?.failed ? 'failed' : 'completed'), results: result ? [result] : [] }), logger);
+      fastRunning = false;
+    }
   }
 
   async function runRecovery() {
@@ -45,8 +53,10 @@ function startSectionAssociationScheduler({ service, fastIntervalMinutes, recove
     }
     recoveryRunning = true;
     const startedAt = Date.now();
+    const execution = startMaintenanceExecution('automatic');
+    let result;
     try {
-      const result = await service.recoveryTick();
+      result = await service.recoveryTick();
       latestExecution = { kind: 'Recovery cycle', completedAt: new Date().toISOString(), result };
       return result;
     }
@@ -57,8 +67,13 @@ function startSectionAssociationScheduler({ service, fastIntervalMinutes, recove
       }));
       logEvent(logger, 'info', 'recovery cycle finished', { status: 'failed', elapsedMs });
       latestExecution = { kind: 'Recovery cycle', completedAt: new Date().toISOString(), result: { status: 'failed' } };
+      result = { failed: true, errors: 1 };
       return { failed: true };
-    } finally { recoveryRunning = false; }
+    } finally {
+      if (store) await persistMaintenanceExecution(store, buildMaintenanceExecutionSummary(execution,
+        { status: result?.status || (result?.failed ? 'failed' : 'completed'), results: result ? [result] : [] }), logger);
+      recoveryRunning = false;
+    }
   }
 
   // Keep referenced interval handles in this scheduler for the life of the service.

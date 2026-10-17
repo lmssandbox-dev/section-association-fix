@@ -24,13 +24,15 @@ function response() {
 
 test('status route uses the verified deployment and returns no-cache process status', async () => {
   let reads = 0;
-  const { routes } = setup(async () => { reads++; return { availability: 'Available', worker: 'idle', latestExecution: null }; });
+  const savedExecution = { executionId: 'run-1', source: 'manual', status: 'completed', startedAt: new Date(10), completedAt: new Date(20) };
+  const { routes } = setup(async () => { reads++; return { availability: 'Available', worker: 'idle', latestExecution: savedExecution }; });
   const res = response();
   res.locals.token = { deploymentId: 'deployment-1' };
   await routes['/api/section-association/status']({}, res);
   assert.equal(reads, 1);
   assert.equal(res.headers['Cache-Control'], 'no-store');
   assert.equal(res.body.worker, 'idle');
+  assert.equal(res.body.latestExecution, savedExecution);
 });
 
 test('status route rejects a mismatched deployment before reading status', async () => {
@@ -105,6 +107,24 @@ test('status fetch sends the launch token in ltijs-supported Authorization heade
   assert.equal(request[1].headers.Authorization, 'Bearer signed-lti-token');
   assert.equal(elements.worker.textContent, 'idle');
   assert.equal(elements.notice.textContent, 'Updated');
+  assert.equal(elements.latest.textContent, 'No maintenance execution recorded yet.');
+  assert.equal(elements.checked.textContent, 'Unavailable');
+});
+
+test('latest automatic or manual execution displays only persisted fields with their stored meanings', async () => {
+  const execution = { source: 'manual', startedAt: '2026-10-17T10:00:00.000Z', completedAt: '2026-10-17T10:02:00.000Z',
+    status: 'completed', associationsChecked: 3, alreadyCompliant: 1, correctionsApplied: 1, errors: 0,
+    coverage: { type: 'bounded-cycle', remainingHistoricalBacklog: 4 } };
+  const elements = await runPage(async () => ({ ok: true, async json() {
+    return { availability: 'Available', worker: 'idle', latestExecution: execution };
+  } }));
+  assert.match(elements.latest.textContent, /^Manual maintenance · Started /);
+  assert.match(elements.latest.textContent, /· completed$/);
+  assert.equal(elements.checked.textContent, '3');
+  assert.equal(elements.compliant.textContent, '1');
+  assert.equal(elements.corrections.textContent, '1');
+  assert.equal(elements.errors.textContent, '0');
+  assert.match(elements.coverage.textContent, /historical backlog remaining: 4/);
 });
 
 test('authentication and temporary server failures clear loading fields and explain the failure', async () => {

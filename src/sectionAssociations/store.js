@@ -226,10 +226,35 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
       { $set: { lastRecoveryAt: now() } });
     if (result.matchedCount !== 1) throw Object.assign(new Error('Section Association cron lease lost.'), { code: 'CRON_LEASE_LOST' });
   }
+  const maintenanceExecutionId = `maintenance-execution:${namespace}`;
+  async function saveMaintenanceExecution(summary) {
+    const { meta } = await collections();
+    const fields = ['executionId', 'source', 'startedAt', 'completedAt', 'status', 'associationsChecked',
+      'alreadyCompliant', 'correctionsApplied', 'errors', 'coverage'];
+    const unset = Object.fromEntries(fields.filter(field => !Object.hasOwn(summary, field)).map(field => [field, '']));
+    try {
+      const result = await meta.updateOne({ _id: maintenanceExecutionId,
+        $or: [{ startedAt: { $lte: summary.startedAt } }, { startedAt: { $exists: false } }] },
+      { $set: { ...summary, namespace }, ...(Object.keys(unset).length ? { $unset: unset } : {}) }, { upsert: true });
+      return (result.matchedCount || result.upsertedCount || 0) > 0;
+    } catch (error) {
+      // An upsert can race with a newer summary; its duplicate _id means that newer run won.
+      if (error.code === 11000) return false;
+      throw error;
+    }
+  }
+  async function latestMaintenanceExecution() {
+    const { meta } = await collections();
+    const result = await meta.findOne({ _id: maintenanceExecutionId });
+    if (!result) return null;
+    const { _id, namespace: _namespace, ...summary } = result;
+    return summary;
+  }
   async function close() { if (!mongoClient) await client.close(); }
   return { get, record, baselineStatus, beginBaseline, finishBaseline, releaseBaseline, recordDiscovery,
     listFastWork, listWaitingNew, listRecoveryWork, countHistoricalBacklog, countDueCompleted, countRecoveryWork,
-    acquireCronLease, renewCronLease, releaseCronLease, cronLeaseStatus, recoveryDue, markRecoveryCompleted, close };
+    acquireCronLease, renewCronLease, releaseCronLease, cronLeaseStatus, recoveryDue, markRecoveryCompleted,
+    saveMaintenanceExecution, latestMaintenanceExecution, close };
 }
 
 module.exports = { createSectionAssociationStore };

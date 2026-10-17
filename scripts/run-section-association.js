@@ -22,7 +22,8 @@ async function main(env = process.env, dependencies = {}) {
     if (missingScopes.length) throw new Error(`BS_OAUTH2_SCOPES must include: ${missingScopes.join(', ')}`);
     runtime = (dependencies.createRuntime || createSectionAssociationRuntime)({ env, http: axios });
     const result = await (dependencies.runCron || runSectionAssociationCron)({ service: runtime.service, store: runtime.store,
-      recoveryIntervalHours: runtime.recoveryIntervalHours, maxReconciliationsPerRun: runtime.maxReconciliationsPerRun });
+      recoveryIntervalHours: runtime.recoveryIntervalHours, maxReconciliationsPerRun: runtime.maxReconciliationsPerRun,
+      source: maintenanceSource(dependencies.argv || process.argv) });
     return result.exitCode;
   } catch (error) {
     console.error(`[section-association] cron failed phase=scheduler code=INVALID_CONFIGURATION elapsedMs=0`);
@@ -32,5 +33,7 @@ async function main(env = process.env, dependencies = {}) {
   }
 }
 
+function maintenanceSource(argv = process.argv) { return argv.includes('--manual') ? 'manual' : 'automatic'; }
+
 if (require.main === module) void main().then(code => { process.exitCode = code; });
-module.exports = { main };
+module.exports = { main, maintenanceSource };
