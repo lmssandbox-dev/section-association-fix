@@ -153,6 +153,22 @@ test('missing Course Offering active state follows normal reconciler classificat
   assert.match(blockedLog, /hasIsActive=false isActiveType=undefined/);
 });
 
+test('one valid child uses the same accepted minimum in backfill dry-run and apply', async () => {
+  const oneChild = [{ Identifier: 3, Code: `${targetCodes[0]}-03229`, Type: { Code: 'Group' } }];
+  const dry = setup({ children: oneChild });
+  const dryResult = await dry.workflow.run({ apply: false });
+  assert.equal(dryResult.summary.ready, 1);
+  assert.equal(dryResult.summary.targetsFound, 1);
+  assert.equal(dryResult.rows[0].targetOrgUnitId, '10');
+  assert.equal(dry.puts.length, 0);
+
+  const apply = setup({ children: oneChild });
+  const applyResult = await apply.workflow.run({ apply: true });
+  assert.equal(applyResult.summary.writesAttempted, 1);
+  assert.equal(applyResult.summary.writesVerified, 1);
+  assert.deepEqual(apply.puts.map(write => write.id), ['10']);
+});
+
 test('dry-run classifies ready associations, reports targets, records metadata only, and never PUTs', async () => {
   const h = setup();
   const { rows, summary } = await h.workflow.run({ apply: false });
@@ -272,12 +288,20 @@ test('rerun resumes after a partial apply without rewriting targets already inac
   assert.deepEqual(h.puts.map(write => write.id), ['10', '11', '11']);
 });
 
-test('association-level structural validation blocks every target before writing', async () => {
-  const h = setup({ children: [{ Identifier: 2, Code: 'broken', Type: { Code: 'Group' } }] });
+test('zero direct children block the association before writing', async () => {
+  const h = setup({ children: [] });
   const { rows, summary } = await h.workflow.run({ apply: true });
   assert.equal(summary.blocked, 1);
   assert.equal(summary.writesAttempted, 0);
-  assert.equal(rows[0].blockedReason, 'insufficient-children');
+  assert.equal(rows[0].blockedReason, 'no-children');
+});
+
+test('one malformed child still blocks the association before writing', async () => {
+  const h = setup({ children: [{ Identifier: 2, Code: `${targetCodes[0]}-03229`, Type: { Code: 'Course Offering' } }] });
+  const { rows, summary } = await h.workflow.run({ apply: true });
+  assert.equal(summary.blocked, 1);
+  assert.equal(summary.writesAttempted, 0);
+  assert.equal(rows[0].blockedReason, 'invalid-child-type');
 });
 
 test('CSV includes required columns and escapes dangerous values', async () => {

@@ -63,20 +63,39 @@ test('association type and exact code are both required before any association w
   }
 });
 
-test('zero/one child, wrong child type, duplicate and ambiguous matches all fail before any write', async () => {
+test('zero children, malformed one child, duplicate and ambiguous targets block safely', async () => {
   for (const override of [
     { children: async () => [] },
-    { children: async () => [groups[0]] },
-    { children: async () => [{ ...groups[0], Type: { Code: 'Course Offering' } }, groups[1]] },
+    { children: async () => [{ ...groups[0], Type: { Code: 'Course Offering' } }] },
     { children: async () => [groups[0], { ...groups[1], Code: groups[0].Code }] },
     { exactCode: async () => [{ Identifier: 100, Type: { Code: 'Course Offering' } }, { Identifier: 102, Type: { Code: 'Course Offering' } }] }
   ]) {
     const { client, writes } = api(override);
     const result = await createReconciler({ client, store: memoryStore(), dryRun: false }).reconcileAssociation('33664');
-    assert.notEqual(result.status, 'completed');
+    assert.equal(result.status, 'blocked');
     assert.equal(writes.length, 0);
   }
+  const zero = api({ children: async () => [] });
+  const zeroResult = await createReconciler({ client: zero.client, store: memoryStore(), dryRun: false }).reconcileAssociation('33664');
+  assert.equal(zeroResult.status, 'blocked');
+  assert.match(zeroResult.error, /at least one direct child/);
   await assert.rejects(resolveTargets({ association, client: api({ exactCode: async () => [{ Identifier: 100, Type: { Code: 'Group' } }] }).client }), /not a valid Course Offering/);
+});
+
+test('one valid child resolves exactly one target for dry-run and apply', async () => {
+  const singleChild = [groups[0]];
+  const dry = api({ children: async () => singleChild });
+  const dryResult = await createReconciler({ client: dry.client, store: memoryStore(), dryRun: true }).reconcileAssociation('33664');
+  assert.equal(dryResult.status, 'pending');
+  assert.deepEqual(dryResult.targets.map(target => target.status), ['would-inactivate']);
+  assert.equal(dry.writes.length, 0);
+
+  const live = api({ children: async () => singleChild });
+  const liveResult = await createReconciler({ client: live.client, store: memoryStore(), dryRun: false }).reconcileAssociation('33664');
+  assert.equal(liveResult.status, 'completed');
+  assert.deepEqual(liveResult.targets.map(target => target.code), ['002521-01-2602-GS2-EL1S']);
+  assert.equal(live.writes.length, 1);
+  assert.equal(live.writes[0].id, '100');
 });
 
 test('all target records are validated before mutation, preventing partial writes', async () => {
@@ -134,7 +153,7 @@ test('blocked validation logs a safe reason without child code or API response c
     { Identifier: 1, Code: 'TOPSECRET-RESPONSE-BODY', Type: { Code: 'Group' } }, groups[1]
   ] });
   const result = await createReconciler({ client, store: memoryStore(), dryRun: true, logger }).reconcileAssociation('33664', { associationCode: association.Code });
-  assert.equal(result.status, 'pending');
+  assert.equal(result.status, 'blocked');
   assert.ok(logger.lines.some(line => line === '[section-association] blocked associationId=33664 code=002521-01-2602-I0001 reason=invalid-child-code'));
   assert.equal(logger.lines.some(line => line.includes('TOPSECRET-RESPONSE-BODY')), false);
 });

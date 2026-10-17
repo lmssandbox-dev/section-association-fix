@@ -11,7 +11,7 @@ const CSV_COLUMNS = ['associationOrgUnitId', 'associationCode', 'baseline', 'ass
   'blockedReason', 'targetOrgUnitId', 'targetCode', 'currentIsActive', 'plannedAction', 'writeAttempted',
   'verifiedIsActive', 'result', 'errorCode'];
 const BLOCKED_REASONS = new Set(['invalid-association-code', 'wrong-org-unit-type', 'unresolved-target', 'no-children',
-  'insufficient-children', 'invalid-child-code', 'invalid-child-type', 'ambiguous-target', 'wrong-target-org-unit-type',
+  'invalid-child-code', 'invalid-child-type', 'ambiguous-target', 'wrong-target-org-unit-type',
   'association-resolving-to-itself', 'incomplete-api-result', 'unexpected-brightspace-response', 'invalid-course-offering']);
 
 function parseBackfillArgs(args = []) {

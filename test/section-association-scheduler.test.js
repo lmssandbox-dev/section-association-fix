@@ -53,7 +53,7 @@ test('a rejected fast cycle is contained and later scheduled cycles continue', a
   await intervals[0].callback();
   await intervals[0].callback();
   assert.equal(fastCalls, 3);
-  assert.ok(logs.includes('[section-association] fast cycle failed phase=scheduler elapsedMs=0'));
+  assert.ok(logs.some(line => /^\[section-association\] fast cycle failed phase=scheduler elapsedMs=\d+$/.test(line)));
   assert.equal(logs.some(line => line.includes('private upstream details')), false);
 });
 

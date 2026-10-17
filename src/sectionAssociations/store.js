@@ -89,14 +89,15 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
     return result.matchedCount === 1;
   }
   const cronMetaId = `cron:${namespace}`;
-  async function acquireCronLease(leaseMs = 120000) {
+  async function acquireCronLease(leaseMs = 120000, owner = 'cron') {
     const { meta } = await collections();
     const time = new Date(now());
     const token = randomUUID();
     try {
       const result = await meta.findOneAndUpdate({ _id: cronMetaId,
         $or: [{ leaseUntil: { $lte: time } }, { leaseUntil: { $exists: false } }] },
-      { $set: { leaseToken: token, leaseUntil: new Date(time.getTime() + leaseMs) },
+      { $set: { leaseToken: token, leaseOwner: owner, leaseAcquiredAt: time,
+        leaseUntil: new Date(time.getTime() + leaseMs) },
         $setOnInsert: { namespace } }, { upsert: true, returnDocument: 'after' });
       return result.value?.leaseToken === token ? token : null;
     } catch (error) {
@@ -113,7 +114,19 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
   }
   async function releaseCronLease(token) {
     const { meta } = await collections();
-    await meta.updateOne({ _id: cronMetaId, leaseToken: token }, { $unset: { leaseToken: '', leaseUntil: '' } });
+    return meta.updateOne({ _id: cronMetaId, leaseToken: token }, { $unset: {
+      leaseToken: '', leaseOwner: '', leaseAcquiredAt: '', leaseUntil: ''
+    } });
+  }
+  async function cronLeaseStatus() {
+    const { meta } = await collections();
+    const state = await meta.findOne({ _id: cronMetaId }, { projection: {
+      _id: 1, leaseOwner: 1, leaseAcquiredAt: 1, leaseUntil: 1
+    } });
+    const expiresAt = state?.leaseUntil instanceof Date ? state.leaseUntil : null;
+    return { leaseKey: cronMetaId, owner: state?.leaseOwner || 'unknown',
+      acquiredAt: state?.leaseAcquiredAt instanceof Date ? state.leaseAcquiredAt : null,
+      expiresAt, expired: !expiresAt || expiresAt.getTime() <= now() };
   }
   async function recoveryDue(intervalMs) {
     const { meta } = await collections();
@@ -129,7 +142,7 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
   async function close() { if (!mongoClient) await client.close(); }
   return { get, record, baselineStatus, beginBaseline, finishBaseline, releaseBaseline, listUncompleted,
     listBaselineAssociations, recordBackfill,
-    acquireCronLease, renewCronLease, releaseCronLease, recoveryDue, markRecoveryCompleted, close };
+    acquireCronLease, renewCronLease, releaseCronLease, cronLeaseStatus, recoveryDue, markRecoveryCompleted, close };
 }
 
 module.exports = { createSectionAssociationStore };

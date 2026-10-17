@@ -32,7 +32,7 @@ Review the CSV in `reports/section-association-backfill-<timestamp>-<run-id>.csv
 - Discover with `orgUnitType=3&orgUnitCode=I0001`, follow every `PagingInfo.Bookmark`, and locally require `^\\d{6}-\\d{2}-\\d{4}-I0001$`.
 - A first successful discovery writes a baseline of existing associations and performs no reconciliation. Only later discoveries are eligible.
 - Wait at least ten minutes from `firstSeenAt` before reconciliation.
-- Reconcile only Course Offerings with matching association codes, at least two direct Group children, valid five-digit child suffixes, and exactly one Course Offering for every derived exact code.
+- Reconcile only Course Offerings with matching association codes, at least one direct Group child, valid five-digit child suffixes, and exactly one Course Offering for every derived exact code.
 - Finish every association, child, lookup, and current-course validation before the first write.
 - The only Brightspace mutation is Course Offering `IsActive: true` to `false`. Immediately before each write, GET the current course, preserve its fields, convert Description to RichTextInput, and PUT the full body. GET again and verify inactive.
 - On an uncertain PUT result, read the Course Offering before deciding its outcome. Never replay an uncertain write.

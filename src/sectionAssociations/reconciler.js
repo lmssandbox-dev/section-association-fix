@@ -121,7 +121,7 @@ function createReconciler({ client, store, dryRun = true, now = Date.now, logger
       });
       return { status, dryRun, targets: outcomes };
     } catch (error) {
-      const status = error.blocked ? 'blocked' : 'pending';
+      const status = error.blocked || error.validationFailure ? 'blocked' : 'pending';
       if (error.blocked || error.validationFailure) logEvent(logger, 'warn', 'blocked', { associationId: id, code: associationCode, reason: error.reason || 'validation-failed' });
       else if (writeOutcomeUncertain) {
         if (!uncertainLogged) logEvent(logger, 'warn', 'uncertain outcome', { associationId: id, targetId: currentTargetId, action: 'read-back-required' });

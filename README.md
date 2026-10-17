@@ -26,6 +26,8 @@ The service account needs OAuth scopes `organizations:organization:read` and `or
 
 `SECTION_ASSOCIATION_FIX_TRIGGER_MODE=cron` is the default for Render Free and other sleeping web services. The web service hosts LTI and bootstrap endpoints without in-process recurring timers. Configure one Render Cron Job from this repository on `*/15 * * * *` with command `npm run cron:section-association`. Every run performs one fast cycle and uses persisted Mongo metadata to run recovery only when the four-hour interval is due.
 
+Cron and historical backfill share one namespaced Mongo lease. It is renewed every minute, lasts 10 minutes, and is explicitly released with an awaited database update when an invocation finishes; expiry is crash protection. Lease events are logged without credentials. Run `npm run section-association:lease-status` to read the current lease key, owner, acquisition/expiry times, and expiry state without modifying MongoDB.
+
 Set `SECTION_ASSOCIATION_FIX_TRIGGER_MODE=internal` for future always-on hosting. The web process then starts an immediate fast cycle and the existing independent recurring fast and recovery timers; no external Cron Job is required. Both modes use the same service and reconciliation engine.
 
 To migrate cron → always-on: upgrade the web service, set trigger mode to `internal`, disable/delete the Cron Job, deploy, and confirm the internal-mode startup, immediate cycle, next fast cycle, and recovery timing. Keep the same Mongo state, baseline, OAuth credentials, Service User, and reconciliation engine. To migrate always-on → cron: set mode to `cron`, deploy, enable one external Cron Job at the schedule above, and keep the same Mongo/OAuth configuration and association state.

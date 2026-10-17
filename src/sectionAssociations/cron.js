@@ -13,11 +13,17 @@ async function runSectionAssociationCron({ service, store, recoveryIntervalHours
   let heartbeatRunning = false;
   let phase = 'database';
   try {
-    token = await store.acquireCronLease(leaseMs);
+    token = await store.acquireCronLease(leaseMs, 'cron');
     if (!token) {
+      let lease = {};
+      try { lease = safeLeaseFields(await store.cronLeaseStatus()); } catch { /* Preserve the safe skip path. */ }
+      logEvent(logger, 'warn', 'lease unavailable', { owner: lease.owner || 'unknown', expiresAt: lease.expiresAt || 'unknown' });
       logEvent(logger, 'warn', 'cron skipped', { reason: 'already-running' });
       return { status: 'skipped', exitCode: 0 };
     }
+    let lease = {};
+    try { lease = safeLeaseFields(await store.cronLeaseStatus()); } catch { /* Lease acquisition remains valid if diagnostics fail. */ }
+    logEvent(logger, 'info', 'lease acquired', { owner: 'cron', expiresAt: lease.expiresAt || 'unknown' });
     heartbeat = setIntervalFn(() => {
       if (heartbeatRunning) return;
       heartbeatRunning = true;
@@ -53,8 +59,22 @@ async function runSectionAssociationCron({ service, store, recoveryIntervalHours
     return { status: 'failed', exitCode: 1 };
   } finally {
     if (heartbeat) clearIntervalFn(heartbeat);
-    if (token) await store.releaseCronLease(token).catch(() => {});
+    if (token) {
+      try {
+        const released = await store.releaseCronLease(token);
+        if ((released?.matchedCount ?? released?.modifiedCount ?? 1) > 0) logEvent(logger, 'info', 'lease released', { owner: 'cron' });
+        else logEvent(logger, 'warn', 'lease release failed', { owner: 'cron', reason: 'lease-token-not-current' });
+      } catch (error) {
+        const code = /^[A-Z][A-Z0-9_]{0,63}$/.test(String(error?.code || '')) ? error.code : 'LEASE_RELEASE_FAILED';
+        logEvent(logger, 'error', 'lease release failed', { owner: 'cron', code });
+      }
+    }
   }
+}
+
+function safeLeaseFields(lease) {
+  return { owner: lease?.owner === 'cron' || lease?.owner === 'backfill' ? lease.owner : 'unknown',
+    expiresAt: lease?.expiresAt instanceof Date ? lease.expiresAt.toISOString() : null };
 }
 
 module.exports = { runSectionAssociationCron };

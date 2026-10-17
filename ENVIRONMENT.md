@@ -61,7 +61,7 @@ Use `SECTION_ASSOCIATION_FIX_TRIGGER_MODE=cron` for Render Free or any web servi
 
 Each invocation runs one fast cycle, then checks the namespaced Mongo scheduler metadata to decide whether the four-hour recovery cycle is due. Recovery completion time is saved only after a successful recovery run. Cron requires `DB_MONGODB_URL`, `BS_URL`, `BS_OAUTH2_CLIENT_ID`, `BS_OAUTH2_PRIVATE_KEY`, `BS_OAUTH2_KEY_ID`, `BS_OAUTH2_TOKEN_ENDPOINT`, `BS_OAUTH2_SCOPES`, `D2L_API_LP_VERSION`, `SECTION_ASSOCIATION_FIX_DRY_RUN`, and the Section Association timing settings as needed. It does not require `APP_LTI_SECRET` or any `BS_LTI_*` setting. Keep the Render Cron schedule consistent with `SECTION_ASSOCIATION_FIX_FAST_INTERVAL_MINUTES` (default 15).
 
-MongoDB holds an atomic namespaced cron lease and the last successful recovery time. Overlapping invocations skip while the lease is held. The same Section Association service and reconciliation engine are used in both trigger modes.
+MongoDB holds an atomic namespaced cron lease and the last successful recovery time. Cron and historical backfill use the same lease key, so they cannot overlap. The lease lasts 10 minutes and is renewed every minute while work runs; successful and failed invocations explicitly await release, while expiry provides crash recovery. A lease release failure is logged and the lease remains protected until its expiry. Inspect the lease without modifying it using `npm run section-association:lease-status`; the command needs `DB_MONGODB_URL`, `BS_URL`, and `BS_OAUTH2_CLIENT_ID`.
 
 ### Internal mode
 

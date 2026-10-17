@@ -1,7 +1,7 @@
 'use strict';
 
 const EVENTS = new Set([
-  'cron started', 'cron completed', 'cron failed', 'cron skipped', 'recovery due',
+  'cron started', 'cron completed', 'cron failed', 'cron skipped', 'lease acquired', 'lease released', 'lease unavailable', 'lease release failed', 'recovery due',
   'scheduler started', 'fast cycle started', 'fast cycle completed', 'fast cycle failed', 'fast cycle finished', 'fast cycle skipped',
   'recovery cycle started', 'recovery cycle completed', 'recovery cycle failed', 'recovery cycle finished', 'recovery cycle skipped',
   'discovery completed', 'baseline recorded', 'reconcile started',
@@ -12,7 +12,8 @@ const EVENTS = new Set([
 const FIELDS = new Set([
   'candidates', 'new', 'alreadyKnown', 'pending', 'completed', 'blocked', 'fastIntervalMinutes', 'recoveryIntervalHours',
   'associationId', 'targetId', 'code', 'children', 'targets', 'action',
-  'isActive', 'reason', 'skipped', 'phase', 'code', 'protocolCode', 'httpStatus', 'endpoint', 'elapsedMs', 'status', 'fatal', 'due'
+  'isActive', 'reason', 'skipped', 'phase', 'code', 'protocolCode', 'httpStatus', 'endpoint', 'elapsedMs', 'status', 'fatal', 'due',
+  'owner', 'expiresAt', 'acquiredAt', 'leaseKey', 'expired'
 ]);
 
 const PHASES = new Set(['discovery', 'database', 'oauth/api-read', 'oauth', 'reconciliation', 'scheduler']);
@@ -27,7 +28,7 @@ function safeValue(key, value, event) {
   if (key === 'code') {
     const text = String(value);
     if (/^\d{6}-\d{2}-\d{4}-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(text)) return text;
-    if (['fast cycle failed', 'recovery cycle failed'].includes(event) &&
+    if (['fast cycle failed', 'recovery cycle failed', 'lease release failed'].includes(event) &&
         /^(?:[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|\d{1,8})$/.test(text)) return text;
     return '[redacted]';
   }
@@ -40,6 +41,14 @@ function safeValue(key, value, event) {
   if (key === 'status') return ['completed', 'failed', 'skipped'].includes(value) ? value : null;
   if (key === 'fatal') return typeof value === 'boolean' ? String(value) : null;
   if (key === 'due') return typeof value === 'boolean' ? String(value) : null;
+  if (key === 'expired') return typeof value === 'boolean' ? String(value) : null;
+  if (key === 'owner') return ['cron', 'backfill', 'unknown'].includes(value) ? value : null;
+  if (key === 'leaseKey') return /^cron:[a-f0-9]{64}$/.test(String(value)) ? String(value) : null;
+  if (key === 'expiresAt' || key === 'acquiredAt') {
+    if (typeof value !== 'string') return null;
+    const parsed = new Date(value);
+    return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value ? value : null;
+  }
   if (key === 'action') return ['would-inactivate', 'already-inactive', 'read-back-required'].includes(value) ? value : null;
   if (key === 'isActive') return value === false ? 'false' : null;
   return null;

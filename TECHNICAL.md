@@ -11,7 +11,7 @@ The LTI provider is retained for platform registration, login, and a minimal lan
 ## Reconciliation algorithm
 
 1. Read the selected association. Require Course Offering type and code `^\\d{6}-\\d{2}-\\d{4}-I0001$`.
-2. Read all bounded child pages. Require at least two children; every child must be Type `Group` and have a code ending in `-\\d{5}`.
+2. Read all bounded child pages. Require at least one child; every child must be Type `Group` and have a code ending in `-\\d{5}`.
 3. Remove the final hyphen and five-digit suffix. Reject duplicate derived codes.
 4. Resolve every code using `exactOrgUnitCode`. Require one result, a valid ID, Course Offering type, and an ID distinct from the association.
 5. GET every target course and validate its current active state and full update payload before starting any write.

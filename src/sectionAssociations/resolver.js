@@ -5,7 +5,7 @@ const { originalOfferingCode } = require('./rules');
 async function resolveTargets({ association, client, onValidated }) {
   const associationId = String(association.Identifier ?? association.OrgUnitId ?? '');
   const children = await client.children(associationId);
-  if (children.length < 2) throw validationError(children.length === 0 ? 'no-children' : 'insufficient-children', 'Association must have at least two direct children.');
+  if (children.length < 1) throw validationError('no-children', 'Association must have at least one direct child.');
   const codes = [];
   for (const child of children) {
     if (child?.Type?.Code !== 'Group') throw validationError('wrong-org-unit-type', 'Every direct child must be a Group.');

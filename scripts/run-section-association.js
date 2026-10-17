@@ -9,7 +9,7 @@ const { createSectionAssociationRuntime } = require('../src/sectionAssociations/
 const { runSectionAssociationCron } = require('../src/sectionAssociations/cron');
 const { validateWorkerEnvironment } = require('../src/sectionAssociations/config');
 
-async function main(env = process.env) {
+async function main(env = process.env, dependencies = {}) {
   let runtime;
   try {
     validateWorkerEnvironment(env);
@@ -20,8 +20,8 @@ async function main(env = process.env) {
     }
     const missingScopes = ['organizations:organization:read', 'orgunits:course:update'].filter(scope => !hasScope(env.BS_OAUTH2_SCOPES, scope));
     if (missingScopes.length) throw new Error(`BS_OAUTH2_SCOPES must include: ${missingScopes.join(', ')}`);
-    runtime = createSectionAssociationRuntime({ env, http: axios });
-    const result = await runSectionAssociationCron({ service: runtime.service, store: runtime.store,
+    runtime = (dependencies.createRuntime || createSectionAssociationRuntime)({ env, http: axios });
+    const result = await (dependencies.runCron || runSectionAssociationCron)({ service: runtime.service, store: runtime.store,
       recoveryIntervalHours: runtime.recoveryIntervalHours });
     return result.exitCode;
   } catch (error) {
