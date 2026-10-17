@@ -1,6 +1,6 @@
 # Project guide
 
-Brightspace Section Association cleanup is a Node.js LTI 1.3 service that discovers IPSIS Section Association Course Offerings, resolves their grouped sections to original standalone Course Offerings, and inactivates those originals.
+Brightspace Section Association Fix is a Node.js LTI 1.3 service that discovers IPSIS Section Association Course Offerings, resolves their grouped sections to original standalone Course Offerings, and inactivates those originals.
 
 ## Architecture
 
@@ -21,6 +21,12 @@ Cron → always-on: upgrade the web plan; set mode to `internal`; disable/delete
 
 Always-on → cron: set mode to `cron`; deploy; create/enable one external Cron Job; retain the same Mongo/OAuth configuration and reconciliation/baseline state.
 
+## Historical Backfill
+
+The recurring worker must continue excluding `baseline: true` records. Historical cleanup is available only through `npm run backfill:section-associations -- --dry-run` or explicit `--apply`; never trigger it at startup or from cron. Dry-run defaults to all baseline associations. Apply defaults to 50 (`--max-associations` controls either mode), and a Mongo worker lease prevents it from overlapping a cron run or another backfill.
+
+Review the CSV in `reports/section-association-backfill-<timestamp>-<run-id>.csv` after every run. Recommended sequence: full dry-run, inspect summary and blocked cases, spot-check ready records, apply batches of 50, review each report, run dry-run again, then investigate any remaining blocked/ready records. Backfill progress belongs only in `backfill*` fields; retain `baseline: true` and all normal worker status fields. Apply must reuse the existing resolver, client and `courseUpdatePayload`, verify every PUT, and never replay an uncertain request. Already-inactive targets are no-ops. There is no rollback implementation.
+
 ## Safety rules
 
 - Discover with `orgUnitType=3&orgUnitCode=I0001`, follow every `PagingInfo.Bookmark`, and locally require `^\\d{6}-\\d{2}-\\d{4}-I0001$`.
@@ -32,7 +38,7 @@ Always-on → cron: set mode to `cron`; deploy; create/enable one external Cron 
 - On an uncertain PUT result, read the Course Offering before deciding its outcome. Never replay an uncertain write.
 - Dry-run uses the same reconciliation path, reports intended inactivations, and sends no PUT requests.
 - State is operational metadata, not proof of Brightspace state. Read current Brightspace records before every update.
-- Do not use Data Sets, rename offerings, move groups, change enrollments/mappings, or delete records.
+- Do not rename offerings, move groups, change enrollments or mappings, or delete records.
 
 ## Development
 

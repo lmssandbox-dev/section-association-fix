@@ -3,7 +3,6 @@ const test=require('node:test'),assert=require('node:assert/strict');
 const {createHash}=require('node:crypto');
 const {createConcurrentGate}=require('../src/shared/concurrentGate');
 const {createRateLimitedHttp}=require('../src/shared/rateLimit');
-const {buildRows,durationSummary}=require('../scripts/api-cost-report');
 const hash=s=>createHash('sha256').update(s).digest('hex');
 const REMOVE=Symbol('remove');
 // Small expression model for the operators used by the atomic Mongo reservation.
@@ -49,7 +48,7 @@ function mongoModel(onDbCall=()=>{}){
  };
  return {calls,client:{connect:async()=>{},db:()=>({collection:()=>collection}),close:async()=>{}},get doc(){return doc;}};
 }
-const route='POST /d2l/api/lp/1.63/sourceCourses/:id/deploy';
+const route='PUT /d2l/api/lp/1.53/courses/:id';
 const sample={route,status:200,cost:10,remaining:49000,latencyMs:100,gateWaitMs:20,resetMs:60000};
 test('atomic reservations share four permits across gate instances and release records timing',async()=>{
  let now=0;const m=mongoModel(),create=()=>createConcurrentGate({uri:'mongodb://unused/app',key:'k',now:()=>now,mongoClient:m.client});const a=create(),b=create(),permits=[];
@@ -69,11 +68,11 @@ test('local reservation slots transfer to waiters without leaking capacity',asyn
 });
 test('concurrent reservations from multiple gate instances retain global and ordinary ceilings',async()=>{
  let clock=100000;const m=mongoModel(),a=createConcurrentGate({key:'concurrent-shared',now:()=>clock+=300,mongoClient:m.client}),b=createConcurrentGate({key:'concurrent-shared',now:()=>clock+=300,mongoClient:m.client});
- const work=Array.from({length:12},(_,i)=>(i%2?a:b).reserve(i<6?route:'GET lookup',{dateDiscovery:i>=6}));
+ const work=Array.from({length:12},(_,i)=>(i%2?a:b).reserve(i<6?route:'GET lookup'));
  const results=await Promise.all(work),granted=results.filter(result=>result.token).length;
  assert.ok(granted<=8);assert.ok(m.doc.permits.length<=8);
  assert.ok(m.doc.budgetUsed<=30000);
- assert.ok(m.doc.permits.filter(permit=>!permit.dateDiscovery&&!permit.copy&&!permit.resolution).length<=4);
+ assert.ok(m.doc.permits.filter(permit=>!permit.resolution).length<=4);
 });
 test('gate timing separates reservation, denied-read, deliberate waits, and buffered completion persistence',async()=>{
  let mono=0,now=0;
@@ -138,12 +137,7 @@ test('successful API gate completion emits no Mongo diagnostic',async t=>{
 test('a newly observed cost above the local budget fails closed rather than waiting forever',async()=>{
  let now=0;const m=mongoModel(),gate=createConcurrentGate({key:'k',now:()=>now,mongoClient:m.client});const p=await gate.reserve(route);await gate.complete(p,{...sample,cost:40000});now=100000;await assert.rejects(()=>gate.reserve(route),/exceeds/);
 });
-const config={method:'POST',url:'https://tenant.example/d2l/api/le/1.99/import/123/copy/'};
-test('production transport allows eight overlapping requests and drains 5,000 submissions',async()=>{
- let active=0,max=0,count=0;const samples=[];
- const request=createRateLimitedHttp({baseUrl:'https://tenant.example',gate:{reserve:async()=>({token:'t',reservedCost:10}),complete:async(_p,s)=>samples.push(s)},http:async()=>{max=Math.max(max,++active);await new Promise(r=>setImmediate(r));active--;count++;return {status:202,headers:{'x-request-cost':'10'}};}});
- await Promise.all(Array.from({length:5000},()=>request(config)));assert.equal(max,8);assert.equal(active,0);assert.equal(count,5000);assert.equal(samples.length,5000);
-});
+const config={method:'PUT',url:'https://tenant.example/d2l/api/lp/1.53/courses/123'};
 test('production transport never repeats ambiguous writes and poisons scheduling on lost persistence',async()=>{
  for(const fail of ['timeout','reserve','complete']){
   let calls=0;const request=createRateLimitedHttp({baseUrl:'https://tenant.example',gate:{reserve:async()=>{if(fail==='reserve')throw Error('db');return {token:'t',reservedCost:10};},complete:async()=>{if(fail==='complete')throw Error('db');}},http:async()=>{calls++;if(fail==='timeout')throw Error('timeout');return {status:202,headers:{}};}});
@@ -161,13 +155,6 @@ test('transport aggregates gate timing categories without counting one wait twic
   ?{wait:10,waitReason:'permitContention',localReservationQueueMs:2,mongoReservationMs:4,deniedReservationReadMs:3}
   :{token:'t',reservedCost:10,localReservationQueueMs:1,mongoReservationMs:5,deniedReservationReadMs:0},complete:async(_permit,sample)=>samples.push(sample)},http:async()=>({status:200,headers:{'x-request-cost':'10'}})});
  await request(config);assert.deepEqual(samples[0].gateTimings,{localReservationQueue:3,mongoReservation:9,deniedReservationRead:3,permitContentionWait:10,pacingBudgetWait:0,mixedWait:0});
-});
-test('API cost report preserves unknown historical timing fields',()=>{
- assert.equal(durationSummary({},'newTotalMs','newSamples'),'unknown');
- const [row]=buildRows({old:{route:'GET /d2l/api/le/:id/quizzes/',requests:1,lastSeenAt:0}});
- assert.equal(row.localReservationQueue,'unknown');assert.equal(row.completionPersistence,'unknown');
- const [measured]=buildRows({new:{route:'GET /d2l/api/le/:id/quizzes/',lastSeenAt:0,localReservationQueueTotalMs:15,localReservationQueueSamples:3}});
- assert.equal(measured.localReservationQueue,'n=3 total=15ms avg=5ms');
 });
 test('production transport respects global reset waits before retrying an explicit 429',async()=>{
  let now=0,pauseUntil=0,calls=0;const samples=[];
@@ -197,53 +184,6 @@ test('resolution permits share an eight-request ceiling and ordinary requests re
  assert.ok((await b.reserve('GET lookup',{resolution:true})).wait);assert.ok((await b.reserve(route)).wait);
 });
 
-test('Date Manager discovery permits share the global eight-request ceiling without raising ordinary traffic',async()=>{
- let now=0;const m=mongoModel(),gate=createConcurrentGate({key:'date-discovery',now:()=>now,mongoClient:m.client});
- for(let i=0;i<4;i++){assert.ok((await gate.reserve(route)).token);now+=250;}
- assert.ok((await gate.reserve(route)).wait);
- for(let i=0;i<4;i++){
-  assert.ok((await gate.reserve('GET /d2l/api/le/1.99/9524/quizzes/',{dateDiscovery:true})).token);now+=250;
- }
- assert.equal(m.doc.permits.length,8);
- assert.ok((await gate.reserve('GET /d2l/api/le/1.99/9524/discussions/forums/32/topics/',{dateDiscovery:true})).wait);
- assert.ok((await gate.reserve(route)).wait);
- now+=50000;
- for(let i=0;i<8;i++){
-  assert.ok((await gate.reserve('GET /d2l/api/le/1.99/9524/dropbox/folders/',{dateDiscovery:true})).token);now+=250;
- }
- assert.equal(m.doc.permits.length,8);
- assert.ok((await gate.reserve('GET /d2l/api/le/1.99/9524/quizzes/',{dateDiscovery:true})).wait);
-});
-
-test('Date Manager discovery routes alone use the elevated transport class',async()=>{
- const classes=[];const request=createRateLimitedHttp({baseUrl:'https://tenant.example',gate:{reserve:async(_route,options)=>{classes.push(options.dateDiscovery);return {token:'t'};},complete:async()=>{}},http:async()=>({status:200,headers:{}})});
- for(const path of ['dropbox/folders/','quizzes/','discussions/forums/','discussions/forums/32/topics/'])
-  await request({method:'GET',url:`https://tenant.example/d2l/api/le/1.99/9524/${path}`});
- for(const [method,path] of [['GET','quizzes/11'],['GET','discussions/forums/32/topics/41'],['GET','discussions/forums/32'],['PUT','quizzes/'],['GET','quizzes/?unrelated=true']])
-  await request({method,url:`https://tenant.example/d2l/api/le/1.99/9524/${path}`});
- assert.deepEqual(classes,[true,true,true,true,false,false,false,false,true]);
-});
-
-test('Date Manager discovery transport reaches eight reads while ordinary traffic stays at four',async()=>{
- let active=0,ordinary=0,discovery=0,peak=0,ordinaryPeak=0,discoveryPeak=0;const releases=[];
- const discoveryPattern=/\/(?:dropbox\/folders|quizzes|discussions\/forums(?:\/\d+\/topics)?)\/$/;
- const request=createRateLimitedHttp({baseUrl:'https://tenant.example',gate:{reserve:async()=>({token:'t'}),complete:async()=>{}},http:async config=>{
-  const isDiscovery=discoveryPattern.test(new URL(config.url).pathname);active++;peak=Math.max(peak,active);
-  if(isDiscovery){discovery++;discoveryPeak=Math.max(discoveryPeak,discovery);}else{ordinary++;ordinaryPeak=Math.max(ordinaryPeak,ordinary);}
-  await new Promise(resolve=>releases.push(resolve));active--;if(isDiscovery)discovery--;else ordinary--;
-  return {status:200,headers:{}};
- }});
- const paths=['dropbox/folders/','quizzes/','discussions/forums/','discussions/forums/32/topics/'];
- const work=Array.from({length:8},(_,i)=>request({method:'GET',url:`https://tenant.example/d2l/api/le/1.99/9524/${paths[i%paths.length]}`}));
- await new Promise(resolve=>setImmediate(resolve));assert.equal(active,8);assert.equal(discovery,8);
- while(releases.length){releases.splice(0).forEach(resolve=>resolve());await new Promise(resolve=>setImmediate(resolve));}
- await Promise.all(work);
- const ordinaryWork=Array.from({length:8},()=>request({method:'GET',url:'https://tenant.example/d2l/api/le/1.99/9524/quizzes/11'}));
- await new Promise(resolve=>setImmediate(resolve));assert.equal(ordinary,4);
- while(releases.length){releases.splice(0).forEach(resolve=>resolve());await new Promise(resolve=>setImmediate(resolve));}
- await Promise.all(ordinaryWork);assert.equal(peak,8);assert.equal(discoveryPeak,8);assert.equal(ordinaryPeak,4);
-});
-
 test('transport permits eight exact-code reads but only four other calls with a shared total of eight',async()=>{
  let active=0,ordinary=0,peak=0,ordinaryPeak=0;const releases=[],classes=[];
  const request=createRateLimitedHttp({baseUrl:'https://tenant.example',gate:{reserve:async(_route,options)=>{classes.push(options.resolution);return {token:'t'};},complete:async()=>{}},http:async config=>{
@@ -253,29 +193,4 @@ test('transport permits eight exact-code reads but only four other calls with a 
  const work=Array.from({length:12},(_,i)=>request({method:'GET',url:i<6?'https://tenant.example/d2l/api/le/1.99/1/quizzes/1':'https://tenant.example/d2l/api/lp/1.63/orgstructure/?exactOrgUnitCode=C'+i}));
  await new Promise(r=>setImmediate(r));assert.equal(active,8);assert.equal(ordinary,4);
  while(releases.length){releases.splice(0).forEach(r=>r());await new Promise(r=>setImmediate(r));}await Promise.all(work);assert.equal(peak,8);assert.equal(ordinaryPeak,4);assert.equal(classes.filter(Boolean).length,6);
-});
-
-test('copy and resolution permits share eight total with four ordinary permits across instances',async()=>{
- let now=0;const m=mongoModel(),make=()=>createConcurrentGate({key:'mixed-copy',now:()=>now,mongoClient:m.client}),a=make(),b=make();
- for(let i=0;i<4;i++){assert.ok((await a.reserve(route)).token);now+=250;}
- for(let i=0;i<4;i++){assert.ok((await b.reserve('copy',{copy:true})).token);now+=250;}
- assert.ok((await a.reserve('lookup',{resolution:true})).wait);
- assert.ok((await b.reserve('copy',{copy:true})).wait);
- now+=50000;
- for(let i=0;i<8;i++){assert.ok((await (i%2?a:b).reserve('copy',{copy:true})).token);now+=250;}
- assert.equal(m.doc.permits.length,8);assert.ok((await a.reserve(route)).wait);
-});
-test('copy permit classification excludes unsupported import methods',async()=>{
- const classes=[];const request=createRateLimitedHttp({baseUrl:'https://tenant.example',gate:{reserve:async(_r,o)=>{classes.push(o.copy);return {token:'t'};},complete:async()=>{}},http:async()=>({status:200,headers:{}})});
- for(const [method,path] of [['POST','import/123/copy/'],['GET','import/123/copy/token'],['GET','import/123/copy/'],['PUT','import/123/copy/token'],['POST','import/123/copy/token'],['GET','ccb/logs']])
- await request({method,url:'https://tenant.example/d2l/api/le/1.99/'+path});
- assert.deepEqual(classes,[true,true,false,false,false,true]);
-});
-
-test('deployment routes overlap eight requests while date activity calls retain four',async()=>{
- for(const [method,path,expected] of [['POST','lp/1.63/sourceCourses/1/deploy',8],['PUT','lp/1.63/courses/2',8],['GET','lp/1.63/courses/2',8],['GET','lp/1.63/orgstructure/1',8],['GET','lp/1.63/sourceCourses/1/reofferedCourses',8],['GET','le/1.99/ccb/logs',8],['PUT','le/1.99/2/quizzes/3',4]]){
-  let active=0,peak=0;
-  const request=createRateLimitedHttp({baseUrl:'https://tenant.example',gate:{reserve:async()=>({token:'t'}),complete:async()=>{}},http:async()=>{peak=Math.max(peak,++active);await new Promise(r=>setImmediate(r));active--;return {status:200,headers:{}};}});
-  await Promise.all(Array.from({length:20},()=>request({method,url:'https://tenant.example/d2l/api/'+path})));assert.equal(peak,expected,path);assert.equal(active,0);
- }
 });

@@ -13,8 +13,8 @@ test('Mongo conflict diagnostics keep structural paths and redact route hashes',
 
 test('unsafe Mongo messages are omitted and diagnostic failures never escape',t=>{
  const lines=captureLogs(t);
- logMongoOperationFailure('planning_metadata_save',Object.assign(new Error('duplicate key value contains a secret value'),{name:'MongoServerError',code:11000,codeName:'DuplicateKey'}));
- logMongoOperationFailure('job_checkpoint_save',Object.assign(new Error("Updating the path 'users.alice@example.test' would create a conflict at 'users'"),{name:'MongoServerError',code:40}));
+ logMongoOperationFailure('api_gate_completion',Object.assign(new Error('duplicate key value contains a secret value'),{name:'MongoServerError',code:11000,codeName:'DuplicateKey'}));
+ logMongoOperationFailure('api_gate_completion',Object.assign(new Error("Updating the path 'users.alice@example.test' would create a conflict at 'users'"),{name:'MongoServerError',code:40}));
  logMongoOperationFailure('unapproved_operation',Object.assign(new Error('ignored'),{name:'MongoServerError',code:40}));
  assert.equal(lines.length,2);assert.equal(JSON.parse(lines[0]).message,undefined);assert.equal(JSON.parse(lines[1]).message,"Updating the path '<redacted>.<redacted>.<redacted>' would create a conflict at '<redacted>'");assert.ok(!lines[1].includes('alice@example.test'));
  const original=console.error;console.error=()=>{throw Error('logger failed');};t.after(()=>{console.error=original;});

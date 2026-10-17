@@ -4,7 +4,7 @@
 
 `index.js` is the web composition root. `src/sectionAssociations/runtime.js` builds the shared service-account OAuth client, Mongo-backed rate-limited HTTP stack, store, and Section Association service; both `index.js` and `scripts/run-section-association.js` use it. The web composition starts the LTI provider and selects cron or internal triggering without duplicating worker logic.
 
-`src/sectionAssociations/client.js` contains bounded bookmark pagination and feature-specific API calls. Its PUT path is restricted to `/d2l/api/lp/{version}/courses/{numericId}`. `rules.js` enforces the exact association-code pattern and group suffix. `resolver.js` validates every child and resolves exact offering codes. `reconciler.js` checks and prepares all target course records before any PUT, then performs fresh GET → full PUT → verification GET. `store.js` keeps namespaced association metadata and baseline state in dedicated MongoDB collections. `service.js` owns discovery and scheduled passes.
+`src/sectionAssociations/client.js` contains bounded bookmark pagination and feature-specific API calls. Its PUT path is restricted to `/d2l/api/lp/{version}/courses/{numericId}`. `rules.js` enforces the exact association-code pattern and group suffix. `resolver.js` validates every child and resolves exact offering codes. `reconciler.js` checks and prepares all target course records before any PUT, then performs fresh GET → full PUT → verification GET. `backfill.js` reuses that resolver, client, and the reconciler's `courseUpdatePayload` helper for explicit historical processing. `store.js` keeps namespaced association metadata and baseline state in dedicated MongoDB collections. `service.js` owns discovery and scheduled passes.
 
 The LTI provider is retained for platform registration, login, and a minimal landing page. No background feature code reads LTI claims or tokens.
 
@@ -31,6 +31,12 @@ New records receive `firstSeenAt` and wait ten minutes before processing. In int
 ## Persistence
 
 `section_associations` is keyed by tenant namespace and `associationOrgUnitId`, and stores association code, first/last seen times, last checked time, processed time, status, baseline marker, safe error text, and compact outcome summaries. `section_association_meta` stores the baseline state and temporary lease. MongoDB is a work ledger; it never replaces current Brightspace reads.
+
+## Historical Backfill
+
+The regular service remains baseline-protected: its discovery/reconciliation passes do not make baseline records eligible. `scripts/backfill-section-associations.js` is a separate explicit command that selects only `{namespace, baseline: true}` records in deterministic `firstSeenAt`, `associationOrgUnitId` order. Dry-run is the default; apply requires `--apply` and defaults to 50 records. It validates all resolved targets before any association write, reads current state, and uses the existing `courseUpdatePayload` transformation and client PUT/read-back methods. Uncertain writes are read back and never blindly replayed.
+
+Backfill progress uses only `backfillLastCheckedAt`, `backfillProcessedAt`, `backfillStatus`, `backfillLastError`, and compact `backfillTargets` fields. It does not overwrite baseline or normal `status`/`processedAt` fields. The command shares the worker's Mongo lease to avoid overlapping cron/backfill operations. Each run writes a CSV under `reports/`; reruns inspect live state and skip already-inactive targets. No rollback is implemented.
 
 ## Transport and write boundary
 

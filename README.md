@@ -1,4 +1,4 @@
-# Brightspace Section Association cleanup
+# Brightspace Section Association Fix
 
 This service detects Course Offerings created by IPSIS Section Association processing and inactivates the original standalone Course Offerings represented by their grouped sections. It does not rename or delete anything, move groups, or change enrollments or mappings.
 
@@ -12,7 +12,7 @@ The worker validates the complete set before writing. It then checks each curren
 
 `SECTION_ASSOCIATION_FIX_DRY_RUN=true` is the default. Dry-run discovers, resolves, validates, and reports `would-inactivate` outcomes without sending PUT requests. It shares the production reconciler and remains pending so the same association can be processed after dry-run is disabled.
 
-On the first successful discovery, the service records the associations already present as a baseline and does not reconcile any of them. Historical cleanup is intentionally outside this service. Associations first seen after baseline wait ten minutes before processing.
+On the first successful discovery, the service records the associations already present as a baseline and does not reconcile any of them. Historical cleanup remains excluded from recurring automation. Associations first seen after baseline wait ten minutes before processing.
 
 The fast loop discovers every 15 minutes and handles stable new associations. The recovery loop runs every four hours and retries incomplete work through the same discovery/reconciliation logic. Completed associations are skipped during ordinary runs. MongoDB records last-seen/check times and outcomes; Brightspace remains the source of truth.
 
@@ -39,3 +39,24 @@ Deploy first with the `BS_LTI_*` settings empty. The service starts in LTI setup
 Use Node.js 22, install with `npm ci`, copy `.env.example` to `.env`, and provide tenant credentials. Run `npm test` and `npm run check`; start with `npm start`. Keep dry-run enabled until logs confirm the expected targets. Set `SECTION_ASSOCIATION_FIX_DRY_RUN=false` only when ready to permit inactivation.
 
 See [ENVIRONMENT.md](ENVIRONMENT.md) for configuration and [TECHNICAL.md](TECHNICAL.md) for reconciliation and persistence details.
+
+## Historical Backfill
+
+Baseline associations are excluded from normal cron/internal processing to protect existing courses. Historical cleanup is available only as an explicit one-shot command and reads only records marked `baseline: true` in MongoDB. No startup or recurring worker automatically includes them.
+
+Start with a full dry-run:
+
+```sh
+npm run backfill:section-associations -- --dry-run
+```
+
+Dry-run validates live Brightspace data and performs no PUTs. It scans all baseline records unless `--max-associations` is supplied. Apply defaults to batches of 50 and requires the explicit `--apply` flag:
+
+```sh
+npm run backfill:section-associations -- --apply
+npm run backfill:section-associations -- --apply --max-associations 50
+```
+
+Each run writes a CSV under `reports/section-association-backfill-<timestamp>-<run-id>.csv`. Review the summary and blocked rows, spot-check ready cases in Brightspace, apply in small batches, and review each CSV. Re-run dry-run afterward and confirm the remaining ready count is zero or understood. Blocked records stay inspectable and can be retried after correction. Backfill metadata is stored separately from normal worker status, and the baseline marker remains true. Reruns inspect current target state and skip already-inactive offerings. Rollback is not implemented.
+
+Recommended procedure: (1) run full dry-run; (2) review summary; (3) inspect blocked cases; (4) spot-check ready cases; (5) apply in batches of about 50; (6) review each batch CSV; (7) rerun dry-run; (8) confirm remaining ready count is zero or understood; (9) leave blocked cases for separate investigation. Normal cron behavior remains unchanged.

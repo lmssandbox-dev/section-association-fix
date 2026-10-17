@@ -73,6 +73,19 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
     const { associations } = await collections();
     return associations.find({ namespace, status: { $ne: 'completed' }, baseline: { $ne: true } }).toArray();
   }
+  async function listBaselineAssociations(limit) {
+    const { associations } = await collections();
+    let cursor = associations.find({ namespace, baseline: true }).sort({ firstSeenAt: 1, associationOrgUnitId: 1 });
+    if (Number.isSafeInteger(limit) && limit > 0) cursor = cursor.limit(limit);
+    return cursor.toArray();
+  }
+  async function recordBackfill(id, fields) {
+    const { associations } = await collections();
+    const allowed = ['backfillLastCheckedAt', 'backfillProcessedAt', 'backfillStatus', 'backfillLastError', 'backfillTargets'];
+    const safe = Object.fromEntries(Object.entries(fields).filter(([key]) => allowed.includes(key)));
+    const result = await associations.updateOne({ namespace, associationOrgUnitId: String(id), baseline: true }, { $set: safe });
+    return result.matchedCount === 1;
+  }
   const cronMetaId = `cron:${namespace}`;
   async function acquireCronLease(leaseMs = 120000) {
     const { meta } = await collections();
@@ -113,6 +126,7 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
   }
   async function close() { if (!mongoClient) await client.close(); }
   return { get, record, baselineStatus, beginBaseline, finishBaseline, releaseBaseline, listUncompleted,
+    listBaselineAssociations, recordBackfill,
     acquireCronLease, renewCronLease, releaseCronLease, recoveryDue, markRecoveryCompleted, close };
 }
 

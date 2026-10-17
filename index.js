@@ -39,14 +39,14 @@ lti.setup(APP_LTI_SECRET, databaseConfig(DB_MONGODB_URL), {
   appRoute: '/', loginRoute: '/login', cookies: { secure: true, sameSite: 'None' }, devMode: false
 });
 installPublicBootstrapEndpoints(lti, oauth.jwks);
-lti.onConnect((_token, _req, res) => res.type('html').send('<main><h1>Section Association cleanup</h1><p>Administrative tools are not enabled yet.</p></main>'));
+lti.onConnect((_token, _req, res) => res.type('html').send('<main><h1>Section Association Fix</h1><p>Administrative tools are not enabled yet.</p></main>'));
 
 async function start() {
   try {
     await lti.deploy({ port });
     if (ltiConfig.complete) console.log('LTI configured: Brightspace platform registration enabled.');
     else console.log('LTI setup mode: Brightspace LTI registration is not fully configured.');
-    console.log(`Section Association cleanup service listening on ${port}; dry-run=${dryRun}.`);
+    console.log(`Section Association Fix service listening on ${port}; dry-run=${dryRun}.`);
     sectionAssociationScheduler = startSectionAssociationTrigger({ mode: triggerMode, service,
       fastIntervalMinutes: fastMinutes, recoveryIntervalHours: recoveryHours });
     if (ltiConfig.complete) {

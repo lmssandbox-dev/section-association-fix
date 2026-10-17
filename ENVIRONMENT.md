@@ -82,7 +82,27 @@ Use `SECTION_ASSOCIATION_FIX_TRIGGER_MODE=internal` only on always-on hosting. T
 2. Create or enable the external Render Cron Job with the schedule and command above.
 3. Use the same MongoDB and OAuth configuration. Do not change reconciliation or baseline state.
 
-The first successful discovery records a no-write baseline. Existing associations are excluded from automatic processing; no historical backfill is provided. Dry-run uses the same validation and reconciliation engine as live mode.
+## Historical Backfill
+
+Baseline records are deliberately protected from the recurring worker. Historical backfill is manual and explicit; it selects only Mongo association records with `baseline: true` and never changes the baseline marker or normal worker status. The command uses the same backend Mongo/OAuth/Brightspace configuration as the worker and does not require `APP_LTI_SECRET` or `BS_LTI_*` values.
+
+First run:
+
+```sh
+npm run backfill:section-associations -- --dry-run
+```
+
+Dry-run scans every baseline association by default, performs live validation, reports target actions, and sends zero PUTs. Apply requires explicit `--apply` and defaults to a conservative 50-association batch:
+
+```sh
+npm run backfill:section-associations -- --apply
+npm run backfill:section-associations -- --apply --max-associations 50
+```
+
+Every run writes a CSV to `reports/section-association-backfill-<timestamp>-<run-id>.csv`. Review it before and after each batch. Ready means every target passed validation and at least one remains active; already-compliant means all targets are inactive; blocked cases include a safe reason and remain retryable. Apply re-reads each target, skips inactive records, uses the existing full PUT transformation, and verifies the result. Reruns are idempotent against live state. Rollback is not implemented.
+
+Recommended operation: full dry-run → review summary and blocked rows → spot-check ready cases → apply in batches of 50 → review each CSV → run dry-run again → confirm no unexplained ready cases remain → investigate blocked cases separately. The recurring 15-minute cron does not include historical associations and is unchanged.
+
 
 ## OAuth scopes and permissions summary
 

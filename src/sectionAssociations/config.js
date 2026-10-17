@@ -28,8 +28,9 @@ function validateRequiredEnvironment(env = process.env) {
   return true;
 }
 
-function validateWorkerEnvironment(env = process.env) {
-  const missing = WORKER_ENVIRONMENT.filter(name => !String(env[name] || '').trim());
+function validateWorkerEnvironment(env = process.env, { requireDryRun = true } = {}) {
+  const required = requireDryRun ? WORKER_ENVIRONMENT : WORKER_ENVIRONMENT.filter(name => name !== 'SECTION_ASSOCIATION_FIX_DRY_RUN');
+  const missing = required.filter(name => !String(env[name] || '').trim());
   if (missing.length) throw new Error(`Missing required worker environment settings: ${missing.join(', ')}`);
   if (!/^\d+\.\d+$/.test(env.D2L_API_LP_VERSION)) throw new Error('D2L_API_LP_VERSION must use the form major.minor.');
   return true;

@@ -121,6 +121,9 @@ test('cron worker validation does not require APP_LTI_SECRET or any LTI registra
     'BS_OAUTH2_TOKEN_ENDPOINT','BS_OAUTH2_SCOPES','D2L_API_LP_VERSION','SECTION_ASSOCIATION_FIX_DRY_RUN'].map(key => [key, 'configured']));
   env.D2L_API_LP_VERSION = '1.53';
   assert.equal(validateWorkerEnvironment(env), true);
+  delete env.SECTION_ASSOCIATION_FIX_DRY_RUN;
+  assert.equal(validateWorkerEnvironment(env, { requireDryRun: false }), true);
+  env.SECTION_ASSOCIATION_FIX_DRY_RUN = 'true';
   delete env.BS_OAUTH2_CLIENT_ID;
   assert.throws(() => validateWorkerEnvironment(env), /BS_OAUTH2_CLIENT_ID/);
 });
