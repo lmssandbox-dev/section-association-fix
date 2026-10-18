@@ -3,7 +3,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
-const { registerSectionAssociationLtiInterface, pageForLaunch, csvCell } = require('../src/sectionAssociations/ltiInterface');
+const { registerSectionAssociationLtiInterface, pageForLaunch, csvCell, auditCsvCell } = require('../src/sectionAssociations/ltiInterface');
 
 function setup(getStatus = async () => ({ availability: 'Available', worker: 'idle', latestExecution: null, executions: [] }), getExecutionHistory = async function *() {}) {
   const routes = {}; let onConnect;
@@ -163,4 +163,21 @@ test('CSV endpoint is authenticated, streams all execution rows, and quotes CSV 
   assert.match(res.chunks[0], /Execution ID.*Historical backlog remaining.*Coverage/);
   assert.match(res.chunks[2], /"run,""2"/); assert.match(res.chunks[2], /"","","failed"/);
   assert.equal(csvCell('a,"b'), '"a,""b"'); assert.equal(csvCell(undefined), '""');
+});
+
+test('audit CSV endpoint is authenticated, execution-scoped, empty-report safe, and formula-safe', async () => {
+  const routes = {};
+  const provider = { app: { get(path, handler) { routes[path] = handler; } }, onConnect() {} };
+  registerSectionAssociationLtiInterface(provider, { deploymentId: 'deployment-1', getStatus: async()=>({}),
+    getAuditAvailability: async id => id === '12345678-1234-1234-1234-123456789abc',
+    async *getExecutionAudit() {} });
+  const res = response(); res.locals.token = { deploymentId: 'deployment-1' };
+  await routes['/api/section-association/corrections.csv']({ query: { executionId: '12345678-1234-1234-1234-123456789abc' } }, res);
+  assert.equal(res.ended, true); assert.equal(res.chunks.length, 1);
+  assert.match(res.chunks[0], /Execution ID.*Verified isActive.*Result/);
+  assert.equal(auditCsvCell('=SUM(A1:A2)'), "\"'=SUM(A1:A2)\"");
+  assert.equal(auditCsvCell('a,"b'), '"a,""b"');
+  const denied = response(); denied.locals.token = { deploymentId: 'other' };
+  await routes['/api/section-association/exceptions.csv']({ query: { executionId: '12345678-1234-1234-1234-123456789abc' } }, denied);
+  assert.equal(denied.statusCode, 403); assert.equal(denied.chunks.length, 0);
 });

@@ -27,7 +27,7 @@ function courseUpdatePayload(course) {
 }
 
 function createReconciler({ client, store, dryRun = true, now = Date.now, logger = console }) {
-  async function reconcileAssociation(associationOrgUnitId, { force = false, associationCode: requestedCode } = {}) {
+  async function reconcileAssociation(associationOrgUnitId, { force = false, associationCode: requestedCode, execution, recordAudit } = {}) {
     const id = String(associationOrgUnitId);
     const existing = await store.get(id);
     if (!force && hasVerifiedCompletion(existing)) return { status: 'completed', skipped: true };
@@ -49,6 +49,9 @@ function createReconciler({ client, store, dryRun = true, now = Date.now, logger
       const actualId = String(association.Identifier ?? association.OrgUnitId ?? '');
       if (actualId !== id) throw blocked('unresolved-target', 'Association ID did not match the requested ID.');
       const targets = await resolveTargets({ association, client, onValidated: result => { childCount = result.childCount; } });
+      const auditBase = { executionId: execution?.executionId, source: execution?.source,
+        parentAssociationD2lId: id, parentAssociationOrgCode: association.Code || associationCode || '',
+        parentAssociationName: association.Name || '', timestamp: new Date(now()) };
 
       // Validate every current record and construct every payload before the first write.
       const prepared = [];
@@ -100,6 +103,7 @@ function createReconciler({ client, store, dryRun = true, now = Date.now, logger
             uncertainLogged = true;
             const afterUncertain = await client.course(target.id);
             if (afterUncertain?.IsActive === false) {
+              await recordCorrection(recordAudit, { ...auditBase, execution, target, current: latest });
               writeOutcomeUncertain = false;
               uncertainLogged = false;
               outcomes.push({ ...target, status: 'verified-inactive' });
@@ -116,6 +120,7 @@ function createReconciler({ client, store, dryRun = true, now = Date.now, logger
           writeOutcomeUncertain = false;
           throw Object.assign(new Error(`Course Offering update was not verified: ${target.code}`), { reason: 'verification-failed' });
         }
+        await recordCorrection(recordAudit, { ...auditBase, execution, target, current: latest });
         writeOutcomeUncertain = false;
         outcomes.push({ ...target, status: 'verified-inactive' });
         writesVerified++;
@@ -134,6 +139,16 @@ function createReconciler({ client, store, dryRun = true, now = Date.now, logger
       return { status, dryRun, targets: outcomes, writesAttempted, writesVerified, alreadyInactive };
     } catch (error) {
       const status = error.blocked || error.validationFailure ? 'blocked' : 'pending';
+      if (execution?.executionId && recordAudit) {
+        try { await recordAudit({ kind: 'exception', executionId: execution.executionId, source: execution.source,
+          timestamp: new Date(now()), parentAssociationD2lId: id, parentAssociationOrgCode: associationCode || '',
+          parentAssociationName: '', affectedCourseOfferingD2lId: currentTargetId || '',
+          affectedCourseOfferingOrgCode: '', affectedCourseOfferingName: '',
+          category: error.validationFailure || error.blocked ? 'validation-blocked' : error.reason === 'verification-failed' ? 'verification-failed' :
+            error.reason === 'api-request-failed' || error.code || error.uncertain ? 'update-failed' : 'processing-error',
+          explanation: safeError(error), finalOutcome: status, recordKey: `exception:${id}:${currentTargetId || 'association'}:${error.reason || status}` }); }
+        catch (auditError) { execution.auditIncomplete = true; logEvent(logger, 'error', 'audit persistence failed', { associationId: id, kind: 'exception' }); }
+      }
       if (error.blocked || error.validationFailure) logEvent(logger, 'warn', 'blocked', { associationId: id, code: associationCode, reason: error.reason || 'validation-failed' });
       else if (writeOutcomeUncertain) {
         if (!uncertainLogged) logEvent(logger, 'warn', 'uncertain outcome', { associationId: id, targetId: currentTargetId, action: 'read-back-required' });
@@ -145,6 +160,16 @@ function createReconciler({ client, store, dryRun = true, now = Date.now, logger
   return { reconcileAssociation };
 }
 
+async function recordCorrection(recordAudit, { execution, target, current, ...base }) {
+  if (!recordAudit || !base.executionId) return;
+  try { await recordAudit({ kind: 'correction', ...base, timestamp: base.timestamp,
+    affectedCourseOfferingD2lId: target.id, affectedCourseOfferingOrgCode: target.code,
+    affectedCourseOfferingName: target.name || current?.Name || '', previousIsActive: current.IsActive,
+    verifiedIsActive: false, result: 'Successfully updated',
+    recordKey: `correction:${base.parentAssociationD2lId}:${target.id}` }); }
+  catch (error) { if (execution) execution.auditIncomplete = true; throw error; }
+}
+
 function hasVerifiedCompletion(record) {
   return record?.status === 'completed' && record.reconciliationVersion === RECONCILIATION_VERSION &&
     record.lastReconciledAt instanceof Date && record.lastVerifiedAt instanceof Date;
@@ -153,7 +178,9 @@ function hasVerifiedCompletion(record) {
 function blocked(reason, message) { return Object.assign(new Error(message), { blocked: true, reason }); }
 
 function safeError(error) {
-  return String(error?.message || 'Reconciliation failed').replace(/https?:\/\/\S+/g, '[URL]').replace(/[\r\n\0-\x1f]/g, ' ').slice(0, 240);
+  return String(error?.message || 'Reconciliation failed').replace(/https?:\/\/\S+/g, '[URL]')
+    .replace(/(authorization|token|secret|private.?key)\s*[:=]\s*[^\s,;]+/ig, '$1=[REDACTED]')
+    .replace(/[\r\n\0-\x1f]/g, ' ').slice(0, 240);
 }
 
 module.exports = { createReconciler, richTextInput, courseUpdatePayload, RECONCILIATION_VERSION, hasVerifiedCompletion };

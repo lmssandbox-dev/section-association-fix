@@ -77,11 +77,12 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     return true;
   }
 
-  async function processWork(items, stats) {
+  async function processWork(items, stats, execution) {
     for (const item of items) {
       const id = String(item.associationOrgUnitId);
       stabilityLogged.delete(id);
-      const result = await reconciler.reconcileAssociation(id, { associationCode: item.associationCode, force: true });
+      const result = await reconciler.reconcileAssociation(id, { associationCode: item.associationCode, force: true,
+        execution, recordAudit: store.recordAudit });
       stats.processedThisRun++;
       countStatus(stats, result);
     }
@@ -94,7 +95,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
       writesAttempted: 0, writesVerified: 0, alreadyInactive: 0 };
   }
 
-  async function runCycle({ recovery = false, maxReconciliations = maxReconciliationsPerRun } = {}) {
+  async function runCycle({ recovery = false, maxReconciliations = maxReconciliationsPerRun, execution } = {}) {
     const startedAt = now();
     const name = recovery ? 'recovery cycle' : 'fast cycle';
     logEvent(logger, 'info', `${name} started`);
@@ -123,7 +124,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
         const items = await store.listRecoveryWork({ limit: maxReconciliations,
           stabilityCutoff, blockedBefore: new Date(time - recoveryIntervalMs),
           reverifyBefore });
-        await processWork(items, stats);
+        await processWork(items, stats, execution);
         recoveryComplete = await store.countRecoveryWork({ stabilityCutoff,
           blockedBefore: new Date(time - recoveryIntervalMs), reverifyBefore }) === 0;
         if (!recoveryComplete) logEvent(logger, 'warn', 'recovery deferred', { reason: 'work-remains' });
@@ -133,7 +134,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
           logStabilityWait(item.associationOrgUnitId);
         }
         const items = await store.listFastWork({ limit: maxReconciliations, stabilityCutoff });
-        await processWork(items, stats);
+        await processWork(items, stats, execution);
       }
       stats.remainingHistoricalBacklog = await store.countHistoricalBacklog();
       succeeded = true;

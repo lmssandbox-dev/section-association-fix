@@ -41,6 +41,8 @@ lti.setup(APP_LTI_SECRET, databaseConfig(DB_MONGODB_URL), {
 installPublicBootstrapEndpoints(lti, oauth.jwks);
 registerSectionAssociationLtiInterface(lti, { deploymentId: env.BS_LTI_DEPLOYMENT_ID,
   getExecutionHistory: () => runtime.store.allMaintenanceExecutions(),
+  getExecutionAudit: (executionId, kind) => runtime.store.executionAudit(executionId, kind),
+  getAuditAvailability: executionId => runtime.store.auditAvailability(executionId),
   async getStatus() {
     let worker = 'unknown';
     if (sectionAssociationScheduler) {

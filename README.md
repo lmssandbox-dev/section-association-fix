@@ -43,3 +43,7 @@ Summary counters count associations, not target writes: checked counts reconcili
 Use Node.js 22, install with `npm ci`, copy `.env.example` to `.env`, and provide credentials. Run `npm test` and `npm run check`; start with `npm start`. Keep dry-run enabled until logs confirm the expected targets. Set `SECTION_ASSOCIATION_FIX_DRY_RUN=false` only when ready to permit inactivation.
 
 See [ENVIRONMENT.md](ENVIRONMENT.md) for configuration and [TECHNICAL.md](TECHNICAL.md) for persistence and scheduling details.
+
+## Detailed audit exports
+
+Each new automatic or manual execution stores verified Course Offering corrections and meaningful exceptions as separate records in MongoDB `section_association_audit`, linked by execution ID. The authenticated LTI history provides Corrections CSV and Exceptions CSV actions for executions with established audit coverage. Historical executions without the coverage marker are identified as not recorded. Corrections represent verified state changes; exception rows do not redefine the existing association-level error count. Audit rows are retained incrementally without an application TTL or count limit. Store initialization creates the audit retrieval and idempotency indexes; no migration or extra Brightspace lookup is required.

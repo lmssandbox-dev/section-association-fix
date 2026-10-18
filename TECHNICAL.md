@@ -41,3 +41,9 @@ Cron mode runs one bounded fast pass per external invocation and uses persisted 
 ## Transport and write boundary
 
 JWT exchange is shared with the application. Brightspace URLs remain HTTPS on the configured origin; redirects are disabled, request timeouts are bounded, API traffic passes through the shared rate gate, and errors omit credentials. The feature's only write is a narrowly scoped Course Offering PUT.
+
+## Detailed execution audit
+
+Each scheduled or manual execution passes its UUID and source into the shared reconciler. After a PUT is verified inactive, it upserts one `correction` record into `section_association_audit`; the stable key is execution, parent association, and target offering. Validation blocks, update failures, verification failures, and unexpected association failures produce deduplicated `exception` records with sanitized explanations. Corrections are target-level; the existing `correctionsApplied` value remains association-level (at least one verified target update). Audit write failures mark execution detail coverage incomplete, and completed writes remain persisted if a later operation fails.
+
+The audit collection has a unique `{ namespace: 1, executionId: 1, kind: 1, recordKey: 1 }` index and an execution retrieval `{ namespace: 1, executionId: 1, kind: 1 }` index, created at store initialization. LTI Corrections CSV and Exceptions CSV endpoints require the same verified session and deployment check as history export. They stream rows from Mongo on demand, safely escape CSV/formula content, and make no Brightspace calls. Empty reports have headers. Only summaries marked `detailedAuditAvailable` show report actions; older executions without that marker are explicitly unavailable, not treated as zero. No TTL or application retention cap is applied; storage follows MongoDB capacity and operator policy. No migration is required.

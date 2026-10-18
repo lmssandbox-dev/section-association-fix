@@ -14,7 +14,10 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
       await associations.createIndex({ namespace: 1, associationOrgUnitId: 1 }, { unique: true });
       const meta = db.collection('section_association_meta');
       await meta.createIndex({ namespace: 1, history: 1, startedAt: -1, executionId: -1 });
-      return { associations, meta };
+      const audit = db.collection('section_association_audit');
+      await audit.createIndex({ namespace: 1, executionId: 1, kind: 1, recordKey: 1 }, { unique: true });
+      await audit.createIndex({ namespace: 1, executionId: 1, kind: 1 });
+      return { associations, meta, audit };
     })().catch(error => { ready = null; throw error; });
     return ready;
   }
@@ -232,7 +235,7 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
   async function saveMaintenanceExecution(summary) {
     const { meta } = await collections();
     const fields = ['executionId', 'source', 'startedAt', 'completedAt', 'status', 'associationsChecked',
-      'alreadyCompliant', 'correctionsApplied', 'errors', 'coverage'];
+      'alreadyCompliant', 'correctionsApplied', 'errors', 'coverage', 'detailedAuditAvailable'];
     const unset = Object.fromEntries(fields.filter(field => !Object.hasOwn(summary, field)).map(field => [field, '']));
     await meta.updateOne({ _id: `maintenance-history:${namespace}:${summary.executionId}` },
       { $set: { ...summary, namespace, history: true } }, { upsert: true });
@@ -246,6 +249,21 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
       if (error.code === 11000) return false;
       throw error;
     }
+  }
+  async function recordAudit(record) {
+    const { audit } = await collections();
+    const filter = { namespace, executionId: record.executionId, kind: record.kind, recordKey: record.recordKey };
+    await audit.updateOne(filter, { $setOnInsert: { ...record, namespace } }, { upsert: true });
+  }
+  async function *executionAudit(executionId, kind) {
+    const { audit } = await collections();
+    const cursor = audit.find({ namespace, executionId: String(executionId), kind }).sort({ timestamp: 1, recordKey: 1 }).batchSize(500);
+    for await (const { _id, namespace: _namespace, recordKey: _recordKey, ...record } of cursor) yield record;
+  }
+  async function auditAvailability(executionId) {
+    const { meta } = await collections();
+    const summary = await meta.findOne({ _id: `maintenance-history:${namespace}:${String(executionId)}` }, { projection: { detailedAuditAvailable: 1 } });
+    return summary?.detailedAuditAvailable === true;
   }
   async function recentMaintenanceExecutions(limit = 50) {
     const { meta } = await collections();
@@ -269,7 +287,8 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
   return { get, record, baselineStatus, beginBaseline, finishBaseline, releaseBaseline, recordDiscovery,
     listFastWork, listWaitingNew, listRecoveryWork, countHistoricalBacklog, countDueCompleted, countRecoveryWork,
     acquireCronLease, renewCronLease, releaseCronLease, cronLeaseStatus, recoveryDue, markRecoveryCompleted,
-    saveMaintenanceExecution, latestMaintenanceExecution, recentMaintenanceExecutions, allMaintenanceExecutions, close };
+    saveMaintenanceExecution, latestMaintenanceExecution, recentMaintenanceExecutions, allMaintenanceExecutions,
+    recordAudit, executionAudit, auditAvailability, close };
 }
 
 module.exports = { createSectionAssociationStore };

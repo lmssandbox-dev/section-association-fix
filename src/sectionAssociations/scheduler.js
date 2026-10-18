@@ -26,7 +26,7 @@ function startSectionAssociationScheduler({ service, store, fastIntervalMinutes,
     const execution = startMaintenanceExecution('automatic');
     let result;
     try {
-      result = await service.fastTick();
+      result = await service.fastTick({ execution });
       latestExecution = { kind: 'Fast cycle', completedAt: new Date().toISOString(), result };
       return result;
     }
@@ -56,7 +56,7 @@ function startSectionAssociationScheduler({ service, store, fastIntervalMinutes,
     const execution = startMaintenanceExecution('automatic');
     let result;
     try {
-      result = await service.recoveryTick();
+      result = await service.recoveryTick({ execution });
       latestExecution = { kind: 'Recovery cycle', completedAt: new Date().toISOString(), result };
       return result;
     }

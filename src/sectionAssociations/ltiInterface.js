@@ -27,10 +27,11 @@ function exportMessage(value,type=''){const node=document.getElementById('export
 function duration(start,end){const a=new Date(start).getTime(),b=new Date(end).getTime();if(!Number.isFinite(a)||!Number.isFinite(b)||b<a)return '—';const seconds=Math.floor((b-a)/1000);return seconds<60?seconds+' seconds':Math.floor(seconds/60)+' min'+(seconds%60?' '+seconds%60+' sec':'')}
 function safe(value){return String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function sourceName(value){return value==='manual'?'Manual':value==='automatic'?'Automatic':'Unknown'}
-function executionHtml(run){const label=safe(statusText(run.status));return '<details class="execution"><summary class="history-row execution-summary"><span class="date">'+safe(formatDate(run.startedAt))+'</span><span class="source">'+sourceName(run.source)+'</span><span class="outcome-cell"><span class="outcome '+outcomeClass(run.status)+'" aria-label="Outcome: '+label+'">'+label+'</span></span><span class="numeric" data-label="Checked">'+safe(count(run.associationsChecked))+'</span><span class="numeric" data-label="Corrections">'+safe(count(run.correctionsApplied))+'</span><span class="numeric" data-label="Errors">'+safe(count(run.errors))+'</span></summary><div class="detail-grid"><div><span class="label">Duration</span>'+safe(duration(run.startedAt,run.completedAt))+'</div><div><span class="label">Already compliant</span>'+safe(count(run.alreadyCompliant))+'</div><div><span class="label">Start time</span>'+safe(formatDate(run.startedAt))+'</div><div><span class="label">Finish time</span>'+safe(formatDate(run.completedAt))+'</div></div></details>'}
+function executionHtml(run){const label=safe(statusText(run.status)), reports=run.detailedAuditAvailable===true?'<div class="audit-actions"><button class="secondary" data-audit="corrections" data-execution="'+safe(run.executionId||'')+'">Corrections CSV</button><button class="secondary" data-audit="exceptions" data-execution="'+safe(run.executionId||'')+'">Exceptions CSV</button></div>':'<div class="audit-unavailable">Detailed reporting was not recorded.</div>';return '<details class="execution"><summary class="history-row execution-summary"><span class="date">'+safe(formatDate(run.startedAt))+'</span><span class="source">'+sourceName(run.source)+'</span><span class="outcome-cell"><span class="outcome '+outcomeClass(run.status)+'" aria-label="Outcome: '+label+'">'+label+'</span></span><span class="numeric" data-label="Checked">'+safe(count(run.associationsChecked))+'</span><span class="numeric" data-label="Corrections">'+safe(count(run.correctionsApplied))+'</span><span class="numeric" data-label="Errors">'+safe(count(run.errors))+'</span></summary><div class="detail-grid"><div><span class="label">Duration</span>'+safe(duration(run.startedAt,run.completedAt))+'</div><div><span class="label">Already compliant</span>'+safe(count(run.alreadyCompliant))+'</div><div><span class="label">Start time</span>'+safe(formatDate(run.startedAt))+'</div><div><span class="label">Finish time</span>'+safe(formatDate(run.completedAt))+'</div></div>'+reports+'</details>'}
 async function refresh(){set('notice','Refreshing…');try{const response=await fetch('/api/section-association/status',{credentials:'same-origin',headers:{Accept:'application/json',Authorization:'Bearer '+ltiToken}});if(!response.ok){if(response.status===401)set('notice','LTI session expired. Relaunch this tool from Brightspace.');else if(response.status===403)set('notice','This LTI deployment is not authorized.');else if(response.status>=500)set('notice','Status service temporarily unavailable. Retry shortly.');else set('notice','Status request failed (HTTP '+response.status+').');renderState('availability','Unavailable',true);renderState('worker','Unavailable');return}const data=await response.json();renderState('availability',data.availability,true);renderState('worker',data.worker);const latest=data.latestExecution;document.getElementById('latest').hidden=!latest;document.getElementById('emptyLatest').hidden=!!latest;if(latest){set('latestDate',formatDate(latest.startedAt));showOutcome('outcome',latest.status);set('source',sourceName(latest.source));set('checked',count(latest.associationsChecked));set('corrections',count(latest.correctionsApplied));set('errors',count(latest.errors));const noWork=latest.status==='completed'&&latest.associationsChecked===0&&latest.errors===0;document.getElementById('latestMetrics').hidden=noWork;document.getElementById('zeroWork').hidden=!noWork}const runs=Array.isArray(data.executions)?data.executions.slice(0,50):[];document.getElementById('historyEmpty').hidden=runs.length>0;document.getElementById('history').innerHTML=runs.map(executionHtml).join('');set('updated','Last refreshed '+new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit'}).format(new Date()));set('notice','')}catch{set('notice','Could not reach the status service. Check your connection and retry.');renderState('availability','Unavailable',true);renderState('worker','Unavailable')}}
 async function exportCsv(){exportMessage('Preparing CSV…');try{const response=await fetch('/api/section-association/executions.csv',{credentials:'same-origin',headers:{Accept:'text/csv',Authorization:'Bearer '+ltiToken}});if(!response.ok){exportMessage(response.status===401?'Session expired. Relaunch Brightspace.':response.status===403?'Deployment not authorized.':'CSV export failed. Retry.','error');return}const blob=await response.blob(),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=response.headers.get('Content-Disposition')?.match(/filename="?([^";]+)"?/i)?.[1]||'section-association-executions.csv';link.click();URL.revokeObjectURL(url);exportMessage('CSV downloaded.','success')}catch{exportMessage('Could not download CSV. Retry.','error')}}
-document.getElementById('refresh').addEventListener('click',refresh);document.getElementById('export').addEventListener('click',exportCsv);refresh();
+async function exportAudit(kind,executionId){exportMessage('Preparing CSV…');try{const response=await fetch('/api/section-association/'+kind+'.csv?executionId='+encodeURIComponent(executionId),{credentials:'same-origin',headers:{Accept:'text/csv',Authorization:'Bearer '+ltiToken}});if(!response.ok){exportMessage(response.status===401?'Session expired. Relaunch Brightspace.':response.status===403?'Deployment not authorized.':'CSV export failed. Retry.','error');return}const blob=await response.blob(),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=response.headers.get('Content-Disposition')?.match(/filename="?([^";]+)"?/i)?.[1]||'section-association-'+kind+'.csv';link.click();URL.revokeObjectURL(url);exportMessage('CSV downloaded.','success')}catch{exportMessage('Could not download CSV. Retry.','error')}}
+document.getElementById('history').addEventListener('click',event=>{const button=event.target.closest('[data-audit]');if(button)exportAudit(button.dataset.audit,button.dataset.execution)});document.getElementById('refresh').addEventListener('click',refresh);document.getElementById('export').addEventListener('click',exportCsv);refresh();
 </script></body></html>`;
 
 function pageForLaunch(ltik) {
@@ -57,7 +58,18 @@ function csvCell(value) {
   return `"${text.replace(/"/g, '""')}"`;
 }
 
-function registerSectionAssociationLtiInterface(provider, { deploymentId, getStatus, getExecutionHistory }) {
+const AUDIT_COLUMNS = {
+  corrections: [['Execution ID','executionId'],['Execution source','source'],['Correction timestamp','timestamp'],['Parent Association Offering D2L ID','parentAssociationD2lId'],['Parent Association Offering Org Code','parentAssociationOrgCode'],['Parent Association Offering Name','parentAssociationName'],['Updated Course Offering D2L ID','affectedCourseOfferingD2lId'],['Updated Course Offering Org Code','affectedCourseOfferingOrgCode'],['Updated Course Offering Name','affectedCourseOfferingName'],['Previous isActive','previousIsActive'],['Verified isActive','verifiedIsActive'],['Result','result']],
+  exceptions: [['Execution ID','executionId'],['Execution source','source'],['Timestamp','timestamp'],['Parent Association Offering D2L ID','parentAssociationD2lId'],['Parent Association Offering Org Code','parentAssociationOrgCode'],['Parent Association Offering Name','parentAssociationName'],['Affected Course Offering D2L ID','affectedCourseOfferingD2lId'],['Affected Course Offering Org Code','affectedCourseOfferingOrgCode'],['Affected Course Offering Name','affectedCourseOfferingName'],['Exception category','category'],['Explanation','explanation'],['Final outcome','finalOutcome']]
+};
+function auditCsvCell(value) {
+  if (value == null) return '""';
+  let text = value instanceof Date ? value.toISOString() : String(value);
+  if (/^[\s\u0000-\u001f]*[=+@-]/.test(text)) text = `'${text}`;
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function registerSectionAssociationLtiInterface(provider, { deploymentId, getStatus, getExecutionHistory, getExecutionAudit, getAuditAvailability }) {
   const authorize = deploymentGuard(deploymentId);
   provider.app.get('/api/section-association/status', async (req, res) => {
     if (!authorize(res.locals?.token, req, res)) return;
@@ -81,6 +93,24 @@ function registerSectionAssociationLtiInterface(provider, { deploymentId, getSta
       else res.status(503).send('Execution history is temporarily unavailable.');
     }
   });
+  for (const kind of ['corrections', 'exceptions']) provider.app.get(`/api/section-association/${kind}.csv`, async (req, res) => {
+    if (!authorize(res.locals?.token, req, res)) return;
+    const executionId = String(req.query?.executionId || '');
+    if (!/^[a-f0-9-]{36}$/i.test(executionId) || typeof getExecutionAudit !== 'function') return res.status(400).send('A valid execution ID is required.');
+    try { if (typeof getAuditAvailability !== 'function' || !await getAuditAvailability(executionId)) return res.status(404).send('Detailed audit reporting was not recorded for this execution.'); }
+    catch { return res.status(503).send('Audit report is temporarily unavailable.'); }
+    res.set('Cache-Control', 'no-store').set('Content-Type', 'text/csv; charset=utf-8')
+      .set('Content-Disposition', `attachment; filename="section-association-${kind}-${executionId}.csv"`);
+    const columns = AUDIT_COLUMNS[kind];
+    try {
+      res.write(columns.map(([name]) => auditCsvCell(name)).join(',') + '\r\n');
+      for await (const row of getExecutionAudit(executionId, kind.slice(0, -1))) {
+        const line = columns.map(([, field]) => auditCsvCell(row[field])).join(',') + '\r\n';
+        if (!res.write(line)) await once(res, 'drain');
+      }
+      res.end();
+    } catch { if (res.headersSent) res.destroy?.(); else res.status(503).send('Audit report is temporarily unavailable.'); }
+  });
   provider.onConnect((token, req, res) => {
     if (!authorize(token, req, res)) return;
     const ltik = res.locals?.ltik;
@@ -89,4 +119,4 @@ function registerSectionAssociationLtiInterface(provider, { deploymentId, getSta
   });
 }
 
-module.exports = { registerSectionAssociationLtiInterface, pageForLaunch, CSV_COLUMNS, csvCell };
+module.exports = { registerSectionAssociationLtiInterface, pageForLaunch, CSV_COLUMNS, csvCell, AUDIT_COLUMNS, auditCsvCell };

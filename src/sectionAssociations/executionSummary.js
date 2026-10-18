@@ -8,7 +8,8 @@ function startMaintenanceExecution(source, now = Date.now) {
 }
 
 function buildMaintenanceExecutionSummary(execution, { status, results = [], executionErrors = 0, now = Date.now } = {}) {
-  const summary = { ...execution, completedAt: new Date(now()), status };
+  const summary = { ...execution, completedAt: new Date(now()), status, detailedAuditAvailable: execution.auditIncomplete !== true };
+  delete summary.auditIncomplete;
   const counters = [
     ['associationsChecked', 'associationsChecked'],
     ['alreadyCompliant', 'associationsAlreadyCompliant'],

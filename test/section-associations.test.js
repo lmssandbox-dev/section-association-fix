@@ -165,6 +165,30 @@ test('inactive offerings are left alone; active offerings use GET/PUT/GET verifi
   assert.equal(writes[0].body.IsActive, false);
 });
 
+test('only verified active target changes create execution-scoped correction audit rows', async () => {
+  const { client } = api(); const audit = [];
+  const execution = { executionId: 'exec-1', source: 'manual' };
+  const result = await createReconciler({ client, store: memoryStore(), dryRun: false, now: () => 1234 })
+    .reconcileAssociation('33664', { execution, recordAudit: async record => audit.push(record) });
+  assert.equal(result.writesVerified, 1);
+  assert.equal(audit.length, 1);
+  assert.equal(audit[0].executionId, 'exec-1'); assert.equal(audit[0].source, 'manual');
+  assert.equal(audit[0].parentAssociationD2lId, '33664');
+  assert.equal(audit[0].affectedCourseOfferingD2lId, '100');
+  assert.equal(audit[0].previousIsActive, true); assert.equal(audit[0].verifiedIsActive, false);
+  assert.equal(audit[0].result, 'Successfully updated');
+});
+
+test('failed verification creates an exception and no successful correction record', async () => {
+  const { client } = api({ async putCourse() {} }); const audit = [];
+  const result = await createReconciler({ client, store: memoryStore(), dryRun: false })
+    .reconcileAssociation('33664', { execution: { executionId: 'exec-2', source: 'automatic' },
+      recordAudit: async record => audit.push(record) });
+  assert.equal(result.status, 'pending');
+  assert.equal(audit.some(record => record.kind === 'correction'), false);
+  assert.equal(audit[0].kind, 'exception'); assert.equal(audit[0].category, 'verification-failed');
+});
+
 test('all-inactive dry-run records positive verification evidence and completed records are skipped until due', async () => {
   const inactive = api({ course: async () => courseRecord({ IsActive: false }) });
   const store = memoryStore(() => 123456);
