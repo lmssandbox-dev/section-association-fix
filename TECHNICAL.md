@@ -4,7 +4,9 @@
 
 `index.js` composes the web application, optional LTI provider, and trigger mode. `src/sectionAssociations/runtime.js` builds the OAuth service-account client, Mongo-backed rate-limited transport, store, reconciler, and service; the web and one-shot cron entrypoints share this runtime.
 
-`client.js` contains bounded bookmark pagination and feature-specific API calls. `rules.js` enforces the association code and child suffix patterns. `resolver.js` validates every direct Group child and resolves exact Course Offering codes. `reconciler.js` validates every target before writes, then performs GET → full PUT → verification GET. `store.js` tracks association metadata, positive reconciliation evidence, baseline audit state, and cron lease metadata. `service.js` handles discovery, bounded priority selection, and fast/recovery passes.
+`client.js` contains bounded bookmark pagination and feature-specific API calls. `rules.js` enforces the association code and child suffix patterns. `resolver.js` validates every direct Group child and resolves exact Course Offering codes. `reconciler.js` validates every target before writes, then performs GET → full PUT → verification GET. `store.js` tracks association metadata, positive reconciliation evidence, baseline audit state, successful full-discovery timestamps, and the shared worker lease. `service.js` handles period-aware discovery, bounded priority selection, and fast/recovery passes.
+
+For scheduling, `client.js` accepts the broad `I0001` query or a validated four-digit period plus `-I0001`; `service.js` calculates the two periods and coordinates full, fast, and maintenance-window selection. `store.js` performs batched discovery persistence and stores full-scan completion and recovery state. `cron.js` enforces the shared 50-item invocation limit, while `scheduler.js` provides internal timers; both use the same distributed lease.
 
 The LTI provider is optional during bootstrap. Worker code uses only the Server-to-Server OAuth service account.
 
@@ -28,15 +30,43 @@ The PUT body preserves all current Course Offering fields and converts Brightspa
 
 ## Baseline, eligibility, and scheduling
 
-The first successful discovery uses a Mongo baseline lease and marks associations already present as `baseline: true` for audit. Baseline does not suppress reconciliation. Historical and new associations go through the same reconciler; historical work has no new-association stability delay. New associations wait the configured stability duration.
+Academic periods are computed from the current instant with `Intl.DateTimeFormat` in `America/Sao_Paulo`: January–June maps to `YY01`, July–December to `YY02`; the previous period is the prior semester, rolling from `YY01` to the previous year's `YY02`. For example, October 2026 yields current `2602` and previous `2601`, while January 2027 yields current `2701` and previous `2602`. Each fast pass makes two fully paginated Brightspace requests:
 
-Each run processes at most `SECTION_ASSOCIATION_FIX_MAX_RECONCILIATIONS_PER_RUN` (default 50), in deterministic priority order: stable new/pending work, historical baseline work, then recovery-only blocked retries and due completed verification. Legacy completed records without positive verification evidence become eligible automatically and idempotently. Completed records with evidence are re-read every `SECTION_ASSOCIATION_FIX_COMPLETED_REVERIFY_HOURS` (default 24); any active target is handled by the normal validated update path.
+```text
+GET /d2l/api/lp/{version}/orgstructure/?orgUnitType=3&orgUnitCode={current}-I0001
+GET /d2l/api/lp/{version}/orgstructure/?orgUnitType=3&orgUnitCode={previous}-I0001
+```
 
-Cron mode runs one bounded fast pass per external invocation and uses persisted `lastRecoveryAt` to keep the four-hour recovery schedule independent. Internal mode runs immediate and recurring timers. Both call the same service functions. The cron lease prevents concurrent cron/worker runs, renews while active, and is awaited on release; expiry is crash recovery.
+The broad `orgUnitCode=I0001` scan is also fully paginated and covers all historical and future periods. It is necessary to find new, corrected, or otherwise missed associations outside the two frequent periods, while avoiding a broad historical read on every 15-minute run. On a fresh installation, the first run completes and persists this full scan as the baseline before querying the two periods. After initialization, a full scan is due once per local calendar day at or after 02:00. Its successful completion time is stored in tenant-scoped `section_association_meta` only after all full-scan records are persisted. A missed schedule remains due at the next invocation. If the broad API scan fails on an established tenant, the worker leaves its timestamp unchanged, logs the deferral, and still performs normal period discovery; initial baseline failure stops the cycle. Partial Mongo persistence fails the cycle and never marks the scan successful.
+
+The first successful full discovery uses a Mongo baseline lease and marks associations already present as `baseline: true` for audit. Baseline does not suppress reconciliation. Historical and new associations go through the same reconciler; historical work has no new-association stability delay. New associations wait the configured stability duration.
+
+Each scheduled run processes at most `SECTION_ASSOCIATION_FIX_MAX_RECONCILIATIONS_PER_RUN` (default 50), in deterministic priority order: stable new/pending work, historical baseline work, and controlled blocked retries. Cron passes the fast discovery result into its recovery pass so the two period queries are not repeated within one invocation; fast plus recovery share the 50-item limit. Legacy completed records without positive verification evidence remain eligible automatically. Verified completed records become eligible every `SECTION_ASSOCIATION_FIX_COMPLETED_REVERIFY_HOURS` (default 24), but the selector includes them only from 03:00 through 06:00 `America/Sao_Paulo`. New/pending and blocked work remains eligible throughout the day and has priority over completed verification. A remaining completed backlog resumes on later 15-minute invocations in the next maintenance window. If a target is active again, normal validation and safe read-back verification apply.
+
+Cron mode runs one bounded fast pass per external invocation and uses persisted `lastRecoveryAt` to keep the four-hour pending/blocked recovery schedule independent. The recovery pass reuses the fast pass's discovery and consumes only the remaining part of the shared 50-reconciliation limit. Internal mode runs immediate and recurring fast/recovery timers through the same service functions. Both modes acquire and renew the same namespaced Mongo worker lease and await release; this prevents overlapping scans and reconciliation across cron/internal instances, with lease expiry providing crash recovery.
+
+Completed associations with positive verification evidence become eligible after the configured 24-hour interval, but only the fast selector includes them between 03:00 and 06:00 `America/Sao_Paulo`. They use the same bounded validation and reconciliation path. Pending, historical, and retryable blocked work retains priority and remains eligible outside that window. A completed-work backlog is served in available capacity during the window and resumes in the next window if needed; each verified result updates its existing verification timestamp, so completed work is not needlessly repeated. No additional Render job, timezone setting, or manual period configuration is required.
+
+```mermaid
+flowchart TD
+  A[Fast tick every 15 minutes] --> B[Calculate current and previous Sao Paulo periods]
+  B --> C{Initial baseline or full scan due after 02:00?}
+  C -- Yes --> D[Paginate broad I0001 scan and persist success timestamp]
+  C -- No --> E[Skip broad scan]
+  D --> F[Discover both periods and persist distinct IDs]
+  E --> F
+  F --> G[Select priority work; max 50, completed re-verification only 03:00–06:00]
+  G --> H{Four-hour recovery due?}
+  H -- Yes --> I[Recover pending and blocked work within remaining limit]
+  H -- No --> J[Finish]
+  I --> J
+```
 
 ## Persistence
 
-`section_associations` is keyed by tenant namespace and `associationOrgUnitId`. It stores association code, first/last seen and checked times, status, audit baseline marker, safe errors, compact outcomes, and positive verification evidence. `section_association_meta` stores baseline coordination and cron lease/recovery metadata. Mongo is an operational work ledger; current Brightspace records remain authoritative.
+`section_associations` is keyed by tenant namespace and `associationOrgUnitId`. It stores association code, first/last seen and checked times, status, audit baseline marker, safe errors, compact outcomes, and positive verification evidence. `section_association_meta` stores baseline coordination, cron lease/recovery metadata, and the last successful broad discovery timestamp. Mongo is an operational work ledger; current Brightspace records remain authoritative.
+
+After the baseline is ready, discovery deduplicates valid association IDs and compares them with Mongo in tenant-scoped `$in` queries of at most 500 IDs, supported by the existing unique `{ namespace: 1, associationOrgUnitId: 1 }` index. Known records receive a bounded bulk refresh of `associationCode` and `lastSeenAt`; inserts are limited to IDs absent from the comparison and use bounded unordered bulk upserts with `$setOnInsert`, preserving existing state, first-seen time, baseline marker, and reconciliation evidence. Duplicate-key races are confirmed against Mongo and counted as already known. Initial baseline writes are chunked to the same bound and still mark only inserted records as baseline. Counters count distinct valid discovered IDs. A partial bulk failure fails the execution so it cannot be reported as complete; already-applied operations are safe to observe on the next cycle.
 
 ## Transport and write boundary
 

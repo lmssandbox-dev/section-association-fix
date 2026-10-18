@@ -87,3 +87,17 @@ test('overlapping fast cycles are skipped until the active cycle finishes', asyn
   await intervals[0].callback();
   assert.equal(fastCalls, 2);
 });
+
+test('internal scheduled cycles use and release the shared Mongo lease', async () => {
+  const calls = [];
+  const scheduler = startSectionAssociationScheduler({
+    service: { async fastTick() { calls.push('fast'); return { status: 'completed' }; }, async recoveryTick() {} },
+    store: { async acquireCronLease(_ms, owner) { calls.push(`acquire:${owner}`); return 'lease'; },
+      async renewCronLease() { calls.push('renew'); }, async releaseCronLease(token) { calls.push(`release:${token}`); } },
+    fastIntervalMinutes: 15, recoveryIntervalHours: 4,
+    setIntervalFn(callback, milliseconds) { return { callback, milliseconds }; }, clearIntervalFn() {},
+    logger: { info() {}, warn() {}, error() {} }
+  });
+  await scheduler.initialFastCycle;
+  assert.deepEqual(calls, ['acquire:internal', 'fast', 'release:lease']);
+});

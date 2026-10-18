@@ -4,7 +4,9 @@ This service detects Course Offerings created by IPSIS Section Association proce
 
 ## How it works
 
-The worker searches `GET /d2l/api/lp/{version}/orgstructure/?orgUnitType=3&orgUnitCode=I0001`, follows every bookmark page, and filters results using `^\\d{6}-\\d{2}-\\d{4}-I0001$`. Each valid association must be a Course Offering with at least one direct Group child; each child code must end in a hyphen and exactly five digits. Removing that suffix produces an original Course Offering code that must resolve to exactly one Course Offering.
+Every 15 minutes the worker discovers the current and previous academic periods using separate `orgUnitCode={period}-I0001` queries. Period selection is automatic in `America/Sao_Paulo`: `YY01` means January–June and `YY02` means July–December. For example, in October 2026 the fast queries are `2602-I0001` and `2601-I0001`. A broad `orgUnitCode=I0001` scan covers all periods once daily after 02:00 local time; a fresh installation completes this full scan for its initial baseline before using period-scoped discovery. All queries follow Brightspace pagination and apply the same exact association-code validation. Each valid association must be a Course Offering with at least one direct Group child; each child code must end in a hyphen and exactly five digits. Removing that suffix produces an original Course Offering code that must resolve to exactly one Course Offering.
+
+Discovery persistence compares distinct valid association IDs with the tenant-scoped Mongo collection in batches of 500. Existing records are refreshed in bounded bulk writes to preserve `lastSeenAt`; only IDs not found are inserted using `$setOnInsert`, preserving existing reconciliation state and baseline metadata. Bulk writes are bounded, duplicate-key races remain idempotent, and partial database failures fail the cycle.
 
 The worker validates the complete target set before writing. It re-reads each current Course Offering, skips already-inactive records, and only changes `IsActive` to `false` through a full PUT followed by a verification GET. Dry-run performs the same discovery and validation but sends no PUTs; active targets stay pending for later live processing.
 
@@ -12,7 +14,7 @@ The worker validates the complete target set before writing. It re-reads each cu
 
 The first successful discovery records the current association population with `baseline: true` for audit history. Baseline status does not permanently exclude an association: historical and new records use the same reconciler. Historical records do not wait through the new-association stability window. New records wait `SECTION_ASSOCIATION_FIX_STABILITY_MINUTES` (default 10).
 
-Each scheduled run handles at most `SECTION_ASSOCIATION_FIX_MAX_RECONCILIATIONS_PER_RUN` associations (default 50), prioritizing new and pending work, then historical records, then controlled blocked retries and due completed re-verification. Previously completed records without positive verification evidence are eligible automatically. Completed associations are re-read every `SECTION_ASSOCIATION_FIX_COMPLETED_REVERIFY_HOURS` (default 24); if a target is active again, it is reconciled through the normal validation and update path.
+Each scheduled run handles at most `SECTION_ASSOCIATION_FIX_MAX_RECONCILIATIONS_PER_RUN` associations (default 50), prioritizing new and pending work, then historical records, then controlled blocked retries. Previously completed records without positive verification evidence are eligible automatically. Verified completed associations become eligible every `SECTION_ASSOCIATION_FIX_COMPLETED_REVERIFY_HOURS` (default 24), and are re-read only from 03:00 through 06:00 America/Sao_Paulo. Backlogs resume in later maintenance windows. If a target is active again, it is reconciled through the normal validation and update path.
 
 Dry-run and live processing share the same engine. Every target is checked before the first write. The only mutation is Course Offering `IsActive: true` to `false`; uncertain writes are read back and never blindly replayed. MongoDB is an operational work ledger, not proof of Brightspace state.
 
@@ -22,11 +24,22 @@ Background calls use Brightspace Server-to-Server OAuth 2.0 client credentials w
 
 ## Hosting / Trigger Modes
 
-`SECTION_ASSOCIATION_FIX_TRIGGER_MODE=cron` is the default for Render Free and other sleeping web services. Configure one Render Cron Job from this repository on `*/15 * * * *` with command `npm run cron:section-association`. Each invocation performs one bounded fast cycle and runs recovery when its independent four-hour schedule is due.
+`SECTION_ASSOCIATION_FIX_TRIGGER_MODE=cron` is the default for Render Free and other sleeping web services. Configure one Render Cron Job from this repository on `*/15 * * * *` with command `npm run cron:section-association`. Each invocation performs bounded period discovery and runs non-completed recovery when its independent four-hour schedule is due. Nightly full discovery and completed-association verification use the same cron job; no additional job is needed.
+
+### Daily schedule at a glance
+
+| Work | Timing | Discovery or processing |
+| --- | --- | --- |
+| Fast discovery | Every 15 minutes | Current and previous periods; October 2026 uses `2602-I0001` and `2601-I0001`. |
+| Full discovery | Once daily, at or after 02:00 `America/Sao_Paulo` | Broad `I0001` query covers historical and future periods. If missed or unsuccessful, the next cron invocation retries it. |
+| Completed re-verification | 03:00–06:00 `America/Sao_Paulo` | Only completed associations at least 24 hours past successful verification are eligible. |
+| Recovery | Every four hours | Pending and retryable blocked work remains eligible throughout the day. |
+
+This keeps each fast discovery focused on the current and immediately previous periods, reducing repeated Brightspace reads across older history. The daily broad scan still finds associations in any past or future period, so narrowing the frequent queries does not remove historical coverage. No academic-period setting or second cron job is needed.
 
 Cron and the worker use a namespaced Mongo lease. It is renewed during work and explicitly released after success or failure; expiry is crash protection. Run `npm run section-association:lease-status` to inspect its state without modifying MongoDB.
 
-Set `SECTION_ASSOCIATION_FIX_TRIGGER_MODE=internal` only on always-on hosting. The web process starts an immediate fast cycle and recurring fast/recovery timers. Both modes use the same service and reconciliation engine.
+Set `SECTION_ASSOCIATION_FIX_TRIGGER_MODE=internal` only on always-on hosting. The web process starts an immediate fast cycle and recurring fast/recovery timers. Cron and internal runs coordinate through the same Mongo lease, service, and reconciliation engine.
 
 ## LTI bootstrap
 

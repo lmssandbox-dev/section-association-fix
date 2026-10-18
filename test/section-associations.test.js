@@ -51,6 +51,15 @@ function serviceMemoryStore(now = () => Date.now()) {
         status: prior?.status || 'pending', baseline: prior?.baseline || false });
       return !prior;
     },
+    async recordDiscoveries(rows) {
+      let newlyRecorded = 0;
+      let alreadyKnown = 0;
+      for (const row of rows) {
+        if (await this.recordDiscovery(row.id, row.code)) newlyRecorded++;
+        else alreadyKnown++;
+      }
+      return { newlyRecorded, alreadyKnown };
+    },
     async listWaitingNew({ stabilityCutoff }) {
       return [...records.values()].filter(item => item.baseline !== true && item.status === 'pending' &&
         !item.lastCheckedAt && item.firstSeenAt > stabilityCutoff);
@@ -300,7 +309,7 @@ test('discovery follows every bookmark and filters exact association codes', asy
   assert.equal(new URL(requested[1]).search, '?orgUnitType=3&orgUnitCode=I0001&bookmark=next-page');
   assert.equal(found.length, 2);
   const service = createSectionAssociationService({ client: { async associationCandidates() { return [
-    association, { ...association, Code: 'prefix-002521-01-2602-I0001' }, { ...association, Type: { Code: 'Group' } }
+    association, association, { ...association, Code: 'prefix-002521-01-2602-I0001' }, { ...association, Type: { Code: 'Group' } }
   ]; } }, store: {}, reconciler: {}, logger: { error() {} } });
   assert.deepEqual((await service.discover()).map(item => item.Code), [association.Code]);
 });
@@ -358,24 +367,45 @@ test('Mongo-backed API gate failures during discovery retain their database clas
   assert.equal(logger.lines.join('\n').includes('mongodb://'), false);
 });
 
+test('partial discovery persistence failure fails the cycle without a discovery success summary', async () => {
+  const logger = captureLogger();
+  const service = createSectionAssociationService({
+    client: { async associationCandidates() { return [association]; } },
+    store: { async baselineStatus() { return { state: 'ready' }; }, async recordDiscoveries() { throw new Error('partial bulk write'); } },
+    reconciler: {}, logger
+  });
+  const result = await service.fastTick();
+  assert.equal(result.status, 'failed');
+  assert.equal(logger.lines.some(line => line.startsWith('[section-association] discovery completed')), false);
+  assert.equal(logger.lines.some(line => line.startsWith('[section-association] fast cycle completed')), false);
+});
+
 test('first successful discovery records baseline history and sends it through the shared reconciler', async () => {
   let ready = false;
+  const events = [];
   const store = serviceMemoryStore(() => 10000000);
   store.baselineStatus = async () => ready ? { state: 'ready' } : null;
   store.beginBaseline = async () => 'token';
   store.finishBaseline = async (_token, rows) => {
+    events.push('baseline-persisted');
     ready = true;
     store.rows = rows;
     for (const row of rows) store.records.set(String(row.id), { namespace: 'tenant', associationOrgUnitId: String(row.id),
       associationCode: row.code, baseline: true, status: 'pending', firstSeenAt: new Date(10000000) });
     return { newlyRecorded: rows.length, alreadyKnown: 0 };
   };
+  const recordDiscoveries = store.recordDiscoveries.bind(store);
+  store.recordDiscoveries = async rows => { events.push('incremental-persisted'); return recordDiscoveries(rows); };
   store.releaseBaseline = async () => {};
   let reconciles = 0;
-  const service = createSectionAssociationService({ client: { async associationCandidates() { return [association]; } }, store,
+  const service = createSectionAssociationService({ client: { async associationCandidates(code) {
+    events.push(`query:${code}`); return [association];
+  } }, store,
     reconciler: { async reconcileAssociation() { reconciles++; return { status: 'completed' }; } }, logger: { info() {} }, now: () => 10000000 });
   await service.fastTick();
   assert.equal(store.rows.length, 1);
+  assert.deepEqual(events.slice(0, 2), ['query:I0001', 'baseline-persisted']);
+  assert.match(events[2], /^query:\d{4}-I0001$/);
   assert.equal(reconciles, 1);
 });
 

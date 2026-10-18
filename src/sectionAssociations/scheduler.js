@@ -4,12 +4,38 @@ const { logEvent, safeErrorFields } = require('./log');
 const { startMaintenanceExecution, buildMaintenanceExecutionSummary, persistMaintenanceExecution } = require('./executionSummary');
 
 function startSectionAssociationScheduler({ service, store, fastIntervalMinutes, recoveryIntervalHours,
-  setIntervalFn = setInterval, logger = console }) {
+  setIntervalFn = setInterval, clearIntervalFn = clearInterval, logger = console }) {
   const fastIntervalMs = fastIntervalMinutes * 60000;
   const recoveryIntervalMs = recoveryIntervalHours * 60 * 60000;
   let fastRunning = false;
   let recoveryRunning = false;
   let latestExecution = null;
+
+  async function withSharedLease(operation) {
+    if (!store?.acquireCronLease) return operation();
+    const leaseMs = 10 * 60 * 1000;
+    const token = await store.acquireCronLease(leaseMs, 'internal');
+    if (!token) {
+      logEvent(logger, 'warn', 'scheduled cycle skipped', { reason: 'lease-unavailable' });
+      return { status: 'skipped', skipped: true };
+    }
+    let renewalFailed = false;
+    let renewalRunning = false;
+    const heartbeat = setIntervalFn(() => {
+      if (renewalRunning) return;
+      renewalRunning = true;
+      void store.renewCronLease(token, leaseMs).catch(() => { renewalFailed = true; })
+        .finally(() => { renewalRunning = false; });
+    }, 60000);
+    try {
+      const result = await operation();
+      if (renewalFailed) throw Object.assign(new Error('Scheduled worker lease renewal failed.'), { code: 'CRON_LEASE_RENEWAL_FAILED' });
+      return result;
+    } finally {
+      clearIntervalFn(heartbeat);
+      await store.releaseCronLease(token);
+    }
+  }
 
   logEvent(logger, 'info', 'scheduler started', {
     fastIntervalMinutes,
@@ -26,7 +52,7 @@ function startSectionAssociationScheduler({ service, store, fastIntervalMinutes,
     const execution = startMaintenanceExecution('automatic');
     let result;
     try {
-      result = await service.fastTick({ execution });
+      result = await withSharedLease(() => service.fastTick({ execution }));
       latestExecution = { kind: 'Fast cycle', completedAt: new Date().toISOString(), result };
       return result;
     }
@@ -56,7 +82,7 @@ function startSectionAssociationScheduler({ service, store, fastIntervalMinutes,
     const execution = startMaintenanceExecution('automatic');
     let result;
     try {
-      result = await service.recoveryTick({ execution });
+      result = await withSharedLease(() => service.recoveryTick({ execution }));
       latestExecution = { kind: 'Recovery cycle', completedAt: new Date().toISOString(), result };
       return result;
     }

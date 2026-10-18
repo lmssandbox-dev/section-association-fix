@@ -111,7 +111,7 @@ test('legacy baseline completion leaves the eligible set after verified evidence
   assert.equal(await store.countHistoricalBacklog(), 0);
 });
 
-test('new work is prioritized before historical work and due completed records are selected only in recovery', async () => {
+test('new and historical work remain prioritized; completed verification is selected only when explicitly enabled', async () => {
   const { store } = makeStore([
     item(20, { baseline: true, status: 'completed' }),
     item(10, { firstSeenAt: date(-20) }),
@@ -120,8 +120,10 @@ test('new work is prioritized before historical work and due completed records a
   const fast = await store.listFastWork({ limit: 2, stabilityCutoff: date(0) });
   assert.deepEqual(fast.map(row => row.associationOrgUnitId), ['10', '20']);
   const recovery = await store.listRecoveryWork({ limit: 3, stabilityCutoff: date(0), blockedBefore: date(-1), reverifyBefore: date(-24) });
-  assert.deepEqual(recovery.map(row => row.associationOrgUnitId), ['10', '20', '30']);
-  assert.deepEqual(recovery.map(row => row.workType), ['new', 'historical', 'reverify']);
+  assert.deepEqual(recovery.map(row => row.associationOrgUnitId), ['10', '20']);
+  const maintenance = await store.listFastWork({ limit: 3, stabilityCutoff: date(0),
+    includeCompletedReverification: true, reverifyBefore: date(-24) });
+  assert.deepEqual(maintenance.map(row => row.associationOrgUnitId), ['10', '20', '30']);
   assert.equal(await store.countDueCompleted(date(-24)), 1);
 });
 
@@ -150,6 +152,14 @@ test('blocked associations enter recovery only after their retry interval', asyn
   const retry = await store.listRecoveryWork({ ...args, blockedBefore: date(1) });
   assert.deepEqual(retry.map(row => row.associationOrgUnitId), ['91']);
   assert.equal(retry[0].workType, 'blocked');
+});
+
+test('successful full discovery timestamp is persisted across store instances', async () => {
+  const metaDocuments = new Map();
+  const first = makeStore([], metaDocuments).store;
+  const completedAt = await first.markFullDiscoveryCompleted();
+  const second = makeStore([], metaDocuments).store;
+  assert.deepEqual(await second.lastFullDiscoveryAt(), completedAt);
 });
 
 test('latest maintenance summary is shared across store instances and ordered by start timestamp across sources', async () => {

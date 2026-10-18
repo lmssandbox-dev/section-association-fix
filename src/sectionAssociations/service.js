@@ -3,6 +3,41 @@
 const { isAssociation } = require('./rules');
 const { logEvent, safeErrorFields } = require('./log');
 
+const ACADEMIC_TIME_ZONE = 'America/Sao_Paulo';
+
+function localParts(value) {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: ACADEMIC_TIME_ZONE, year: 'numeric',
+    month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(value));
+  return Object.fromEntries(parts.filter(part => part.type !== 'literal').map(part => [part.type, Number(part.value)]));
+}
+
+function academicPeriods(value = Date.now()) {
+  const { year, month } = localParts(value);
+  const semester = month <= 6 ? 1 : 2;
+  const currentYear = year % 100;
+  const previousYear = semester === 1 ? (currentYear + 99) % 100 : currentYear;
+  const previousSemester = semester === 1 ? 2 : 1;
+  return { current: `${String(currentYear).padStart(2, '0')}0${semester}`,
+    previous: `${String(previousYear).padStart(2, '0')}0${previousSemester}` };
+}
+
+function isReverificationWindow(value = Date.now()) {
+  const { hour } = localParts(value);
+  return hour >= 3 && hour < 6;
+}
+
+function localDateKey(value = Date.now()) {
+  const { year, month, day } = localParts(value);
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+function fullDiscoveryDue(lastCompletedAt, value = Date.now()) {
+  const { hour } = localParts(value);
+  if (!lastCompletedAt) return true;
+  if (hour < 2) return false;
+  return localDateKey(lastCompletedAt) !== localDateKey(value) || localParts(lastCompletedAt).hour < 2;
+}
+
 function createSectionAssociationService({ client, store, reconciler, stabilityMinutes = 10,
   maxReconciliationsPerRun = 50, recoveryIntervalHours = 4, completedReverifyHours = 24,
   now = Date.now, logger = console }) {
@@ -11,9 +46,10 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
   const recoveryIntervalMs = recoveryIntervalHours * 60 * 60 * 1000;
   const completedReverifyMs = completedReverifyHours * 60 * 60 * 1000;
 
-  async function discover() {
-    const candidates = await client.associationCandidates();
-    return candidates.filter(item => isAssociation(item) && /^\d+$/.test(String(item.Identifier ?? item.OrgUnitId ?? '')));
+  async function discover(orgUnitCode) {
+    const candidates = await client.associationCandidates(orgUnitCode);
+    const valid = candidates.filter(item => isAssociation(item) && /^\d+$/.test(String(item.Identifier ?? item.OrgUnitId ?? '')));
+    return [...new Map(valid.map(item => [String(item.Identifier ?? item.OrgUnitId), item])).values()];
   }
 
   async function bootstrap(associations) {
@@ -52,25 +88,67 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
   }
 
   async function prepareDiscovery(stats, setPhase = () => {}) {
-    const associations = await discover();
-    stats.discovered = associations.length;
+    const currentTime = now();
     setPhase('database');
-    let baseline = await store.baselineStatus();
+    const baselineStatus = typeof store.baselineStatus === 'function' ? await store.baselineStatus() : { state: 'ready' };
+    const baselineRequired = !baselineStatus || baselineStatus.state !== 'ready';
+    const lastFull = typeof store.lastFullDiscoveryAt === 'function' ? await store.lastFullDiscoveryAt() : new Date(currentTime);
+    const runFullDiscovery = baselineRequired || fullDiscoveryDue(lastFull, currentTime);
+    setPhase('discovery');
+    let full = [];
+    let fullDiscoveryError;
+    if (runFullDiscovery) {
+      try { full = await discover('I0001'); }
+      catch (error) {
+        if (baselineRequired) throw error;
+        fullDiscoveryError = error;
+        logEvent(logger, 'warn', 'full discovery deferred', safeErrorFields(error, {
+          phase: error?.phase || 'discovery', endpoint: error?.endpoint || 'association-candidates'
+        }));
+      }
+    }
+    setPhase('database');
+    let baseline = baselineStatus;
+    const fullIds = new Set(full.map(item => String(item.Identifier ?? item.OrgUnitId)));
     if (!baseline || baseline.state !== 'ready') {
-      const counts = await bootstrap(associations);
+      const counts = await bootstrap(full);
       if (!counts) {
         baseline = await store.baselineStatus();
         if (!baseline || baseline.state !== 'ready') return false;
+        const persisted = await store.recordDiscoveries(full.map(item => ({ id: item.Identifier ?? item.OrgUnitId, code: item.Code })));
+        stats.new += persisted.newlyRecorded;
+        stats.alreadyKnown += persisted.alreadyKnown;
       } else {
         stats.new += counts.newlyRecorded;
         stats.alreadyKnown += counts.alreadyKnown;
+        baseline = { state: 'ready' };
       }
+    } else if (runFullDiscovery && !fullDiscoveryError) {
+      const counts = await store.recordDiscoveries(full.map(item => ({ id: item.Identifier ?? item.OrgUnitId, code: item.Code })));
+      stats.new += counts.newlyRecorded;
+      stats.alreadyKnown += counts.alreadyKnown;
     }
+    if (runFullDiscovery && !fullDiscoveryError && typeof store.markFullDiscoveryCompleted === 'function') {
+      await store.markFullDiscoveryCompleted();
+    }
+    setPhase('discovery');
+    const periods = academicPeriods(currentTime);
+    const [current, previous] = await Promise.all([
+      discover(`${periods.current}-I0001`), discover(`${periods.previous}-I0001`)
+    ]);
+    const associations = [...new Map([...full, ...current, ...previous]
+      .map(item => [String(item.Identifier ?? item.OrgUnitId), item])).values()];
+    stats.discovered = associations.length;
+    setPhase('database');
     if (baseline?.state === 'ready') {
-      for (const item of associations) {
-        const isNew = await store.recordDiscovery(item.Identifier ?? item.OrgUnitId, item.Code);
-        if (isNew) stats.new++;
-        else stats.alreadyKnown++;
+      const discoveryRecords = (runFullDiscovery && !fullDiscoveryError
+        ? associations.filter(item => !fullIds.has(String(item.Identifier ?? item.OrgUnitId)))
+        : associations)
+        .map(item => ({ id: item.Identifier ?? item.OrgUnitId, code: item.Code }));
+      if (discoveryRecords.length) {
+        const counts = await store.recordDiscoveries(discoveryRecords);
+        stats.new += counts.newlyRecorded;
+        stats.alreadyKnown += counts.alreadyKnown;
       }
     }
     logDiscovery(stats);
@@ -95,7 +173,8 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
       writesAttempted: 0, writesVerified: 0, alreadyInactive: 0 };
   }
 
-  async function runCycle({ recovery = false, maxReconciliations = maxReconciliationsPerRun, execution } = {}) {
+  async function runCycle({ recovery = false, discoveryAlreadyCompleted = false,
+    maxReconciliations = maxReconciliationsPerRun, execution } = {}) {
     const startedAt = now();
     const name = recovery ? 'recovery cycle' : 'fast cycle';
     logEvent(logger, 'info', `${name} started`);
@@ -110,7 +189,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     let succeeded = false;
     let recoveryComplete = true;
     try {
-      if (!await prepareDiscovery(stats, value => { phase = value; })) {
+      if (!discoveryAlreadyCompleted && !await prepareDiscovery(stats, value => { phase = value; })) {
         succeeded = true;
         return { status: 'completed', ...stats, recoveryComplete: false };
       }
@@ -120,20 +199,21 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
       stats.historicalPending = await store.countHistoricalBacklog();
       if (recovery) {
         const reverifyBefore = new Date(time - completedReverifyMs);
-        stats.dueForReverification = await store.countDueCompleted(reverifyBefore);
+        stats.dueForReverification = isReverificationWindow(time) ? await store.countDueCompleted(reverifyBefore) : 0;
         const items = await store.listRecoveryWork({ limit: maxReconciliations,
-          stabilityCutoff, blockedBefore: new Date(time - recoveryIntervalMs),
-          reverifyBefore });
+          stabilityCutoff, blockedBefore: new Date(time - recoveryIntervalMs) });
         await processWork(items, stats, execution);
         recoveryComplete = await store.countRecoveryWork({ stabilityCutoff,
-          blockedBefore: new Date(time - recoveryIntervalMs), reverifyBefore }) === 0;
+          blockedBefore: new Date(time - recoveryIntervalMs) }) === 0;
         if (!recoveryComplete) logEvent(logger, 'warn', 'recovery deferred', { reason: 'work-remains' });
       } else {
         for (const item of await store.listWaitingNew({ stabilityCutoff })) {
           stats.pending++;
           logStabilityWait(item.associationOrgUnitId);
         }
-        const items = await store.listFastWork({ limit: maxReconciliations, stabilityCutoff });
+        const items = await store.listFastWork({ limit: maxReconciliations, stabilityCutoff,
+          includeCompletedReverification: isReverificationWindow(time),
+          reverifyBefore: new Date(time - completedReverifyMs) });
         await processWork(items, stats, execution);
       }
       stats.remainingHistoricalBacklog = await store.countHistoricalBacklog();
@@ -160,4 +240,4 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
   return { discover, fastTick, recoveryTick };
 }
 
-module.exports = { createSectionAssociationService };
+module.exports = { createSectionAssociationService, academicPeriods, isReverificationWindow, fullDiscoveryDue };

@@ -50,9 +50,11 @@ The OAuth application needs the two scopes above. Its linked Brightspace Service
 | `SECTION_ASSOCIATION_FIX_DRY_RUN` | `true` | Resolve and report intended inactivations without PUT requests. |
 | `SECTION_ASSOCIATION_FIX_FAST_INTERVAL_MINUTES` | `15` | Fast discovery/reconciliation cadence. |
 | `SECTION_ASSOCIATION_FIX_STABILITY_MINUTES` | `10` | Minimum age for newly discovered associations. Historical records do not wait. |
-| `SECTION_ASSOCIATION_FIX_RECOVERY_INTERVAL_HOURS` | `4` | Independent recovery cadence for blocked/retry work. |
+| `SECTION_ASSOCIATION_FIX_RECOVERY_INTERVAL_HOURS` | `4` | Independent recovery cadence for pending and blocked retry work. |
 | `SECTION_ASSOCIATION_FIX_MAX_RECONCILIATIONS_PER_RUN` | `50` | Maximum associations processed by a scheduled run. |
-| `SECTION_ASSOCIATION_FIX_COMPLETED_REVERIFY_HOURS` | `24` | Re-read cadence for completed associations. |
+| `SECTION_ASSOCIATION_FIX_COMPLETED_REVERIFY_HOURS` | `24` | Minimum age before a verified completed association can be re-read during nightly maintenance. |
+
+No new environment variables are required. Academic periods are calculated automatically in `America/Sao_Paulo`: `YY01` covers January–June and `YY02` covers July–December. There is no manual period list or period rollover setting to maintain. The `FAST_INTERVAL_MINUTES` setting controls internal-mode fast timers; the deployed Render Cron Job remains on `*/15 * * * *`.
 
 ## Hosting / Trigger Modes
 
@@ -63,13 +65,15 @@ Use `SECTION_ASSOCIATION_FIX_TRIGGER_MODE=cron` for sleeping hosting. Configure 
 - Schedule: `*/15 * * * *`
 - Command: `npm run cron:section-association`
 
-Each invocation runs one bounded fast cycle and checks Mongo scheduler metadata for due recovery. Recovery progress advances only after all due work is processed. Align the Render schedule with `SECTION_ASSOCIATION_FIX_FAST_INTERVAL_MINUTES`.
+Each invocation discovers the current and previous academic periods using two separate Brightspace queries. The first run performs a broad `I0001` discovery to initialize historical baseline state before the period queries. After that, one complete broad historical scan is due each day at or after 02:00 local time. Its last successful completion is stored in tenant-scoped `section_association_meta`; a failed broad API scan leaves it due while normal period discovery continues, and a partial/failed Mongo persistence does not advance the timestamp. A missed scan runs on the next cron invocation.
+
+Completed associations eligible after 24 hours are selected only between 03:00 and 06:00 `America/Sao_Paulo`. A remaining backlog continues during later 15-minute invocations in that window, with normal pending work retaining priority. Four-hour recovery continues to process non-completed pending and blocked work throughout the day. Reconciliation remains limited to 50 per cron invocation across fast and recovery work. Recovery progress advances only after eligible non-completed work is drained. The full scan and all reconciliation share the existing lease and execution; no second Render job is needed.
 
 Cron and worker processing share an atomic namespaced Mongo lease, renewed while running and explicitly awaited on release. Expiry is crash protection. Inspect without modifying state with `npm run section-association:lease-status`.
 
 ### Internal mode
 
-Use `SECTION_ASSOCIATION_FIX_TRIGGER_MODE=internal` only on always-on hosting. The web process runs an immediate cycle followed by configured fast and recovery timers.
+Use `SECTION_ASSOCIATION_FIX_TRIGGER_MODE=internal` only on always-on hosting. The web process runs an immediate cycle followed by configured fast and recovery timers. It uses the same namespaced Mongo lease and maintenance windows. Do not enable the external Render Cron Job while internal timers are active.
 
 ### Trigger migration
 
@@ -77,6 +81,6 @@ Cron → always-on: upgrade the web service, set mode to `internal`, disable/del
 
 ## Unified historical and new processing
 
-Historical baseline associations are included by the normal worker and use the same reconciliation, validation, dry-run, and apply behavior as new work. The baseline marker remains audit metadata. Each run is capped by `SECTION_ASSOCIATION_FIX_MAX_RECONCILIATIONS_PER_RUN`; new and pending records are prioritized, historical records follow, and blocked retry/completed re-verification work is handled by recovery. Legacy completed records without successful verification evidence are eligible for automatic processing.
+Historical baseline associations are included by the normal worker and use the same reconciliation, validation, dry-run, and apply behavior as new work. The baseline marker remains audit metadata. Each run is capped by `SECTION_ASSOCIATION_FIX_MAX_RECONCILIATIONS_PER_RUN`; new and pending records are prioritized, historical records follow, and blocked retries are handled by recovery. Completed re-verification is handled by the normal worker only during the nightly window. Legacy completed records without successful verification evidence are eligible for automatic processing.
 
 Dry-run sends zero PUTs. A record with any active target remains pending so it can be processed when dry-run is disabled. Live updates only inactivate active targets and verify each write. Already-inactive targets are no-ops. Review operational logs and Mongo reports/state as appropriate; there is no rollback implementation.

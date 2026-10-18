@@ -51,7 +51,8 @@ async function runSectionAssociationCron({ service, store, recoveryIntervalHours
     if (due) {
       phase = 'discovery';
       const remaining = Math.max(0, maxReconciliationsPerRun - (fast?.processedThisRun || 0));
-      const recovery = await service.recoveryTick({ maxReconciliations: remaining, execution });
+      const recovery = await service.recoveryTick({ maxReconciliations: remaining, execution,
+        discoveryAlreadyCompleted: true });
       results.push(recovery);
       if (recovery?.status && recovery.status !== 'completed') throw Object.assign(new Error('Recovery cycle did not complete.'), {
         phase: recovery.phase || 'discovery', code: recovery.code || 'RECOVERY_CYCLE_FAILED'

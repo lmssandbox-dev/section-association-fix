@@ -64,7 +64,12 @@ function createSectionAssociationClient({ get, http, oauth, baseUrl, lpVersion }
     if (!ID.test(String(id))) throw new Error('Invalid Course Offering ID.');
     return read(`${root}/courses/${id}`);
   };
-  const associationCandidates = () => pages(`${root}/orgstructure/?orgUnitType=3&orgUnitCode=I0001`);
+  const associationCandidates = (orgUnitCode = 'I0001') => {
+    if (typeof orgUnitCode !== 'string' || !/^(?:\d{4}-)?I0001$/.test(orgUnitCode)) {
+      throw new Error('Invalid Section Association discovery code.');
+    }
+    return pages(`${root}/orgstructure/?orgUnitType=3&orgUnitCode=${encodeURIComponent(orgUnitCode)}`);
+  };
   const children = id => pages(`${root}/orgstructure/${id}/children/paged/`);
   const exactCode = code => pages(`${root}/orgstructure/?exactOrgUnitCode=${encodeURIComponent(code)}`);
 
