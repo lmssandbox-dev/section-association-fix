@@ -46,7 +46,10 @@ test('launch page is a compact responsive monitor with authenticated refresh and
   const { onConnect } = setup(); const res = response(); res.locals.ltik = 'signed-lti-token';
   onConnect({ deploymentId: 'deployment-1' }, {}, res);
   assert.equal(res.contentType, 'html');
-  for (const text of ['Service status', 'Current worker state', 'Discovery periods', 'Execution history', 'Discovery scope', 'Export History CSV', 'Associations checked', 'Corrections applied', 'Errors']) assert.ok(res.body.includes(text));
+  for (const text of ['Service status', 'Current worker state', 'Discovery periods', 'Current academic period', 'Previous academic period', 'Last execution', 'Execution history', 'Periods / Scope', 'Export History CSV']) assert.ok(res.body.includes(text));
+  assert.doesNotMatch(res.body, /<span class="label">Source<\/span>|latestMetrics|zeroWork/);
+  assert.match(res.body, /title="Current academic period"/);assert.match(res.body, /title="Previous academic period"/);
+  assert.match(res.body, /\.period-chip\{display:inline-flex/);assert.match(res.body, /\.scope\{overflow-wrap:anywhere;white-space:nowrap\}/);
   assert.doesNotMatch(res.body, />Download CSV</);
   assert.match(res.body, /Authorization:'Bearer '\+ltiToken/); assert.match(res.body, /credentials:'same-origin'/);
   assert.match(res.body, /slice\(0,50\)/); assert.match(res.body, /@media\(max-width:620px\)/);
@@ -62,15 +65,16 @@ test('launch page is a compact responsive monitor with authenticated refresh and
 
 const execution = { executionId: 'run-1', source: 'manual', startedAt: '2026-10-17T10:00:00.000Z', completedAt: '2026-10-17T10:02:00.000Z',
   status: 'completed', associationsChecked: 1234, alreadyCompliant: 1, correctionsApplied: 1, errors: 0,
+  discoveryPeriods:{current:'2602',previous:'2601'}, discoveryActivities:{currentPrevious:true},
   coverage: { type: 'bounded-cycle', remainingHistoricalBacklog: 4 } };
 
 async function runPage(fetchImpl) {
   const script = pageForLaunch('signed-lti-token').match(/<script>([\s\S]*?)<\/script>/)[1];
-  const ids = ['availability','worker','periods','latest','latestMetrics','zeroWork','latestDate','outcome','source','checked','corrections','errors','emptyLatest','historyEmpty','history','updated','notice','refresh','export','exportFeedback'];
+  const ids = ['availability','worker','currentPeriod','previousPeriod','latest','latestDate','outcome','latestMessage','emptyLatest','historyEmpty','history','updated','notice','refresh','export','exportFeedback'];
   let finish; const finished = new Promise(resolve => { finish = resolve; });const timers=[];
   const summary={focused:false,focus(){this.focused=true}},reportMenu={open:true,querySelector(){return summary}},reportFeedback={textContent:'',className:''},reportEntry={querySelector(){return reportFeedback}};
   const links=[];
-  const elements = Object.fromEntries(ids.map(id => [id, { value: id==='zeroWork'?'No associations needed processing.':'', hidden: ['latest','latestMetrics','zeroWork','emptyLatest','historyEmpty'].includes(id), className: '', innerHTML: '', listeners: {},
+  const elements = Object.fromEntries(ids.map(id => [id, { value: '', hidden: ['latest','emptyLatest','historyEmpty'].includes(id), className: '', innerHTML: '', listeners: {},
     addEventListener(event, handler) { this.listeners[event] = handler; }, setAttribute(name,value) { this[name]=value; },
     set textContent(value) { this.value = value; if (id === 'notice' && value !== 'Refreshing…') finish(); }, get textContent() { return this.value; } }]));
   const documentListeners={};
@@ -84,16 +88,18 @@ test('Refresh renders latest status and 50-row history, including expandable det
   let request;
   const elements = await runPage(async (...args) => { request = args; return { ok: true, async json() { return { availability: 'Available', worker: 'idle', latestExecution: execution, executions: runs }; } }; });
   assert.equal(request[0], '/api/section-association/status'); assert.equal(request[1].headers.Authorization, 'Bearer signed-lti-token');
-  assert.equal(request[1].credentials, 'same-origin'); assert.equal(elements.checked.textContent, '1,234');
-  assert.equal(elements.source.textContent, 'Manual'); assert.equal(elements.historyEmpty.hidden, true);
-  assert.equal(elements.periods.textContent, '—');
-  assert.match(elements.history.innerHTML, /<span class="scope">Not recorded<\/span>/);
+  assert.equal(request[1].credentials, 'same-origin');
+  assert.equal(elements.latestMessage.textContent, 'Checked: 1,234 · Corrections: 1 · Errors: 0');
+  assert.equal(elements.historyEmpty.hidden, true);
+  assert.equal(elements.currentPeriod.textContent, '—');assert.equal(elements.previousPeriod.textContent, '—');
+  assert.match(elements.history.innerHTML, /<span class="scope">2602 · 2601<\/span>/);
   assert.doesNotMatch(elements.history.innerHTML, /<span class="source">/);
   assert.equal(elements.outcome.className, 'outcome completed'); assert.equal(elements.outcome['aria-label'], 'Outcome: Completed');
+  assert.match(elements.history.innerHTML, /2602 · 2601/);
   assert.match(elements.history.innerHTML, /Already compliant: 1 · Duration: 2 min/);
   assert.match(elements.history.innerHTML,/Oct 17/);assert.doesNotMatch(elements.history.innerHTML,/Start time|Finish time/);
   const details = elements.history.innerHTML.match(/<div class="detail-strip">([\s\S]*?)<\/div><\/details>/)[1];
-  assert.match(details,/Already compliant: 1 · Duration: 2 min/);
+  assert.match(details,/Current \+ previous discovery · Already compliant: 1 · Duration: 2 min/);
   for (const removed of ['Start time','Finish time','detail-grid','<span class="label">Source</span>','<span class="label">Errors</span>']) assert.ok(!details.includes(removed));
   assert.match(responsiveStyles(),/\.detail-strip\{flex-wrap:wrap/);
   assert.match(elements.history.innerHTML, /aria-label="Outcome: Completed"/); assert.match(elements.history.innerHTML, /data-label="Corrections"[^>]*>1<\/span>/);
@@ -104,24 +110,26 @@ test('Refresh renders latest status and 50-row history, including expandable det
 test('current service periods render from status data and use a neutral fallback for unavailable values', async () => {
   const payload={availability:'Available',worker:'idle',discoveryPeriods:{current:'2701',previous:'2602'},latestExecution:null,executions:[]};
   const elements=await runPage(async()=>({ok:true,async json(){return payload}}));
-  assert.equal(elements.periods.textContent,'2701 + 2602');
+  assert.equal(elements.currentPeriod.textContent,'2701');assert.equal(elements.previousPeriod.textContent,'2602');
   const invalid=await runPage(async()=>({ok:true,async json(){return {...payload,discoveryPeriods:null}}}));
-  assert.equal(invalid.periods.textContent,'—');
+  assert.equal(invalid.currentPeriod.textContent,'—');assert.equal(invalid.previousPeriod.textContent,'—');
 });
 
-test('execution scope labels reflect only recorded activities and details show used periods', async()=>{
+test('history scope shows recorded codes and expanded details avoid repeating periods', async()=>{
   const scopeCases=[
-    [{currentPrevious:true},'Current + Previous','Periods: 2602 + 2601'],
-    [{historical:true},'Historical','Historical discovery'],
-    [{reverification:true},'Re-verification','Re-verification'],
-    [{currentPrevious:true,historical:true},'Mixed','Periods: 2602 + 2601 · Historical discovery'],
-    [{},'Not recorded','Discovery scope: Not recorded']
+    [{currentPrevious:true},{current:'2602',previous:'2601'},'2602 · 2601','Current + previous discovery'],
+    [{historical:true},null,'Historical','Historical discovery'],
+    [{reverification:true},null,'Re-verification','Re-verification'],
+    [{currentPrevious:true,historical:true},{current:'2602',previous:'2601'},'2602 · 2601 · Mixed','Current + previous discovery · Historical discovery'],
+    [{},null,'—','Already compliant: 1']
   ];
-  for(const [discoveryActivities,scope,detail] of scopeCases){
-    const run={...execution,discoveryPeriods:{current:'2602',previous:'2601'},discoveryActivities};
+  for(const [discoveryActivities,discoveryPeriods,scope,detail] of scopeCases){
+    const run={...execution,discoveryPeriods,discoveryActivities};
     const elements=await runPage(async()=>({ok:true,async json(){return{availability:'Available',worker:'idle',latestExecution:run,executions:[run]}}}));
     assert.match(elements.history.innerHTML,new RegExp(`<span class="scope">${scope.replace(/[+]/g,'\\+')}<\\/span>`));
     assert.ok(elements.history.innerHTML.includes(detail));
+    const details=elements.history.innerHTML.match(/<div class="detail-strip">([\s\S]*?)<\/div><\/details>/)[1];
+    assert.doesNotMatch(details,/2602|2601/);
   }
 });
 
@@ -136,9 +144,8 @@ test('successful zero-work latest execution replaces counters with the no-work m
   const zeroWork={...execution,status:'completed',associationsChecked:0,correctionsApplied:0,errors:0};
   const elements=await runPage(async()=>({ok:true,async json(){return {availability:'Available',worker:'idle',latestExecution:zeroWork,executions:[zeroWork]}}}));
   assert.equal(elements.latest.hidden,false); assert.equal(elements.latestDate.textContent.length>0,true);
-  assert.equal(elements.source.textContent,'Manual'); assert.equal(elements.outcome.textContent,'Completed');
-  assert.equal(elements.latestMetrics.hidden,true); assert.equal(elements.zeroWork.hidden,false);
-  assert.equal(elements.zeroWork.textContent,'No associations needed processing.');
+  assert.equal(elements.outcome.textContent,'Completed');
+  assert.equal(elements.latestMessage.textContent,'No associations needed processing.');
   assert.match(elements.history.innerHTML,/No work required · 2 min/);
   assert.doesNotMatch(elements.history.innerHTML,/Already compliant: 0/);
 });
@@ -146,16 +153,15 @@ test('successful zero-work latest execution replaces counters with the no-work m
 test('executions with work retain their summary counts', async () => {
   const worked={...execution,status:'completed',associationsChecked:3,correctionsApplied:2,errors:0};
   const elements=await runPage(async()=>({ok:true,async json(){return {availability:'Available',worker:'idle',latestExecution:worked,executions:[worked]}}}));
-  assert.equal(elements.latestMetrics.hidden,false); assert.equal(elements.zeroWork.hidden,true);
-  assert.equal(elements.checked.textContent,'3'); assert.equal(elements.corrections.textContent,'2'); assert.equal(elements.errors.textContent,'0');
+  assert.equal(elements.latestMessage.textContent,'Checked: 3 · Corrections: 2 · Errors: 0');
 });
 
 test('failed, cancelled, incomplete, and unknown outcomes never show successful no-work messaging', async () => {
   for (const status of ['failed','cancelled','pending',undefined]) {
     const nonSuccess={...execution,status,associationsChecked:0,correctionsApplied:0,errors:0};
     const elements=await runPage(async()=>({ok:true,async json(){return {availability:'Available',worker:'idle',latestExecution:nonSuccess,executions:[nonSuccess]}}}));
-    assert.equal(elements.zeroWork.hidden,true,`zero-work message shown for ${status}`);
-    assert.equal(elements.latestMetrics.hidden,false,`counters hidden for ${status}`);
+    assert.notEqual(elements.latestMessage.textContent,'No associations needed processing.',`zero-work message shown for ${status}`);
+    assert.match(elements.latestMessage.textContent,/Checked: 0 · Corrections: 0 · Errors: 0/);
   }
 });
 
@@ -246,6 +252,7 @@ test('failed and incomplete executions show available duration and explanations,
     const elements=await runPage(async()=>({ok:true,async json(){return{availability:'Available',worker:'idle',latestExecution:run,executions:[run]}}}));
     assert.match(elements.history.innerHTML,/Duration: 2 min/);assert.match(elements.history.innerHTML,/Validation was blocked/);
     assert.doesNotMatch(elements.history.innerHTML,/No work required/);
+    assert.equal(elements.latestMessage.textContent,'Validation was blocked');
   }
 });
 
@@ -253,7 +260,7 @@ test('missing timestamps and optional counts are omitted instead of invented',as
   const run={executionId:'run-missing',source:'automatic',status:'completed',associationsChecked:2,errors:0};
   const elements=await runPage(async()=>({ok:true,async json(){return{availability:'Available',worker:'idle',latestExecution:run,executions:[run]}}}));
   const details=elements.history.innerHTML.match(/<div class="detail-strip">([\s\S]*?)<\/div><\/details>/)[1];
-  assert.equal(details,'<span class="execution-info">Discovery scope: Not recorded</span><span class="audit-unavailable">Detailed reports unavailable.</span>');
+  assert.equal(details,'<span class="execution-info"></span><span class="audit-unavailable">Detailed reports unavailable.</span>');
 });
 
 function responsiveStyles(){return pageForLaunch('token').match(/<style>([\s\S]*?)<\/style>/)[1]}
