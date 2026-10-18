@@ -46,14 +46,15 @@ test('launch page is a compact responsive monitor with authenticated refresh and
   const { onConnect } = setup(); const res = response(); res.locals.ltik = 'signed-lti-token';
   onConnect({ deploymentId: 'deployment-1' }, {}, res);
   assert.equal(res.contentType, 'html');
-  for (const text of ['Service status', 'Current worker state', 'Execution history', 'Download CSV', 'Associations checked', 'Corrections applied', 'Errors']) assert.ok(res.body.includes(text));
+  for (const text of ['Service status', 'Current worker state', 'Execution history', 'Export History CSV', 'Associations checked', 'Corrections applied', 'Errors']) assert.ok(res.body.includes(text));
+  assert.doesNotMatch(res.body, />Download CSV</);
   assert.match(res.body, /Authorization:'Bearer '\+ltiToken/); assert.match(res.body, /credentials:'same-origin'/);
   assert.match(res.body, /slice\(0,50\)/); assert.match(res.body, /@media\(max-width:620px\)/);
   assert.match(res.body, /role="columnheader"/); assert.match(res.body, /data-label="Corrections"/);
   assert.match(res.body, /font-variant-numeric:tabular-nums/); assert.match(res.body, /id="exportFeedback" role="status" aria-live="polite"/);
   assert.match(res.body, /\.history-head\{display:none\}/); assert.match(res.body, /\.execution-summary \.numeric::before\{content:attr\(data-label\)/);
   assert.match(res.body, /\.history-row\{display:grid;grid-template-columns:/);
-  assert.match(res.body, /<details class="execution"><summary class="history-row execution-summary">/);
+  assert.match(res.body, /function executionHtml\(run\)/);
   for (const removed of ['Historical backlog remaining','Bounded cycle','Execution ID']) assert.ok(!res.body.includes(removed));
   assert.doesNotMatch(res.body, /Next scheduled execution|Latest execution<|backlogProgress|CSV report placeholder|corrective action/i);
   assert.match(res.body, /historyEmpty/); assert.match(res.body, /executionHtml/);
@@ -66,14 +67,16 @@ const execution = { executionId: 'run-1', source: 'manual', startedAt: '2026-10-
 async function runPage(fetchImpl) {
   const script = pageForLaunch('signed-lti-token').match(/<script>([\s\S]*?)<\/script>/)[1];
   const ids = ['availability','worker','latest','latestMetrics','zeroWork','latestDate','outcome','source','checked','corrections','errors','emptyLatest','historyEmpty','history','updated','notice','refresh','export','exportFeedback'];
-  let finish; const finished = new Promise(resolve => { finish = resolve; });
+  let finish; const finished = new Promise(resolve => { finish = resolve; });const timers=[];
+  const summary={focused:false,focus(){this.focused=true}},reportMenu={open:true,querySelector(){return summary}},reportFeedback={textContent:'',className:''},reportEntry={querySelector(){return reportFeedback}};
   const links=[];
   const elements = Object.fromEntries(ids.map(id => [id, { value: id==='zeroWork'?'No associations needed processing.':'', hidden: ['latest','latestMetrics','zeroWork','emptyLatest','historyEmpty'].includes(id), className: '', innerHTML: '', listeners: {},
     addEventListener(event, handler) { this.listeners[event] = handler; }, setAttribute(name,value) { this[name]=value; },
     set textContent(value) { this.value = value; if (id === 'notice' && value !== 'Refreshing…') finish(); }, get textContent() { return this.value; } }]));
-  vm.runInNewContext(script, { document: { getElementById: id => elements[id], createElement() { const link={click(){link.clicked=true}}; links.push(link); return link; } }, fetch: fetchImpl,
-    Intl, Date, URL: { createObjectURL() { return 'blob:url'; }, revokeObjectURL() {} } });
-  await finished; elements.links=links; return elements;
+  const documentListeners={};
+  vm.runInNewContext(script, { document: { getElementById: id => elements[id], addEventListener(event,handler){documentListeners[event]=handler}, querySelectorAll(){return reportMenu.open?[reportMenu]:[]}, querySelector(){return reportMenu.open?reportMenu:null}, createElement() { const link={click(){link.clicked=true}}; links.push(link); return link; } }, fetch: fetchImpl,
+    Intl, Date, setTimeout(fn){timers.push(fn);return timers.length}, clearTimeout(){}, URL: { createObjectURL() { return 'blob:url'; }, revokeObjectURL() {} } });
+  await finished; elements.links=links;elements.reportMenu=reportMenu;elements.reportSummary=summary;elements.reportFeedback=reportFeedback;elements.reportEntry=reportEntry;elements.documentListeners=documentListeners;elements.timers=timers; return elements;
 }
 
 test('Refresh renders latest status and 50-row history, including expandable details', async () => {
@@ -86,6 +89,7 @@ test('Refresh renders latest status and 50-row history, including expandable det
   assert.equal(elements.outcome.className, 'outcome completed'); assert.equal(elements.outcome['aria-label'], 'Outcome: Completed');
   assert.match(elements.history.innerHTML, /Already compliant/); assert.match(elements.history.innerHTML, /Start time/); assert.match(elements.history.innerHTML, /Finish time/);
   assert.match(elements.history.innerHTML, /Duration/);
+  assert.match(elements.history.innerHTML,/Oct 17/);assert.match(elements.history.innerHTML,/2026/);
   const details = elements.history.innerHTML.match(/<div class="detail-grid">([\s\S]*?)<\/div><\/details>/)[1];
   for (const field of ['Duration','Already compliant','Start time','Finish time']) assert.ok(details.includes(field));
   for (const removed of ['Execution ID','Coverage','Historical backlog','<span class="label">Source</span>','<span class="label">Errors</span>']) assert.ok(!details.includes(removed));
@@ -126,7 +130,7 @@ test('failed, cancelled, incomplete, and unknown outcomes never show successful 
   }
 });
 
-test('Download CSV keeps success feedback beside its control', async () => {
+test('Export History CSV keeps complete-history download, authorization, and brief success feedback', async () => {
   let request;
   const elements = await runPage(async (...args) => {
     request=args;
@@ -138,6 +142,7 @@ test('Download CSV keeps success feedback beside its control', async () => {
   assert.equal(request[1].credentials, 'same-origin'); assert.equal(request[1].headers.Authorization, 'Bearer signed-lti-token');
   assert.equal(elements.exportFeedback.textContent, 'CSV downloaded.'); assert.equal(elements.exportFeedback.className, 'feedback success');
   assert.equal(elements.links[0].clicked, true);
+  assert.equal(elements.timers.length,1);elements.timers[0]();assert.equal(elements.exportFeedback.textContent,'');
 });
 
 test('Download CSV shows an accessible inline error when the request is denied', async () => {
@@ -180,4 +185,28 @@ test('audit CSV endpoint is authenticated, execution-scoped, empty-report safe, 
   const denied = response(); denied.locals.token = { deploymentId: 'other' };
   await routes['/api/section-association/exceptions.csv']({ query: { executionId: '12345678-1234-1234-1234-123456789abc' } }, denied);
   assert.equal(denied.statusCode, 403); assert.equal(denied.chunks.length, 0);
+});
+
+test('Reports dropdown is available for audited zero-result runs and keyboard dismissal restores focus', async () => {
+  const zeroAudited={...execution,executionId:'12345678-1234-1234-1234-123456789abc',detailedAuditAvailable:true,
+    status:'completed',associationsChecked:0,correctionsApplied:0,errors:0};
+  let request;
+  const elements=await runPage(async(...args)=>{request=args;if(args[0].includes('/corrections.csv?'))return{ok:true,async blob(){return{}},headers:{get(){return'attachment; filename="report.csv"'}}};return{ok:true,async json(){return{availability:'Available',worker:'idle',latestExecution:zeroAudited,executions:[zeroAudited]}}}});
+  assert.match(elements.history.innerHTML,/<summary aria-label="Reports for this execution">Reports<\/summary>/);
+  assert.match(elements.history.innerHTML,/Corrections CSV/);assert.match(elements.history.innerHTML,/Exceptions CSV/);
+  assert.match(elements.history.innerHTML,/quiet-work/);
+  await elements.history.listeners.click({target:{closest(selector){return selector==='[data-audit]'?{dataset:{audit:'corrections',execution:zeroAudited.executionId},closest(sel){return sel==='.reports-menu'?elements.reportMenu:elements.reportEntry}}:null}}});
+  assert.equal(request[0],'/api/section-association/corrections.csv?executionId='+zeroAudited.executionId);
+  assert.equal(request[1].headers.Authorization,'Bearer signed-lti-token');assert.equal(request[1].credentials,'same-origin');
+  assert.equal(elements.reportMenu.open,false);assert.equal(elements.reportSummary.focused,true);
+  elements.reportMenu.open=true;elements.documentListeners.keydown({key:'Escape',stopPropagation(){}});
+  assert.equal(elements.reportMenu.open,false);assert.equal(elements.reportSummary.focused,true);
+  elements.reportMenu.open=true;elements.documentListeners.click({target:{closest(){return null}}});
+  assert.equal(elements.reportMenu.open,false);
+});
+
+test('executions without detailed audit coverage show the unavailable note and no Reports dropdown', async()=>{
+  const elements=await runPage(async()=>({ok:true,async json(){return{availability:'Available',worker:'idle',latestExecution:execution,executions:[execution]}}}));
+  assert.match(elements.history.innerHTML,/Detailed reports unavailable for this execution\./);
+  assert.doesNotMatch(elements.history.innerHTML,/<summary aria-label="Reports for this execution">/);
 });
