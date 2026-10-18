@@ -49,24 +49,30 @@ test('launch page is a compact responsive monitor with authenticated refresh and
   for (const text of ['Service status', 'Current worker state', 'Execution history', 'Download CSV', 'Associations checked', 'Corrections applied', 'Errors']) assert.ok(res.body.includes(text));
   assert.match(res.body, /Authorization:'Bearer '\+ltiToken/); assert.match(res.body, /credentials:'same-origin'/);
   assert.match(res.body, /slice\(0,50\)/); assert.match(res.body, /@media\(max-width:620px\)/);
+  assert.match(res.body, /role="columnheader"/); assert.match(res.body, /data-label="Corrections"/);
+  assert.match(res.body, /font-variant-numeric:tabular-nums/); assert.match(res.body, /id="exportFeedback" role="status" aria-live="polite"/);
+  assert.match(res.body, /\.history-head\{display:none\}/); assert.match(res.body, /\.execution-summary \.numeric::before\{content:attr\(data-label\)/);
+  assert.match(res.body, /\.history-row\{display:grid;grid-template-columns:/);
+  assert.match(res.body, /<details class="execution"><summary class="history-row execution-summary">/);
   assert.doesNotMatch(res.body, /Next scheduled execution|Latest execution<|backlogProgress|CSV report placeholder|corrective action/i);
   assert.match(res.body, /historyEmpty/); assert.match(res.body, /executionHtml/);
 });
 
 const execution = { executionId: 'run-1', source: 'manual', startedAt: '2026-10-17T10:00:00.000Z', completedAt: '2026-10-17T10:02:00.000Z',
-  status: 'completed', associationsChecked: 3, alreadyCompliant: 1, correctionsApplied: 1, errors: 0,
+  status: 'completed', associationsChecked: 1234, alreadyCompliant: 1, correctionsApplied: 1, errors: 0,
   coverage: { type: 'bounded-cycle', remainingHistoricalBacklog: 4 } };
 
 async function runPage(fetchImpl) {
   const script = pageForLaunch('signed-lti-token').match(/<script>([\s\S]*?)<\/script>/)[1];
-  const ids = ['availability','worker','latest','latestDate','outcome','source','checked','corrections','errors','emptyLatest','historyEmpty','history','updated','notice','refresh','export'];
+  const ids = ['availability','worker','latest','latestDate','outcome','source','checked','corrections','errors','emptyLatest','historyEmpty','history','updated','notice','refresh','export','exportFeedback'];
   let finish; const finished = new Promise(resolve => { finish = resolve; });
+  const links=[];
   const elements = Object.fromEntries(ids.map(id => [id, { value: '', hidden: ['latest','emptyLatest','historyEmpty'].includes(id), className: '', innerHTML: '', listeners: {},
-    addEventListener(event, handler) { this.listeners[event] = handler; },
+    addEventListener(event, handler) { this.listeners[event] = handler; }, setAttribute(name,value) { this[name]=value; },
     set textContent(value) { this.value = value; if (id === 'notice' && value !== 'Refreshing…') finish(); }, get textContent() { return this.value; } }]));
-  vm.runInNewContext(script, { document: { getElementById: id => elements[id] }, fetch: fetchImpl,
-    Intl, Date, URL: { createObjectURL() {}, revokeObjectURL() {} } });
-  await finished; return elements;
+  vm.runInNewContext(script, { document: { getElementById: id => elements[id], createElement() { const link={click(){link.clicked=true}}; links.push(link); return link; } }, fetch: fetchImpl,
+    Intl, Date, URL: { createObjectURL() { return 'blob:url'; }, revokeObjectURL() {} } });
+  await finished; elements.links=links; return elements;
 }
 
 test('Refresh renders latest status and 50-row history, including expandable details', async () => {
@@ -74,9 +80,11 @@ test('Refresh renders latest status and 50-row history, including expandable det
   let request;
   const elements = await runPage(async (...args) => { request = args; return { ok: true, async json() { return { availability: 'Available', worker: 'idle', latestExecution: execution, executions: runs }; } }; });
   assert.equal(request[0], '/api/section-association/status'); assert.equal(request[1].headers.Authorization, 'Bearer signed-lti-token');
-  assert.equal(request[1].credentials, 'same-origin'); assert.equal(elements.checked.textContent, '3');
+  assert.equal(request[1].credentials, 'same-origin'); assert.equal(elements.checked.textContent, '1,234');
   assert.equal(elements.source.textContent, 'Manual'); assert.equal(elements.historyEmpty.hidden, true);
-  assert.match(elements.history.innerHTML, /Already compliant/); assert.match(elements.history.innerHTML, /&lt;unsafe&gt;/);
+  assert.equal(elements.outcome.className, 'outcome completed'); assert.equal(elements.outcome['aria-label'], 'Outcome: Completed');
+  assert.match(elements.history.innerHTML, /Already compliant/); assert.match(elements.history.innerHTML, /Errors/); assert.match(elements.history.innerHTML, /&lt;unsafe&gt;/);
+  assert.match(elements.history.innerHTML, /aria-label="Outcome: Completed"/); assert.match(elements.history.innerHTML, /data-label="Corrections"[^>]*>1<\/span>/);
   assert.match(elements.updated.textContent, /^Last refreshed /);
 });
 
@@ -85,6 +93,28 @@ test('Refresh supports empty history and can be repeated', async () => {
   const elements = await runPage(async () => { calls++; return { ok: true, async json() { return { availability: 'Available', worker: 'idle', latestExecution: null, executions: [] }; } }; });
   assert.equal(elements.emptyLatest.hidden, false); assert.equal(elements.historyEmpty.hidden, false);
   await elements.refresh.listeners.click(); assert.equal(calls, 2);
+});
+
+test('Download CSV keeps success feedback beside its control', async () => {
+  let request;
+  const elements = await runPage(async (...args) => {
+    request=args;
+    if (request[0].endsWith('.csv')) return { ok:true, async blob(){return {}}, headers:{get(){return 'attachment; filename="section-association-executions-2026-10-17.csv"'}} };
+    return {ok:true,async json(){return {availability:'Available',worker:'idle',latestExecution:null,executions:[]}}};
+  });
+  await elements.export.listeners.click();
+  assert.equal(request[0], '/api/section-association/executions.csv');
+  assert.equal(request[1].credentials, 'same-origin'); assert.equal(request[1].headers.Authorization, 'Bearer signed-lti-token');
+  assert.equal(elements.exportFeedback.textContent, 'CSV downloaded.'); assert.equal(elements.exportFeedback.className, 'feedback success');
+  assert.equal(elements.links[0].clicked, true);
+});
+
+test('Download CSV shows an accessible inline error when the request is denied', async () => {
+  const elements = await runPage(async url => url.endsWith('.csv') ? {ok:false,status:403} :
+    {ok:true,async json(){return {availability:'Available',worker:'idle',latestExecution:null,executions:[]}}});
+  await elements.export.listeners.click();
+  assert.equal(elements.exportFeedback.textContent, 'Deployment not authorized.');
+  assert.equal(elements.exportFeedback.className, 'feedback error');
 });
 
 test('CSV endpoint is authenticated, streams all execution rows, and quotes CSV safely', async () => {
