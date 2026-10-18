@@ -54,6 +54,7 @@ test('launch page is a compact responsive monitor with authenticated refresh and
   assert.match(res.body, /\.history-head\{display:none\}/); assert.match(res.body, /\.execution-summary \.numeric::before\{content:attr\(data-label\)/);
   assert.match(res.body, /\.history-row\{display:grid;grid-template-columns:/);
   assert.match(res.body, /<details class="execution"><summary class="history-row execution-summary">/);
+  for (const removed of ['Historical backlog remaining','Bounded cycle','Execution ID']) assert.ok(!res.body.includes(removed));
   assert.doesNotMatch(res.body, /Next scheduled execution|Latest execution<|backlogProgress|CSV report placeholder|corrective action/i);
   assert.match(res.body, /historyEmpty/); assert.match(res.body, /executionHtml/);
 });
@@ -64,10 +65,10 @@ const execution = { executionId: 'run-1', source: 'manual', startedAt: '2026-10-
 
 async function runPage(fetchImpl) {
   const script = pageForLaunch('signed-lti-token').match(/<script>([\s\S]*?)<\/script>/)[1];
-  const ids = ['availability','worker','latest','latestDate','outcome','source','checked','corrections','errors','emptyLatest','historyEmpty','history','updated','notice','refresh','export','exportFeedback'];
+  const ids = ['availability','worker','latest','latestMetrics','zeroWork','latestDate','outcome','source','checked','corrections','errors','emptyLatest','historyEmpty','history','updated','notice','refresh','export','exportFeedback'];
   let finish; const finished = new Promise(resolve => { finish = resolve; });
   const links=[];
-  const elements = Object.fromEntries(ids.map(id => [id, { value: '', hidden: ['latest','emptyLatest','historyEmpty'].includes(id), className: '', innerHTML: '', listeners: {},
+  const elements = Object.fromEntries(ids.map(id => [id, { value: id==='zeroWork'?'No associations needed processing.':'', hidden: ['latest','latestMetrics','zeroWork','emptyLatest','historyEmpty'].includes(id), className: '', innerHTML: '', listeners: {},
     addEventListener(event, handler) { this.listeners[event] = handler; }, setAttribute(name,value) { this[name]=value; },
     set textContent(value) { this.value = value; if (id === 'notice' && value !== 'Refreshing…') finish(); }, get textContent() { return this.value; } }]));
   vm.runInNewContext(script, { document: { getElementById: id => elements[id], createElement() { const link={click(){link.clicked=true}}; links.push(link); return link; } }, fetch: fetchImpl,
@@ -83,8 +84,13 @@ test('Refresh renders latest status and 50-row history, including expandable det
   assert.equal(request[1].credentials, 'same-origin'); assert.equal(elements.checked.textContent, '1,234');
   assert.equal(elements.source.textContent, 'Manual'); assert.equal(elements.historyEmpty.hidden, true);
   assert.equal(elements.outcome.className, 'outcome completed'); assert.equal(elements.outcome['aria-label'], 'Outcome: Completed');
-  assert.match(elements.history.innerHTML, /Already compliant/); assert.match(elements.history.innerHTML, /Errors/); assert.match(elements.history.innerHTML, /&lt;unsafe&gt;/);
+  assert.match(elements.history.innerHTML, /Already compliant associations/); assert.match(elements.history.innerHTML, /Start time/); assert.match(elements.history.innerHTML, /Finish time/);
+  assert.match(elements.history.innerHTML, /Duration/);
+  const details = elements.history.innerHTML.match(/<div class="detail-grid">([\s\S]*?)<\/div><\/details>/)[1];
+  for (const field of ['Duration','Already compliant associations','Start time','Finish time']) assert.ok(details.includes(field));
+  for (const removed of ['Execution ID','Coverage','Historical backlog','<span class="label">Source</span>','<span class="label">Errors</span>']) assert.ok(!details.includes(removed));
   assert.match(elements.history.innerHTML, /aria-label="Outcome: Completed"/); assert.match(elements.history.innerHTML, /data-label="Corrections"[^>]*>1<\/span>/);
+  assert.match(elements.history.innerHTML, /data-label="Errors"[^>]*>0<\/span>/);
   assert.match(elements.updated.textContent, /^Last refreshed /);
 });
 
@@ -93,6 +99,31 @@ test('Refresh supports empty history and can be repeated', async () => {
   const elements = await runPage(async () => { calls++; return { ok: true, async json() { return { availability: 'Available', worker: 'idle', latestExecution: null, executions: [] }; } }; });
   assert.equal(elements.emptyLatest.hidden, false); assert.equal(elements.historyEmpty.hidden, false);
   await elements.refresh.listeners.click(); assert.equal(calls, 2);
+});
+
+test('successful zero-work latest execution replaces counters with the no-work message', async () => {
+  const zeroWork={...execution,status:'completed',associationsChecked:0,correctionsApplied:0,errors:0};
+  const elements=await runPage(async()=>({ok:true,async json(){return {availability:'Available',worker:'idle',latestExecution:zeroWork,executions:[zeroWork]}}}));
+  assert.equal(elements.latest.hidden,false); assert.equal(elements.latestDate.textContent.length>0,true);
+  assert.equal(elements.source.textContent,'Manual'); assert.equal(elements.outcome.textContent,'Completed');
+  assert.equal(elements.latestMetrics.hidden,true); assert.equal(elements.zeroWork.hidden,false);
+  assert.equal(elements.zeroWork.textContent,'No associations needed processing.');
+});
+
+test('executions with work retain their summary counts', async () => {
+  const worked={...execution,status:'completed',associationsChecked:3,correctionsApplied:2,errors:0};
+  const elements=await runPage(async()=>({ok:true,async json(){return {availability:'Available',worker:'idle',latestExecution:worked,executions:[worked]}}}));
+  assert.equal(elements.latestMetrics.hidden,false); assert.equal(elements.zeroWork.hidden,true);
+  assert.equal(elements.checked.textContent,'3'); assert.equal(elements.corrections.textContent,'2'); assert.equal(elements.errors.textContent,'0');
+});
+
+test('failed, cancelled, incomplete, and unknown outcomes never show successful no-work messaging', async () => {
+  for (const status of ['failed','cancelled','pending',undefined]) {
+    const nonSuccess={...execution,status,associationsChecked:0,correctionsApplied:0,errors:0};
+    const elements=await runPage(async()=>({ok:true,async json(){return {availability:'Available',worker:'idle',latestExecution:nonSuccess,executions:[nonSuccess]}}}));
+    assert.equal(elements.zeroWork.hidden,true,`zero-work message shown for ${status}`);
+    assert.equal(elements.latestMetrics.hidden,false,`counters hidden for ${status}`);
+  }
 });
 
 test('Download CSV keeps success feedback beside its control', async () => {
