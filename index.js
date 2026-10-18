@@ -8,6 +8,7 @@ const { databaseConfig } = require('./src/shared/database');
 const { hasScope } = require('./src/shared/client');
 const { startSectionAssociationTrigger } = require('./src/sectionAssociations/trigger');
 const { createSectionAssociationRuntime, positiveInteger } = require('./src/sectionAssociations/runtime');
+const { academicPeriods } = require('./src/sectionAssociations/service');
 const { validateRequiredEnvironment, ltiConfiguration, registerBrightspacePlatform,
   installPublicBootstrapEndpoints, sectionAssociationTriggerMode } = require('./src/sectionAssociations/config');
 const { registerSectionAssociationLtiInterface } = require('./src/sectionAssociations/ltiInterface');
@@ -54,7 +55,10 @@ registerSectionAssociationLtiInterface(lti, { deploymentId: env.BS_LTI_DEPLOYMEN
       } catch { /* Keep worker state unknown if lease storage is temporarily unavailable. */ }
     }
     const executions = await runtime.store.recentMaintenanceExecutions(50);
-    return { availability: 'Available', worker, latestExecution: await runtime.store.latestMaintenanceExecution(), executions,
+    let discoveryPeriods = null;
+    try { discoveryPeriods = academicPeriods(); } catch { /* Use a neutral placeholder if time-zone resolution is unavailable. */ }
+    return { availability: 'Available', worker, discoveryPeriods,
+      latestExecution: await runtime.store.latestMaintenanceExecution(), executions,
       nextScheduledExecution: null };
   } });
 

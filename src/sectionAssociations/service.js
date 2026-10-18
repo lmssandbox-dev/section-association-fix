@@ -98,7 +98,10 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     let full = [];
     let fullDiscoveryError;
     if (runFullDiscovery) {
-      try { full = await discover('I0001'); }
+      try {
+        full = await discover('I0001');
+        stats.discoveryActivities.historical = true;
+      }
       catch (error) {
         if (baselineRequired) throw error;
         fullDiscoveryError = error;
@@ -136,6 +139,8 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     const [current, previous] = await Promise.all([
       discover(`${periods.current}-I0001`), discover(`${periods.previous}-I0001`)
     ]);
+    stats.discoveryPeriods = periods;
+    stats.discoveryActivities.currentPrevious = true;
     const associations = [...new Map([...full, ...current, ...previous]
       .map(item => [String(item.Identifier ?? item.OrgUnitId), item])).values()];
     stats.discovered = associations.length;
@@ -159,6 +164,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     for (const item of items) {
       const id = String(item.associationOrgUnitId);
       stabilityLogged.delete(id);
+      if (item.workType === 'reverify') stats.discoveryActivities.reverification = true;
       const result = await reconciler.reconcileAssociation(id, { associationCode: item.associationCode, force: true,
         execution, recordAudit: store.recordAudit });
       stats.processedThisRun++;
@@ -170,7 +176,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     return { candidates: discovered, discovered, new: 0, alreadyKnown: 0, pending: 0, historicalPending: 0,
       blocked: 0, completed: 0, dueForReverification: 0, processedThisRun: 0, remainingHistoricalBacklog: null,
       associationsChecked: 0, associationsAlreadyCompliant: 0, correctionsApplied: 0, errors: 0,
-      writesAttempted: 0, writesVerified: 0, alreadyInactive: 0 };
+      writesAttempted: 0, writesVerified: 0, alreadyInactive: 0, discoveryActivities: {} };
   }
 
   async function runCycle({ recovery = false, discoveryAlreadyCompleted = false,

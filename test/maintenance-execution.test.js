@@ -57,6 +57,27 @@ test('cron persists failed automatic outcome and only counters returned by the w
   assert.equal('coverage' in store.summaries[0], false);
 });
 
+test('cron summary combines period and activity evidence from fast and recovery passes', async () => {
+  const store = memoryExecutionStore();
+  store.recoveryDue = async () => true;
+  await runSectionAssociationCron({ store, service: {
+    async fastTick() { return { status:'completed', ...stats, discoveryPeriods:{current:'2602',previous:'2601'},
+      discoveryActivities:{currentPrevious:true,historical:true} }; },
+    async recoveryTick() { return { status:'completed', ...stats, discoveryActivities:{reverification:true} }; }
+  }, recoveryIntervalHours:4, now:()=>1000, setIntervalFn:()=>1, clearIntervalFn(){},
+  logger:{info(){},warn(){},error(){}} });
+  assert.deepEqual(store.summaries[0].discoveryPeriods,{current:'2602',previous:'2601'});
+  assert.deepEqual(store.summaries[0].discoveryActivities,{currentPrevious:true,historical:true,reverification:true});
+});
+
+test('summary omits period and activity metadata when the worker did not record completed discovery evidence', async () => {
+  const store = memoryExecutionStore();
+  await runSectionAssociationCron({ store, service: { async fastTick(){ return {status:'failed',errors:1}; } },
+    recoveryIntervalHours:4, now:()=>1000, setIntervalFn:()=>1, clearIntervalFn(){}, logger:{info(){},warn(){},error(){}} });
+  assert.equal('discoveryPeriods' in store.summaries[0],false);
+  assert.equal('discoveryActivities' in store.summaries[0],false);
+});
+
 test('manual one-shot invocation passes manual source into the shared persisted execution path', async () => {
   const store = memoryExecutionStore();
   const env = { DB_MONGODB_URL: 'mongodb://localhost:27017/section_association',

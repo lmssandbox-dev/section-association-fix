@@ -46,7 +46,7 @@ test('launch page is a compact responsive monitor with authenticated refresh and
   const { onConnect } = setup(); const res = response(); res.locals.ltik = 'signed-lti-token';
   onConnect({ deploymentId: 'deployment-1' }, {}, res);
   assert.equal(res.contentType, 'html');
-  for (const text of ['Service status', 'Current worker state', 'Execution history', 'Export History CSV', 'Associations checked', 'Corrections applied', 'Errors']) assert.ok(res.body.includes(text));
+  for (const text of ['Service status', 'Current worker state', 'Discovery periods', 'Execution history', 'Discovery scope', 'Export History CSV', 'Associations checked', 'Corrections applied', 'Errors']) assert.ok(res.body.includes(text));
   assert.doesNotMatch(res.body, />Download CSV</);
   assert.match(res.body, /Authorization:'Bearer '\+ltiToken/); assert.match(res.body, /credentials:'same-origin'/);
   assert.match(res.body, /slice\(0,50\)/); assert.match(res.body, /@media\(max-width:620px\)/);
@@ -66,7 +66,7 @@ const execution = { executionId: 'run-1', source: 'manual', startedAt: '2026-10-
 
 async function runPage(fetchImpl) {
   const script = pageForLaunch('signed-lti-token').match(/<script>([\s\S]*?)<\/script>/)[1];
-  const ids = ['availability','worker','latest','latestMetrics','zeroWork','latestDate','outcome','source','checked','corrections','errors','emptyLatest','historyEmpty','history','updated','notice','refresh','export','exportFeedback'];
+  const ids = ['availability','worker','periods','latest','latestMetrics','zeroWork','latestDate','outcome','source','checked','corrections','errors','emptyLatest','historyEmpty','history','updated','notice','refresh','export','exportFeedback'];
   let finish; const finished = new Promise(resolve => { finish = resolve; });const timers=[];
   const summary={focused:false,focus(){this.focused=true}},reportMenu={open:true,querySelector(){return summary}},reportFeedback={textContent:'',className:''},reportEntry={querySelector(){return reportFeedback}};
   const links=[];
@@ -86,6 +86,9 @@ test('Refresh renders latest status and 50-row history, including expandable det
   assert.equal(request[0], '/api/section-association/status'); assert.equal(request[1].headers.Authorization, 'Bearer signed-lti-token');
   assert.equal(request[1].credentials, 'same-origin'); assert.equal(elements.checked.textContent, '1,234');
   assert.equal(elements.source.textContent, 'Manual'); assert.equal(elements.historyEmpty.hidden, true);
+  assert.equal(elements.periods.textContent, '—');
+  assert.match(elements.history.innerHTML, /<span class="scope">Not recorded<\/span>/);
+  assert.doesNotMatch(elements.history.innerHTML, /<span class="source">/);
   assert.equal(elements.outcome.className, 'outcome completed'); assert.equal(elements.outcome['aria-label'], 'Outcome: Completed');
   assert.match(elements.history.innerHTML, /Already compliant: 1 · Duration: 2 min/);
   assert.match(elements.history.innerHTML,/Oct 17/);assert.doesNotMatch(elements.history.innerHTML,/Start time|Finish time/);
@@ -96,6 +99,30 @@ test('Refresh renders latest status and 50-row history, including expandable det
   assert.match(elements.history.innerHTML, /aria-label="Outcome: Completed"/); assert.match(elements.history.innerHTML, /data-label="Corrections"[^>]*>1<\/span>/);
   assert.match(elements.history.innerHTML, /data-label="Errors"[^>]*>0<\/span>/);
   assert.match(elements.updated.textContent, /^Last refreshed /);
+});
+
+test('current service periods render from status data and use a neutral fallback for unavailable values', async () => {
+  const payload={availability:'Available',worker:'idle',discoveryPeriods:{current:'2701',previous:'2602'},latestExecution:null,executions:[]};
+  const elements=await runPage(async()=>({ok:true,async json(){return payload}}));
+  assert.equal(elements.periods.textContent,'2701 + 2602');
+  const invalid=await runPage(async()=>({ok:true,async json(){return {...payload,discoveryPeriods:null}}}));
+  assert.equal(invalid.periods.textContent,'—');
+});
+
+test('execution scope labels reflect only recorded activities and details show used periods', async()=>{
+  const scopeCases=[
+    [{currentPrevious:true},'Current + Previous','Periods: 2602 + 2601'],
+    [{historical:true},'Historical','Historical discovery'],
+    [{reverification:true},'Re-verification','Re-verification'],
+    [{currentPrevious:true,historical:true},'Mixed','Periods: 2602 + 2601 · Historical discovery'],
+    [{},'Not recorded','Discovery scope: Not recorded']
+  ];
+  for(const [discoveryActivities,scope,detail] of scopeCases){
+    const run={...execution,discoveryPeriods:{current:'2602',previous:'2601'},discoveryActivities};
+    const elements=await runPage(async()=>({ok:true,async json(){return{availability:'Available',worker:'idle',latestExecution:run,executions:[run]}}}));
+    assert.match(elements.history.innerHTML,new RegExp(`<span class="scope">${scope.replace(/[+]/g,'\\+')}<\\/span>`));
+    assert.ok(elements.history.innerHTML.includes(detail));
+  }
 });
 
 test('Refresh supports empty history and can be repeated', async () => {
@@ -167,7 +194,7 @@ test('CSV endpoint is authenticated, streams all execution rows, and quotes CSV 
   await routes['/api/section-association/executions.csv']({}, res);
   assert.equal(res.headers['Cache-Control'], 'no-store'); assert.match(res.headers['Content-Disposition'], /section-association-executions-\d{4}-\d{2}-\d{2}\.csv/);
   assert.equal(res.ended, true); assert.equal(res.chunks.length, 66);
-  assert.match(res.chunks[0], /Execution ID.*Historical backlog remaining.*Coverage/);
+  assert.match(res.chunks[0], /Execution ID.*Execution source.*Historical backlog remaining.*Coverage.*Discovery period identifiers.*Discovery activities/);
   assert.match(res.chunks[2], /"run,""2"/); assert.match(res.chunks[2], /"","","failed"/);
   assert.equal(csvCell('a,"b'), '"a,""b"'); assert.equal(csvCell(undefined), '""');
 });
@@ -226,7 +253,7 @@ test('missing timestamps and optional counts are omitted instead of invented',as
   const run={executionId:'run-missing',source:'automatic',status:'completed',associationsChecked:2,errors:0};
   const elements=await runPage(async()=>({ok:true,async json(){return{availability:'Available',worker:'idle',latestExecution:run,executions:[run]}}}));
   const details=elements.history.innerHTML.match(/<div class="detail-strip">([\s\S]*?)<\/div><\/details>/)[1];
-  assert.equal(details,'<span class="execution-info"></span><span class="audit-unavailable">Detailed reports unavailable.</span>');
+  assert.equal(details,'<span class="execution-info">Discovery scope: Not recorded</span><span class="audit-unavailable">Detailed reports unavailable.</span>');
 });
 
 function responsiveStyles(){return pageForLaunch('token').match(/<style>([\s\S]*?)<\/style>/)[1]}

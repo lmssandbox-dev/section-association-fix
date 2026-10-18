@@ -22,6 +22,16 @@ function buildMaintenanceExecutionSummary(execution, { status, results = [], exe
     }
   }
   if (executionErrors > 0) summary.errors = (summary.errors || 0) + executionErrors;
+  const periodsResult = [...results].reverse().find(result =>
+    /^\d{4}$/.test(result?.discoveryPeriods?.current || '') && /^\d{4}$/.test(result?.discoveryPeriods?.previous || ''));
+  if (periodsResult) summary.discoveryPeriods = { ...periodsResult.discoveryPeriods };
+  const discoveryActivities = {};
+  for (const result of results) {
+    for (const [activity, performed] of Object.entries(result?.discoveryActivities || {})) {
+      if (performed === true) discoveryActivities[activity] = true;
+    }
+  }
+  if (Object.keys(discoveryActivities).length) summary.discoveryActivities = discoveryActivities;
   const coverageResult = [...results].reverse().find(result => Number.isSafeInteger(result?.remainingHistoricalBacklog) && result.remainingHistoricalBacklog >= 0);
   if (coverageResult) summary.coverage = { type: 'bounded-cycle', remainingHistoricalBacklog: coverageResult.remainingHistoricalBacklog };
   return summary;

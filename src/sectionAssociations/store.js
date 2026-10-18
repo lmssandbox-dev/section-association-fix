@@ -311,7 +311,8 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
   async function saveMaintenanceExecution(summary) {
     const { meta } = await collections();
     const fields = ['executionId', 'source', 'startedAt', 'completedAt', 'status', 'associationsChecked',
-      'alreadyCompliant', 'correctionsApplied', 'errors', 'coverage', 'detailedAuditAvailable'];
+      'alreadyCompliant', 'correctionsApplied', 'errors', 'coverage', 'detailedAuditAvailable',
+      'discoveryPeriods', 'discoveryActivities'];
     const unset = Object.fromEntries(fields.filter(field => !Object.hasOwn(summary, field)).map(field => [field, '']));
     await meta.updateOne({ _id: `maintenance-history:${namespace}:${summary.executionId}` },
       { $set: { ...summary, namespace, history: true } }, { upsert: true });

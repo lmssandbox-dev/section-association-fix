@@ -60,7 +60,10 @@ function makeService({ time, failFull = false } = {}) {
 test('nightly full discovery persists success once and resumes with period discovery on later invocations', async () => {
   const time = Date.parse('2026-10-18T05:15:00Z'); // 02:15 local
   const h = makeService({ time });
-  assert.equal((await h.service.fastTick()).status, 'completed');
+  const first = await h.service.fastTick();
+  assert.equal(first.status, 'completed');
+  assert.deepEqual(first.discoveryPeriods, { current:'2602', previous:'2601' });
+  assert.deepEqual(first.discoveryActivities, { historical:true, currentPrevious:true });
   assert.ok(h.fullAt instanceof Date);
   assert.deepEqual(h.calls.filter(([kind]) => kind === 'query').map(([, code]) => code), ['I0001', '2602-I0001', '2601-I0001']);
   h.calls.length = 0;
@@ -74,6 +77,34 @@ test('failed full discovery leaves its schedule unmarked for the next cron invoc
   assert.equal(h.fullAt, null);
   assert.deepEqual(h.calls.filter(([kind]) => kind === 'query').map(([, code]) => code),
     ['I0001', '2602-I0001', '2601-I0001']);
+});
+
+test('period evidence is omitted when period discovery fails after a successful historical query', async () => {
+  const time=Date.parse('2026-10-18T05:15:00Z');
+  const calls=[];
+  const store={async baselineStatus(){return {state:'ready'}},async lastFullDiscoveryAt(){return null},
+    async markFullDiscoveryCompleted(){},async recordDiscoveries(){return {newlyRecorded:0,alreadyKnown:0}},
+    async countHistoricalBacklog(){return 0},async listWaitingNew(){return []},async listFastWork(){return []}};
+  const client={async associationCandidates(code){calls.push(code);if(code==='2601-I0001')throw new Error('previous period failed');return []}};
+  const service=createSectionAssociationService({client,store,reconciler:{},now:()=>time,logger:{info(){},warn(){},error(){}}});
+  const result=await service.fastTick();
+  assert.equal(result.status,'failed');
+  assert.equal(result.discoveryPeriods,undefined);
+  assert.deepEqual(result.discoveryActivities,{historical:true});
+  assert.deepEqual(calls,['I0001','2602-I0001','2601-I0001']);
+});
+
+test('re-verification is recorded only when a re-verification work item is processed', async()=>{
+  const time=Date.parse('2026-10-18T06:15:00Z');
+  const store={async baselineStatus(){return {state:'ready'}},async lastFullDiscoveryAt(){return new Date(time)},
+    async recordDiscoveries(){return {newlyRecorded:0,alreadyKnown:0}},async countHistoricalBacklog(){return 0},
+    async listWaitingNew(){return []},async listFastWork(){return [{workType:'reverify',associationOrgUnitId:'7',associationCode:'002521-01-2602-I0001'}]}};
+  const client={async associationCandidates(){return []}};
+  const reconciler={async reconcileAssociation(){return {status:'completed',targets:[{status:'already-inactive'}]}}};
+  const service=createSectionAssociationService({client,store,reconciler,now:()=>time,logger:{info(){},warn(){},error(){}}});
+  const result=await service.fastTick();
+  assert.equal(result.status,'completed');
+  assert.deepEqual(result.discoveryActivities,{currentPrevious:true,reverification:true});
 });
 
 test('completed re-verification is offered only during the maintenance window', async () => {
