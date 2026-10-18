@@ -58,6 +58,11 @@ test('launch page is a compact responsive monitor with authenticated refresh and
   assert.match(res.body, /\.history-head\{display:none\}/); assert.match(res.body, /\.execution-summary \.numeric::before\{content:attr\(data-label\)/);
   assert.match(res.body, /\.history-row\{display:grid;grid-template-columns:/);
   assert.match(res.body, /section\{padding:14px 16px;margin:12px 0\}/);
+  assert.match(res.body, /section\{padding:16px 18px;margin:14px 0\}/);
+  assert.match(res.body, /section>h2\{margin-bottom:12px\}/);
+  assert.match(res.body, /\.history-head> :nth-child\(3\)\{text-align:center\}/);
+  assert.match(res.body, /\.execution-summary \.outcome-cell\{display:flex;justify-content:center\}/);
+  assert.match(res.body, /\.execution-summary\{padding-top:9px;padding-bottom:9px\}/);
   assert.match(res.body, /\.detail-strip\{display:flex;align-items:center;gap:10px;min-height:36px;margin:0 8px 8px 25px;padding:7px 10px/);
   assert.match(res.body, /\.latest-message:empty\{display:none\}/);
   assert.match(res.body, /function executionHtml\(run\)/);
