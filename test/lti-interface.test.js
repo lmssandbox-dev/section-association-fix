@@ -85,12 +85,13 @@ async function runPage(fetchImpl) {
   const html = pageForLaunch('signed-lti-token');
   const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
   const ids = ['availability', 'worker', 'executionMeta', 'latestDate', 'outcome', 'source', 'metrics', 'empty',
-    'checked', 'compliant', 'corrections', 'errors', 'backlogMetric', 'backlog', 'coverageNote', 'updated', 'notice', 'refresh'];
+    'checked', 'compliant', 'corrections', 'errors', 'backlogMetric', 'backlog', 'coverageNote', 'backlogProgress', 'executionDetails','executionDetailsSummary',
+    'detailStarted','detailFinished','duration','detailCompliant','detailCoverage','recentEmpty','recentList','nextRun','backlogMeaning','updated', 'notice', 'refresh'];
   let finish;
   const finished = new Promise(resolve => { finish = resolve; });
   const elements = Object.fromEntries(ids.map(id => [id, {
     value: id === 'empty' ? 'No maintenance execution recorded yet.' : '',
-    hidden: ['executionMeta', 'metrics', 'empty', 'coverageNote'].includes(id),
+    hidden: ['executionMeta', 'metrics', 'empty', 'coverageNote','backlogProgress','executionDetails','recentEmpty'].includes(id),
     className: id === 'backlogMetric' ? 'metric backlog' : '',
     listeners: {},
     addEventListener(event, handler) { this.listeners[event] = handler; },
@@ -148,7 +149,22 @@ test('latest manual execution renders the persisted date, outcome, source and me
   assert.equal(elements.backlog.textContent, '4');
   assert.match(elements.backlogMetric.className, /backlog/);
   assert.equal(elements.coverageNote.hidden, false);
-  assert.match(elements.coverageNote.textContent, /full-scan completion is not tracked/);
+  assert.match(elements.coverageNote.textContent, /Full coverage is unknown/);
+  assert.equal(elements.duration.textContent, '2 min');
+  assert.equal(elements.executionDetails.hidden, false);
+});
+
+test('recent executions expand safely, backlog compares valid consecutive measurements, and next run stays unavailable without schedule data', async () => {
+  const latest = { source:'automatic', startedAt:'2026-10-17T10:05:00Z', completedAt:'2026-10-17T10:06:00Z', status:'completed',
+    associationsChecked:5, correctionsApplied:2, errors:0, coverage:{type:'bounded-cycle',remainingHistoricalBacklog:7} };
+  const previous = { source:'manual', startedAt:'2026-10-17T09:00:00Z', completedAt:'2026-10-17T09:01:00Z', status:'completed',
+    associationsChecked:3, correctionsApplied:1, errors:0, coverage:{type:'bounded-cycle',remainingHistoricalBacklog:10} };
+  const elements = await runPage(async () => ({ok:true,async json(){return {availability:'Available',worker:'idle',latestExecution:latest,executions:[latest,previous]}}}));
+  assert.equal(elements.recentEmpty.hidden,true);
+  assert.match(elements.recentList.innerHTML,/Automatic maintenance/);
+  assert.match(elements.recentList.innerHTML,/Manual maintenance/);
+  assert.match(elements.backlogProgress.textContent,/3 fewer/);
+  assert.equal(elements.nextRun.textContent,'Unavailable');
 });
 
 test('automatic execution displays a neutral placeholder when historical backlog is not supplied', async () => {

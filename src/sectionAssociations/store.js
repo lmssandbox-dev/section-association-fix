@@ -232,6 +232,10 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
     const fields = ['executionId', 'source', 'startedAt', 'completedAt', 'status', 'associationsChecked',
       'alreadyCompliant', 'correctionsApplied', 'errors', 'coverage'];
     const unset = Object.fromEntries(fields.filter(field => !Object.hasOwn(summary, field)).map(field => [field, '']));
+    await meta.updateOne({ _id: `maintenance-history:${namespace}:${summary.executionId}` },
+      { $set: { ...summary, namespace, history: true } }, { upsert: true });
+    const history = await meta.find({ namespace, history: true }).sort({ startedAt: -1 }).skip(5).toArray();
+    if (history.length) await meta.deleteMany({ _id: { $in: history.map(item => item._id) } });
     try {
       const result = await meta.updateOne({ _id: maintenanceExecutionId,
         $or: [{ startedAt: { $lte: summary.startedAt } }, { startedAt: { $exists: false } }] },
@@ -242,6 +246,11 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
       if (error.code === 11000) return false;
       throw error;
     }
+  }
+  async function recentMaintenanceExecutions(limit = 5) {
+    const { meta } = await collections();
+    const rows = await meta.find({ namespace, history: true }).sort({ startedAt: -1 }).limit(Math.min(5, Math.max(0, limit))).toArray();
+    return rows.map(({ _id, namespace: _namespace, history: _history, ...summary }) => summary);
   }
   async function latestMaintenanceExecution() {
     const { meta } = await collections();
@@ -254,7 +263,7 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
   return { get, record, baselineStatus, beginBaseline, finishBaseline, releaseBaseline, recordDiscovery,
     listFastWork, listWaitingNew, listRecoveryWork, countHistoricalBacklog, countDueCompleted, countRecoveryWork,
     acquireCronLease, renewCronLease, releaseCronLease, cronLeaseStatus, recoveryDue, markRecoveryCompleted,
-    saveMaintenanceExecution, latestMaintenanceExecution, close };
+    saveMaintenanceExecution, latestMaintenanceExecution, recentMaintenanceExecutions, close };
 }
 
 module.exports = { createSectionAssociationStore };

@@ -50,7 +50,9 @@ registerSectionAssociationLtiInterface(lti, { deploymentId: env.BS_LTI_DEPLOYMEN
         worker = lease.expired ? 'idle' : 'running';
       } catch { /* Keep worker state unknown if lease storage is temporarily unavailable. */ }
     }
-    return { availability: 'Available', worker, latestExecution: await runtime.store.latestMaintenanceExecution() };
+    const executions = await runtime.store.recentMaintenanceExecutions();
+    return { availability: 'Available', worker, latestExecution: await runtime.store.latestMaintenanceExecution(), executions,
+      nextScheduledExecution: null };
   } });
 
 async function start() {

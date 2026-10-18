@@ -41,6 +41,7 @@ function makeStore(records, metaDocuments = new Map()) {
           return this;
         },
         limit(count) { rows = rows.slice(0, count); return this; },
+        skip(count) { rows = rows.slice(count); return this; },
         async toArray() { return rows.map(row => ({ ...row })); }
       };
     },
@@ -48,6 +49,14 @@ function makeStore(records, metaDocuments = new Map()) {
   };
   const meta = {
     async findOne(filter) { return structuredClone(metaDocuments.get(filter._id) || null); },
+    find(filter) {
+      let rows = [...metaDocuments.values()].filter(row => matches(row, filter));
+      const cursor = { sort(order) { rows.sort((a,b) => (b.startedAt || 0) - (a.startedAt || 0)); return cursor; },
+        skip(count) { rows = rows.slice(count); return cursor; }, limit(count) { rows = rows.slice(0,count); return cursor; },
+        async toArray() { return structuredClone(rows); } };
+      return cursor;
+    },
+    async deleteMany(filter) { for (const id of filter._id.$in) metaDocuments.delete(id); },
     async updateOne(filter, update, options = {}) {
       let doc = metaDocuments.get(filter._id);
       const eligible = !doc || !filter.$or || filter.$or.some(part =>
@@ -150,5 +159,12 @@ test('latest maintenance summary is shared across store instances and ordered by
   assert.equal(await store.saveMaintenanceExecution({ ...automatic, executionId: 'old-auto', startedAt: date(9) }), false);
   const restartedStore = createSectionAssociationStore({ namespace: 'tenant', mongoClient });
   assert.deepEqual(await restartedStore.latestMaintenanceExecution(), manual);
-  assert.equal(metaDocuments.size, 1);
+  assert.equal(metaDocuments.size, 4);
+  assert.deepEqual((await restartedStore.recentMaintenanceExecutions()).map(run => run.executionId), ['manual-1', 'auto-1', 'old-auto']);
+});
+
+test('recent execution history is limited to the latest five and orders automatic and manual runs together', async () => {
+  const { store } = makeStore([]);
+  for (let i=0;i<7;i++) await store.saveMaintenanceExecution({ executionId:`run-${i}`, source:i%2?'manual':'automatic', startedAt:date(i), completedAt:date(i+1), status:'completed' });
+  assert.deepEqual((await store.recentMaintenanceExecutions()).map(run=>run.executionId), ['run-6','run-5','run-4','run-3','run-2']);
 });
