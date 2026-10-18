@@ -84,11 +84,10 @@ test('Refresh renders latest status and 50-row history, including expandable det
   assert.equal(request[1].credentials, 'same-origin'); assert.equal(elements.checked.textContent, '1,234');
   assert.equal(elements.source.textContent, 'Manual'); assert.equal(elements.historyEmpty.hidden, true);
   assert.equal(elements.outcome.className, 'outcome completed'); assert.equal(elements.outcome['aria-label'], 'Outcome: Completed');
-  assert.match(elements.history.innerHTML, /Compliant associations/); assert.match(elements.history.innerHTML, /Start time/); assert.match(elements.history.innerHTML, /Finish time/);
+  assert.match(elements.history.innerHTML, /Already compliant/); assert.match(elements.history.innerHTML, /Start time/); assert.match(elements.history.innerHTML, /Finish time/);
   assert.match(elements.history.innerHTML, /Duration/);
   const details = elements.history.innerHTML.match(/<div class="detail-grid">([\s\S]*?)<\/div><\/details>/)[1];
-  for (const field of ['Duration','Compliant associations','Start time','Finish time']) assert.ok(details.includes(field));
-  assert.ok(!details.includes('Already compliant associations'));
+  for (const field of ['Duration','Already compliant','Start time','Finish time']) assert.ok(details.includes(field));
   for (const removed of ['Execution ID','Coverage','Historical backlog','<span class="label">Source</span>','<span class="label">Errors</span>']) assert.ok(!details.includes(removed));
   assert.match(elements.history.innerHTML, /aria-label="Outcome: Completed"/); assert.match(elements.history.innerHTML, /data-label="Corrections"[^>]*>1<\/span>/);
   assert.match(elements.history.innerHTML, /data-label="Errors"[^>]*>0<\/span>/);
