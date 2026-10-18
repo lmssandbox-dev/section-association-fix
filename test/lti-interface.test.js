@@ -57,6 +57,9 @@ test('launch page is a compact responsive monitor with authenticated refresh and
   assert.match(res.body, /font-variant-numeric:tabular-nums/); assert.match(res.body, /id="exportFeedback" role="status" aria-live="polite"/);
   assert.match(res.body, /\.history-head\{display:none\}/); assert.match(res.body, /\.execution-summary \.numeric::before\{content:attr\(data-label\)/);
   assert.match(res.body, /\.history-row\{display:grid;grid-template-columns:/);
+  assert.match(res.body, /section\{padding:14px 16px;margin:12px 0\}/);
+  assert.match(res.body, /\.detail-strip\{display:flex;align-items:center;gap:10px;min-height:36px;margin:0 8px 8px 25px;padding:7px 10px/);
+  assert.match(res.body, /\.latest-message:empty\{display:none\}/);
   assert.match(res.body, /function executionHtml\(run\)/);
   for (const removed of ['Historical backlog remaining','Bounded cycle','Execution ID']) assert.ok(!res.body.includes(removed));
   assert.doesNotMatch(res.body, /Next scheduled execution|Latest execution<|backlogProgress|CSV report placeholder|corrective action/i);
@@ -96,10 +99,11 @@ test('Refresh renders latest status and 50-row history, including expandable det
   assert.doesNotMatch(elements.history.innerHTML, /<span class="source">/);
   assert.equal(elements.outcome.className, 'outcome completed'); assert.equal(elements.outcome['aria-label'], 'Outcome: Completed');
   assert.match(elements.history.innerHTML, /2602 · 2601/);
-  assert.match(elements.history.innerHTML, /Already compliant: 1 · Duration: 2 min/);
+  assert.match(elements.history.innerHTML, /Already compliant: 1 · 2 min/);
   assert.match(elements.history.innerHTML,/Oct 17/);assert.doesNotMatch(elements.history.innerHTML,/Start time|Finish time/);
   const details = elements.history.innerHTML.match(/<div class="detail-strip">([\s\S]*?)<\/div><\/details>/)[1];
-  assert.match(details,/Current \+ previous discovery · Already compliant: 1 · Duration: 2 min/);
+  assert.match(details,/Already compliant: 1 · 2 min/);
+  assert.doesNotMatch(details,/Current \+ previous discovery|Historical discovery|Re-verification/);
   for (const removed of ['Start time','Finish time','detail-grid','<span class="label">Source</span>','<span class="label">Errors</span>']) assert.ok(!details.includes(removed));
   assert.match(responsiveStyles(),/\.detail-strip\{flex-wrap:wrap/);
   assert.match(elements.history.innerHTML, /aria-label="Outcome: Completed"/); assert.match(elements.history.innerHTML, /data-label="Corrections"[^>]*>1<\/span>/);
@@ -117,10 +121,10 @@ test('current service periods render from status data and use a neutral fallback
 
 test('history scope shows recorded codes and expanded details avoid repeating periods', async()=>{
   const scopeCases=[
-    [{currentPrevious:true},{current:'2602',previous:'2601'},'2602 · 2601','Current + previous discovery'],
-    [{historical:true},null,'Historical','Historical discovery'],
-    [{reverification:true},null,'Re-verification','Re-verification'],
-    [{currentPrevious:true,historical:true},{current:'2602',previous:'2601'},'2602 · 2601 · Mixed','Current + previous discovery · Historical discovery'],
+    [{currentPrevious:true},{current:'2602',previous:'2601'},'2602 · 2601','Already compliant: 1 · 2 min'],
+    [{historical:true},null,'Historical','Already compliant: 1 · 2 min'],
+    [{reverification:true},null,'Re-verification','Already compliant: 1 · 2 min'],
+    [{currentPrevious:true,historical:true},{current:'2602',previous:'2601'},'2602 · 2601 · Mixed','Already compliant: 1 · 2 min'],
     [{},null,'—','Already compliant: 1']
   ];
   for(const [discoveryActivities,discoveryPeriods,scope,detail] of scopeCases){
@@ -140,13 +144,15 @@ test('Refresh supports empty history and can be repeated', async () => {
   await elements.refresh.listeners.click(); assert.equal(calls, 2);
 });
 
-test('successful zero-work latest execution replaces counters with the no-work message', async () => {
+test('successful zero-work latest execution omits redundant summary text and keeps concise history details', async () => {
   const zeroWork={...execution,status:'completed',associationsChecked:0,correctionsApplied:0,errors:0};
   const elements=await runPage(async()=>({ok:true,async json(){return {availability:'Available',worker:'idle',latestExecution:zeroWork,executions:[zeroWork]}}}));
   assert.equal(elements.latest.hidden,false); assert.equal(elements.latestDate.textContent.length>0,true);
   assert.equal(elements.outcome.textContent,'Completed');
-  assert.equal(elements.latestMessage.textContent,'No associations needed processing.');
+  assert.equal(elements.latestMessage.textContent,'');
   assert.match(elements.history.innerHTML,/No work required · 2 min/);
+  assert.doesNotMatch(elements.history.innerHTML,/Current \+ previous discovery/);
+  assert.doesNotMatch(elements.history.innerHTML,/No associations needed processing\./);
   assert.doesNotMatch(elements.history.innerHTML,/Already compliant: 0/);
 });
 
@@ -250,7 +256,7 @@ test('failed and incomplete executions show available duration and explanations,
   for(const status of ['failed','cancelled','pending']){
     const run={...execution,status,associationsChecked:0,errors:1,error:'Validation was blocked'};
     const elements=await runPage(async()=>({ok:true,async json(){return{availability:'Available',worker:'idle',latestExecution:run,executions:[run]}}}));
-    assert.match(elements.history.innerHTML,/Duration: 2 min/);assert.match(elements.history.innerHTML,/Validation was blocked/);
+    assert.match(elements.history.innerHTML,/2 min/);assert.match(elements.history.innerHTML,/Validation was blocked/);
     assert.doesNotMatch(elements.history.innerHTML,/No work required/);
     assert.equal(elements.latestMessage.textContent,'Validation was blocked');
   }
