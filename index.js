@@ -40,6 +40,7 @@ lti.setup(APP_LTI_SECRET, databaseConfig(DB_MONGODB_URL), {
 });
 installPublicBootstrapEndpoints(lti, oauth.jwks);
 registerSectionAssociationLtiInterface(lti, { deploymentId: env.BS_LTI_DEPLOYMENT_ID,
+  getExecutionHistory: () => runtime.store.allMaintenanceExecutions(),
   async getStatus() {
     let worker = 'unknown';
     if (sectionAssociationScheduler) {
@@ -50,7 +51,7 @@ registerSectionAssociationLtiInterface(lti, { deploymentId: env.BS_LTI_DEPLOYMEN
         worker = lease.expired ? 'idle' : 'running';
       } catch { /* Keep worker state unknown if lease storage is temporarily unavailable. */ }
     }
-    const executions = await runtime.store.recentMaintenanceExecutions();
+    const executions = await runtime.store.recentMaintenanceExecutions(50);
     return { availability: 'Available', worker, latestExecution: await runtime.store.latestMaintenanceExecution(), executions,
       nextScheduledExecution: null };
   } });

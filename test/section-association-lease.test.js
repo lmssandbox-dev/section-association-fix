@@ -9,6 +9,7 @@ const { main: runCronEntrypoint } = require('../scripts/run-section-association'
 function memoryMongo(nowRef) {
   const documents = new Map();
   const meta = {
+    async createIndex() {},
     async findOneAndUpdate(filter, update) {
       let doc = documents.get(filter._id);
       const eligible = !doc || !doc.leaseUntil || doc.leaseUntil.getTime() <= filter.$or[0].leaseUntil.$lte.getTime();

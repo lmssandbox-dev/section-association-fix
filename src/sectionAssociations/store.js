@@ -12,7 +12,9 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
       const db = client.db();
       const associations = db.collection('section_associations');
       await associations.createIndex({ namespace: 1, associationOrgUnitId: 1 }, { unique: true });
-      return { associations, meta: db.collection('section_association_meta') };
+      const meta = db.collection('section_association_meta');
+      await meta.createIndex({ namespace: 1, history: 1, startedAt: -1, executionId: -1 });
+      return { associations, meta };
     })().catch(error => { ready = null; throw error; });
     return ready;
   }
@@ -234,8 +236,6 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
     const unset = Object.fromEntries(fields.filter(field => !Object.hasOwn(summary, field)).map(field => [field, '']));
     await meta.updateOne({ _id: `maintenance-history:${namespace}:${summary.executionId}` },
       { $set: { ...summary, namespace, history: true } }, { upsert: true });
-    const history = await meta.find({ namespace, history: true }).sort({ startedAt: -1 }).skip(5).toArray();
-    if (history.length) await meta.deleteMany({ _id: { $in: history.map(item => item._id) } });
     try {
       const result = await meta.updateOne({ _id: maintenanceExecutionId,
         $or: [{ startedAt: { $lte: summary.startedAt } }, { startedAt: { $exists: false } }] },
@@ -247,10 +247,16 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
       throw error;
     }
   }
-  async function recentMaintenanceExecutions(limit = 5) {
+  async function recentMaintenanceExecutions(limit = 50) {
     const { meta } = await collections();
-    const rows = await meta.find({ namespace, history: true }).sort({ startedAt: -1 }).limit(Math.min(5, Math.max(0, limit))).toArray();
+    const rows = await meta.find({ namespace, history: true }).sort({ startedAt: -1, executionId: -1 })
+      .limit(Math.min(50, Math.max(0, limit))).toArray();
     return rows.map(({ _id, namespace: _namespace, history: _history, ...summary }) => summary);
+  }
+  async function *allMaintenanceExecutions() {
+    const { meta } = await collections();
+    const cursor = meta.find({ namespace, history: true }).sort({ startedAt: -1, executionId: -1 }).batchSize(500);
+    for await (const { _id, namespace: _namespace, history: _history, ...summary } of cursor) yield summary;
   }
   async function latestMaintenanceExecution() {
     const { meta } = await collections();
@@ -263,7 +269,7 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
   return { get, record, baselineStatus, beginBaseline, finishBaseline, releaseBaseline, recordDiscovery,
     listFastWork, listWaitingNew, listRecoveryWork, countHistoricalBacklog, countDueCompleted, countRecoveryWork,
     acquireCronLease, renewCronLease, releaseCronLease, cronLeaseStatus, recoveryDue, markRecoveryCompleted,
-    saveMaintenanceExecution, latestMaintenanceExecution, recentMaintenanceExecutions, close };
+    saveMaintenanceExecution, latestMaintenanceExecution, recentMaintenanceExecutions, allMaintenanceExecutions, close };
 }
 
 module.exports = { createSectionAssociationStore };

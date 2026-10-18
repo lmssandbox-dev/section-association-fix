@@ -48,12 +48,14 @@ function makeStore(records, metaDocuments = new Map()) {
     async countDocuments(filter) { return records.filter(record => matches(record, filter)).length; }
   };
   const meta = {
+    async createIndex() {},
     async findOne(filter) { return structuredClone(metaDocuments.get(filter._id) || null); },
     find(filter) {
       let rows = [...metaDocuments.values()].filter(row => matches(row, filter));
       const cursor = { sort(order) { rows.sort((a,b) => (b.startedAt || 0) - (a.startedAt || 0)); return cursor; },
         skip(count) { rows = rows.slice(count); return cursor; }, limit(count) { rows = rows.slice(0,count); return cursor; },
-        async toArray() { return structuredClone(rows); } };
+        batchSize() { return cursor; }, async toArray() { return structuredClone(rows); },
+        async *[Symbol.asyncIterator]() { for (const row of structuredClone(rows)) yield row; } };
       return cursor;
     },
     async deleteMany(filter) { for (const id of filter._id.$in) metaDocuments.delete(id); },
@@ -163,8 +165,13 @@ test('latest maintenance summary is shared across store instances and ordered by
   assert.deepEqual((await restartedStore.recentMaintenanceExecutions()).map(run => run.executionId), ['manual-1', 'auto-1', 'old-auto']);
 });
 
-test('recent execution history is limited to the latest five and orders automatic and manual runs together', async () => {
+test('execution history is retained incrementally, idempotent by execution ID, and queried newest first', async () => {
   const { store } = makeStore([]);
-  for (let i=0;i<7;i++) await store.saveMaintenanceExecution({ executionId:`run-${i}`, source:i%2?'manual':'automatic', startedAt:date(i), completedAt:date(i+1), status:'completed' });
-  assert.deepEqual((await store.recentMaintenanceExecutions()).map(run=>run.executionId), ['run-6','run-5','run-4','run-3','run-2']);
+  for (let i=0;i<60;i++) await store.saveMaintenanceExecution({ executionId:`run-${i}`, source:i%2?'manual':'automatic', startedAt:date(i), completedAt:date(i+1), status:'completed' });
+  await store.saveMaintenanceExecution({ executionId:'run-59', source:'automatic', startedAt:date(59), completedAt:date(60), status:'completed' });
+  assert.deepEqual((await store.recentMaintenanceExecutions()).map(run=>run.executionId), Array.from({length:50}, (_, i) => `run-${59-i}`));
+  const exported = [];
+  for await (const run of store.allMaintenanceExecutions()) exported.push(run.executionId);
+  assert.equal(exported.length, 60);
+  assert.equal(await store.recentMaintenanceExecutions(3).then(rows => rows.length), 3);
 });

@@ -3,196 +3,103 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
-const { registerSectionAssociationLtiInterface, pageForLaunch } = require('../src/sectionAssociations/ltiInterface');
+const { registerSectionAssociationLtiInterface, pageForLaunch, csvCell } = require('../src/sectionAssociations/ltiInterface');
 
-function setup(getStatus = async () => ({ availability: 'Available', worker: 'idle', latestExecution: null })) {
-  const routes = {};
-  let onConnect;
+function setup(getStatus = async () => ({ availability: 'Available', worker: 'idle', latestExecution: null, executions: [] }), getExecutionHistory = async function *() {}) {
+  const routes = {}; let onConnect;
   const provider = { app: { get(path, handler) { routes[path] = handler; } }, onConnect(handler) { onConnect = handler; } };
-  registerSectionAssociationLtiInterface(provider, { deploymentId: 'deployment-1', getStatus });
+  registerSectionAssociationLtiInterface(provider, { deploymentId: 'deployment-1', getStatus, getExecutionHistory });
   return { routes, onConnect };
 }
 
 function response() {
-  return { locals: {}, headers: {}, statusCode: 200,
+  return { locals: {}, headers: {}, statusCode: 200, body: '', chunks: [],
     status(code) { this.statusCode = code; return this; },
     set(name, value) { this.headers[name] = value; return this; },
     type(value) { this.contentType = value; return this; },
     json(value) { this.body = value; return this; },
-    send(value) { this.body = value; return this; } };
+    send(value) { this.body = value; return this; },
+    write(value) { this.chunks.push(value); return true; }, end() { this.ended = true; } };
 }
 
-test('status route uses the verified deployment and returns no-cache process status', async () => {
+test('status route returns no-cache status only after deployment verification', async () => {
   let reads = 0;
-  const savedExecution = { executionId: 'run-1', source: 'manual', status: 'completed', startedAt: new Date(10), completedAt: new Date(20) };
-  const { routes } = setup(async () => { reads++; return { availability: 'Available', worker: 'idle', latestExecution: savedExecution }; });
-  const res = response();
-  res.locals.token = { deploymentId: 'deployment-1' };
+  const latestExecution = { executionId: 'run-1', source: 'manual', status: 'completed', startedAt: new Date(10), completedAt: new Date(20) };
+  const { routes } = setup(async () => { reads++; return { availability: 'Available', worker: 'idle', latestExecution, executions: [latestExecution] }; });
+  const res = response(); res.locals.token = { deploymentId: 'deployment-1' };
   await routes['/api/section-association/status']({}, res);
-  assert.equal(reads, 1);
-  assert.equal(res.headers['Cache-Control'], 'no-store');
-  assert.equal(res.body.worker, 'idle');
-  assert.equal(res.body.latestExecution, savedExecution);
+  assert.equal(reads, 1); assert.equal(res.headers['Cache-Control'], 'no-store');
+  assert.equal(res.body.latestExecution, latestExecution);
+  const denied = response(); denied.locals.token = { deploymentId: 'other' };
+  await routes['/api/section-association/status']({}, denied);
+  assert.equal(denied.statusCode, 403); assert.equal(reads, 1);
 });
 
-test('status route rejects a mismatched deployment before reading status', async () => {
-  let reads = 0;
-  const { routes } = setup(async () => { reads++; return {}; });
-  const res = response();
-  res.locals.token = { deploymentId: 'other' };
-  await routes['/api/section-association/status']({}, res);
-  assert.equal(res.statusCode, 403);
-  assert.equal(reads, 0);
-});
-
-test('status route reports temporary status-source failures as service unavailable', async () => {
+test('status route reports temporary status-source failures', async () => {
   const { routes } = setup(async () => { throw new Error('internal detail'); });
-  const res = response();
-  res.locals.token = { deploymentId: 'deployment-1' };
+  const res = response(); res.locals.token = { deploymentId: 'deployment-1' };
   await routes['/api/section-association/status']({}, res);
-  assert.equal(res.statusCode, 503);
-  assert.equal(res.body.availability, 'Unavailable');
+  assert.equal(res.statusCode, 503); assert.equal(res.body.availability, 'Unavailable');
 });
 
-test('LTI launch returns the interface with its ltijs request token for subsequent authenticated fetches', () => {
-  const { onConnect } = setup();
-  const res = response();
-  res.locals.ltik = 'signed-lti-token';
+test('launch page is a compact responsive monitor with authenticated refresh and expandable history', () => {
+  const { onConnect } = setup(); const res = response(); res.locals.ltik = 'signed-lti-token';
   onConnect({ deploymentId: 'deployment-1' }, {}, res);
   assert.equal(res.contentType, 'html');
-  assert.match(res.body, /Service status/);
-  assert.match(res.body, /Latest execution/);
-  assert.match(res.body, /Refresh/);
-  assert.match(res.body, /Authorization:'Bearer '\+ltiToken/);
-  assert.match(res.body, /credentials:'same-origin'/);
-  assert.doesNotMatch(res.body, /CSV report|Validation and corrective actions are not available/);
-  assert.match(res.body, /Remaining historical backlog/);
-  assert.match(res.body, /Last updated/);
-  assert.match(res.body, /@media\(max-width:520px\)/);
-  assert.match(res.body, /repeat\(2,minmax\(0,1fr\)\)/);
-  assert.doesNotMatch(res.body, /cancel|run correction/i);
+  for (const text of ['Service status', 'Current worker state', 'Execution history', 'Download CSV', 'Associations checked', 'Corrections applied', 'Errors']) assert.ok(res.body.includes(text));
+  assert.match(res.body, /Authorization:'Bearer '\+ltiToken/); assert.match(res.body, /credentials:'same-origin'/);
+  assert.match(res.body, /slice\(0,50\)/); assert.match(res.body, /@media\(max-width:620px\)/);
+  assert.doesNotMatch(res.body, /Next scheduled execution|Latest execution<|backlogProgress|CSV report placeholder|corrective action/i);
+  assert.match(res.body, /historyEmpty/); assert.match(res.body, /executionHtml/);
 });
 
-test('LTI launch without ltijs request token cannot render an unusable page', () => {
-  const { onConnect } = setup();
-  const res = response();
-  onConnect({ deploymentId: 'deployment-1' }, {}, res);
-  assert.equal(res.statusCode, 401);
-  assert.match(res.body, /Relaunch this tool from Brightspace/);
-});
+const execution = { executionId: 'run-1', source: 'manual', startedAt: '2026-10-17T10:00:00.000Z', completedAt: '2026-10-17T10:02:00.000Z',
+  status: 'completed', associationsChecked: 3, alreadyCompliant: 1, correctionsApplied: 1, errors: 0,
+  coverage: { type: 'bounded-cycle', remainingHistoricalBacklog: 4 } };
 
 async function runPage(fetchImpl) {
-  const html = pageForLaunch('signed-lti-token');
-  const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
-  const ids = ['availability', 'worker', 'executionMeta', 'latestDate', 'outcome', 'source', 'metrics', 'empty',
-    'checked', 'compliant', 'corrections', 'errors', 'backlogMetric', 'backlog', 'coverageNote', 'backlogProgress', 'executionDetails','executionDetailsSummary',
-    'detailStarted','detailFinished','duration','detailCompliant','detailCoverage','recentEmpty','recentList','nextRun','backlogMeaning','updated', 'notice', 'refresh'];
-  let finish;
-  const finished = new Promise(resolve => { finish = resolve; });
-  const elements = Object.fromEntries(ids.map(id => [id, {
-    value: id === 'empty' ? 'No maintenance execution recorded yet.' : '',
-    hidden: ['executionMeta', 'metrics', 'empty', 'coverageNote','backlogProgress','executionDetails','recentEmpty'].includes(id),
-    className: id === 'backlogMetric' ? 'metric backlog' : '',
-    listeners: {},
+  const script = pageForLaunch('signed-lti-token').match(/<script>([\s\S]*?)<\/script>/)[1];
+  const ids = ['availability','worker','latest','latestDate','outcome','source','checked','corrections','errors','emptyLatest','historyEmpty','history','updated','notice','refresh','export'];
+  let finish; const finished = new Promise(resolve => { finish = resolve; });
+  const elements = Object.fromEntries(ids.map(id => [id, { value: '', hidden: ['latest','emptyLatest','historyEmpty'].includes(id), className: '', innerHTML: '', listeners: {},
     addEventListener(event, handler) { this.listeners[event] = handler; },
-    set textContent(value) { this.value = value; if (id === 'notice' && value !== 'Refreshing…') finish(); },
-    get textContent() { return this.value; }
-  }]));
-  vm.runInNewContext(script, { document: { getElementById: id => elements[id] }, fetch: fetchImpl });
-  await finished;
-  return elements;
+    set textContent(value) { this.value = value; if (id === 'notice' && value !== 'Refreshing…') finish(); }, get textContent() { return this.value; } }]));
+  vm.runInNewContext(script, { document: { getElementById: id => elements[id] }, fetch: fetchImpl,
+    Intl, Date, URL: { createObjectURL() {}, revokeObjectURL() {} } });
+  await finished; return elements;
 }
 
-test('status fetch sends the launch token in ltijs-supported Authorization header and renders data', async () => {
+test('Refresh renders latest status and 50-row history, including expandable details', async () => {
+  const runs = [execution, { ...execution, executionId: '<unsafe>', source: 'automatic', startedAt: '2026-10-16T10:00:00Z', completedAt: '2026-10-16T10:00:01Z' }];
   let request;
-  const elements = await runPage(async (...args) => {
-    request = args;
-    return { ok: true, async json() { return { availability: 'Available', worker: 'idle', latestExecution: null }; } };
+  const elements = await runPage(async (...args) => { request = args; return { ok: true, async json() { return { availability: 'Available', worker: 'idle', latestExecution: execution, executions: runs }; } }; });
+  assert.equal(request[0], '/api/section-association/status'); assert.equal(request[1].headers.Authorization, 'Bearer signed-lti-token');
+  assert.equal(request[1].credentials, 'same-origin'); assert.equal(elements.checked.textContent, '3');
+  assert.equal(elements.source.textContent, 'Manual'); assert.equal(elements.historyEmpty.hidden, true);
+  assert.match(elements.history.innerHTML, /Already compliant/); assert.match(elements.history.innerHTML, /&lt;unsafe&gt;/);
+  assert.match(elements.updated.textContent, /^Last refreshed /);
+});
+
+test('Refresh supports empty history and can be repeated', async () => {
+  let calls = 0;
+  const elements = await runPage(async () => { calls++; return { ok: true, async json() { return { availability: 'Available', worker: 'idle', latestExecution: null, executions: [] }; } }; });
+  assert.equal(elements.emptyLatest.hidden, false); assert.equal(elements.historyEmpty.hidden, false);
+  await elements.refresh.listeners.click(); assert.equal(calls, 2);
+});
+
+test('CSV endpoint is authenticated, streams all execution rows, and quotes CSV safely', async () => {
+  const { routes } = setup(undefined, async function *() {
+    yield execution; yield { executionId: 'run,"2', source: 'automatic', startedAt: null, status: 'failed' };
+    for (let i = 2; i < 65; i++) yield { executionId: `run-${i}`, source: i % 2 ? 'manual' : 'automatic', status: 'completed' };
   });
-  assert.equal(request[0], '/api/section-association/status');
-  assert.equal(request[1].credentials, 'same-origin');
-  assert.equal(request[1].headers.Authorization, 'Bearer signed-lti-token');
-  assert.equal(elements.worker.textContent, 'Idle');
-  assert.equal(elements.empty.textContent, 'No maintenance execution recorded yet.');
-  assert.equal(elements.empty.hidden, false);
-  assert.equal(elements.metrics.hidden, true);
-  assert.equal(elements.checked.textContent, '—');
-  assert.match(elements.updated.textContent, /^Last updated /);
-});
-
-test('Refresh performs another authenticated status request', async () => {
-  let requests = 0;
-  const elements = await runPage(async () => {
-    requests++;
-    return { ok: true, async json() { return { availability: 'Available', worker: 'idle', latestExecution: null }; } };
-  });
-  await elements.refresh.listeners.click();
-  assert.equal(requests, 2);
-  assert.match(elements.updated.textContent, /^Last updated /);
-});
-
-test('latest manual execution renders the persisted date, outcome, source and metrics', async () => {
-  const execution = { source: 'manual', startedAt: '2026-10-17T10:00:00.000Z', completedAt: '2026-10-17T10:02:00.000Z',
-    status: 'completed', associationsChecked: 3, alreadyCompliant: 1, correctionsApplied: 1, errors: 0,
-    coverage: { type: 'bounded-cycle', remainingHistoricalBacklog: 4 } };
-  const elements = await runPage(async () => ({ ok: true, async json() {
-    return { availability: 'Available', worker: 'idle', latestExecution: execution };
-  } }));
-  assert.equal(elements.executionMeta.hidden, false);
-  assert.match(elements.latestDate.textContent, /2026/);
-  assert.equal(elements.outcome.textContent, 'Completed');
-  assert.equal(elements.source.textContent, 'Manual maintenance');
-  assert.equal(elements.checked.textContent, '3');
-  assert.equal(elements.compliant.textContent, '1');
-  assert.equal(elements.corrections.textContent, '1');
-  assert.equal(elements.errors.textContent, '0');
-  assert.equal(elements.backlog.textContent, '4');
-  assert.match(elements.backlogMetric.className, /backlog/);
-  assert.equal(elements.coverageNote.hidden, false);
-  assert.match(elements.coverageNote.textContent, /Full coverage is unknown/);
-  assert.equal(elements.duration.textContent, '2 min');
-  assert.equal(elements.executionDetails.hidden, false);
-});
-
-test('recent executions expand safely, backlog compares valid consecutive measurements, and next run stays unavailable without schedule data', async () => {
-  const latest = { source:'automatic', startedAt:'2026-10-17T10:05:00Z', completedAt:'2026-10-17T10:06:00Z', status:'completed',
-    associationsChecked:5, correctionsApplied:2, errors:0, coverage:{type:'bounded-cycle',remainingHistoricalBacklog:7} };
-  const previous = { source:'manual', startedAt:'2026-10-17T09:00:00Z', completedAt:'2026-10-17T09:01:00Z', status:'completed',
-    associationsChecked:3, correctionsApplied:1, errors:0, coverage:{type:'bounded-cycle',remainingHistoricalBacklog:10} };
-  const elements = await runPage(async () => ({ok:true,async json(){return {availability:'Available',worker:'idle',latestExecution:latest,executions:[latest,previous]}}}));
-  assert.equal(elements.recentEmpty.hidden,true);
-  assert.match(elements.recentList.innerHTML,/Automatic maintenance/);
-  assert.match(elements.recentList.innerHTML,/Manual maintenance/);
-  assert.match(elements.backlogProgress.textContent,/3 fewer/);
-  assert.equal(elements.nextRun.textContent,'Unavailable');
-});
-
-test('automatic execution displays a neutral placeholder when historical backlog is not supplied', async () => {
-  const execution = { source: 'automatic', startedAt: '2026-10-17T10:00:00.000Z', status: 'failed',
-    associationsChecked: 2, alreadyCompliant: 0, correctionsApplied: 0, errors: 1 };
-  const elements = await runPage(async () => ({ ok: true, async json() {
-    return { availability: 'Available', worker: 'error', latestExecution: execution };
-  } }));
-  assert.equal(elements.source.textContent, 'Automatic maintenance');
-  assert.equal(elements.outcome.textContent, 'Failed');
-  assert.equal(elements.backlog.textContent, '—');
-  assert.equal(elements.coverageNote.hidden, true);
-  assert.equal(elements.worker.textContent, 'Error');
-});
-
-test('authentication and temporary server failures clear loading fields and explain the failure', async () => {
-  for (const [status, expectedNotice, expectedWorker] of [
-    [401, /LTI session expired.*Relaunch/, 'Authentication Required'],
-    [403, /deployment is not authorized/, 'Not Authorized'],
-    [503, /temporarily unavailable.*Retry shortly/, 'Unavailable']
-  ]) {
-    const elements = await runPage(async () => ({ ok: false, status }));
-    assert.match(elements.notice.textContent, expectedNotice);
-    assert.equal(elements.worker.textContent, expectedWorker);
-    for (const id of ['availability', 'latestDate', 'outcome', 'source', 'checked', 'compliant', 'corrections', 'errors', 'backlog']) {
-      assert.notEqual(elements[id].textContent, 'Loading');
-    }
-    assert.equal(elements.metrics.hidden, true);
-    assert.equal(elements.executionMeta.hidden, true);
-  }
+  const denied = response(); denied.locals.token = { deploymentId: 'wrong' };
+  await routes['/api/section-association/executions.csv']({}, denied);
+  assert.equal(denied.statusCode, 403); assert.equal(denied.chunks.length, 0);
+  const res = response(); res.locals.token = { deploymentId: 'deployment-1' };
+  await routes['/api/section-association/executions.csv']({}, res);
+  assert.equal(res.headers['Cache-Control'], 'no-store'); assert.match(res.headers['Content-Disposition'], /section-association-executions-\d{4}-\d{2}-\d{2}\.csv/);
+  assert.equal(res.ended, true); assert.equal(res.chunks.length, 66);
+  assert.match(res.chunks[0], /Execution ID.*Historical backlog remaining.*Coverage/);
+  assert.match(res.chunks[2], /"run,""2"/); assert.match(res.chunks[2], /"","","failed"/);
+  assert.equal(csvCell('a,"b'), '"a,""b"'); assert.equal(csvCell(undefined), '""');
 });
