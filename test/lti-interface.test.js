@@ -87,12 +87,12 @@ test('Refresh renders latest status and 50-row history, including expandable det
   assert.equal(request[1].credentials, 'same-origin'); assert.equal(elements.checked.textContent, '1,234');
   assert.equal(elements.source.textContent, 'Manual'); assert.equal(elements.historyEmpty.hidden, true);
   assert.equal(elements.outcome.className, 'outcome completed'); assert.equal(elements.outcome['aria-label'], 'Outcome: Completed');
-  assert.match(elements.history.innerHTML, /Already compliant/); assert.match(elements.history.innerHTML, /Start time/); assert.match(elements.history.innerHTML, /Finish time/);
-  assert.match(elements.history.innerHTML, /Duration/);
-  assert.match(elements.history.innerHTML,/Oct 17/);assert.match(elements.history.innerHTML,/2026/);
-  const details = elements.history.innerHTML.match(/<div class="detail-grid">([\s\S]*?)<\/div><\/details>/)[1];
-  for (const field of ['Duration','Already compliant','Start time','Finish time']) assert.ok(details.includes(field));
-  for (const removed of ['Execution ID','Coverage','Historical backlog','<span class="label">Source</span>','<span class="label">Errors</span>']) assert.ok(!details.includes(removed));
+  assert.match(elements.history.innerHTML, /Already compliant: 1 · Duration: 2 min/);
+  assert.match(elements.history.innerHTML,/Oct 17/);assert.doesNotMatch(elements.history.innerHTML,/Start time|Finish time/);
+  const details = elements.history.innerHTML.match(/<div class="detail-strip">([\s\S]*?)<\/div><\/details>/)[1];
+  assert.match(details,/Already compliant: 1 · Duration: 2 min/);
+  for (const removed of ['Start time','Finish time','detail-grid','<span class="label">Source</span>','<span class="label">Errors</span>']) assert.ok(!details.includes(removed));
+  assert.match(responsiveStyles(),/\.detail-strip\{flex-wrap:wrap/);
   assert.match(elements.history.innerHTML, /aria-label="Outcome: Completed"/); assert.match(elements.history.innerHTML, /data-label="Corrections"[^>]*>1<\/span>/);
   assert.match(elements.history.innerHTML, /data-label="Errors"[^>]*>0<\/span>/);
   assert.match(elements.updated.textContent, /^Last refreshed /);
@@ -112,6 +112,8 @@ test('successful zero-work latest execution replaces counters with the no-work m
   assert.equal(elements.source.textContent,'Manual'); assert.equal(elements.outcome.textContent,'Completed');
   assert.equal(elements.latestMetrics.hidden,true); assert.equal(elements.zeroWork.hidden,false);
   assert.equal(elements.zeroWork.textContent,'No associations needed processing.');
+  assert.match(elements.history.innerHTML,/No work required · 2 min/);
+  assert.doesNotMatch(elements.history.innerHTML,/Already compliant: 0/);
 });
 
 test('executions with work retain their summary counts', async () => {
@@ -207,6 +209,24 @@ test('Reports dropdown is available for audited zero-result runs and keyboard di
 
 test('executions without detailed audit coverage show the unavailable note and no Reports dropdown', async()=>{
   const elements=await runPage(async()=>({ok:true,async json(){return{availability:'Available',worker:'idle',latestExecution:execution,executions:[execution]}}}));
-  assert.match(elements.history.innerHTML,/Detailed reports unavailable for this execution\./);
+  assert.match(elements.history.innerHTML,/Detailed reports unavailable\./);
   assert.doesNotMatch(elements.history.innerHTML,/<summary aria-label="Reports for this execution">/);
 });
+
+test('failed and incomplete executions show available duration and explanations, never no-work wording',async()=>{
+  for(const status of ['failed','cancelled','pending']){
+    const run={...execution,status,associationsChecked:0,errors:1,error:'Validation was blocked'};
+    const elements=await runPage(async()=>({ok:true,async json(){return{availability:'Available',worker:'idle',latestExecution:run,executions:[run]}}}));
+    assert.match(elements.history.innerHTML,/Duration: 2 min/);assert.match(elements.history.innerHTML,/Validation was blocked/);
+    assert.doesNotMatch(elements.history.innerHTML,/No work required/);
+  }
+});
+
+test('missing timestamps and optional counts are omitted instead of invented',async()=>{
+  const run={executionId:'run-missing',source:'automatic',status:'completed',associationsChecked:2,errors:0};
+  const elements=await runPage(async()=>({ok:true,async json(){return{availability:'Available',worker:'idle',latestExecution:run,executions:[run]}}}));
+  const details=elements.history.innerHTML.match(/<div class="detail-strip">([\s\S]*?)<\/div><\/details>/)[1];
+  assert.equal(details,'<span class="execution-info"></span><span class="audit-unavailable">Detailed reports unavailable.</span>');
+});
+
+function responsiveStyles(){return pageForLaunch('token').match(/<style>([\s\S]*?)<\/style>/)[1]}
