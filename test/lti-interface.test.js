@@ -83,6 +83,15 @@ test('launch page is a compact responsive monitor with authenticated refresh and
   assert.match(res.body, /\.execution-summary\{padding-top:9px;padding-bottom:9px;padding-left:8px\}/);
   assert.match(res.body, /\.execution-summary \.date\{padding-left:14px\}/);
   assert.match(res.body, /\.execution-summary \.outcome-cell\{display:flex;justify-content:center\}/);
+  assert.match(res.body, /@media\(max-width:860px\)\{\.history-head\{display:none\}/);
+  assert.match(res.body, /\.execution-summary \.date\{grid-column:1\/4;grid-row:1/);
+  assert.match(res.body, /\.execution-summary \.outcome-cell\{grid-column:4;grid-row:1/);
+  assert.match(res.body, /@media\(max-width:620px\)\{main\{padding:0 12px\}/);
+  assert.match(res.body, /\.history-row\{grid-template-columns:repeat\(3,minmax\(0,1fr\)\)/);
+  assert.match(res.body, /\.execution-summary \.scope\{grid-column:1\/-1;grid-row:2/);
+  assert.match(res.body, /\.date-filters\{display:grid;grid-template-columns:minmax\(140px,1fr\) minmax\(140px,1fr\) auto auto minmax\(0,1fr\)/);
+  assert.match(res.body, /\.date-filters\{display:grid;grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
+  assert.match(res.body, /header\{align-items:flex-start;flex-wrap:wrap\}/);
   assert.match(res.body, /\.detail-strip\{display:flex;align-items:center;gap:10px;min-height:36px;margin:0 8px 8px 25px;padding:7px 10px/);
   assert.match(res.body, /\.latest-message:empty\{display:none\}/);
   assert.match(res.body, /function executionHtml\(run\)/);
