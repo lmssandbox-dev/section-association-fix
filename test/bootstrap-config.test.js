@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const {
   REQUIRED_ENVIRONMENT, LTI_ENVIRONMENT, validateRequiredEnvironment,
   ltiConfiguration, registerBrightspacePlatform, installPublicBootstrapEndpoints,
-  sectionAssociationTriggerMode, validateWorkerEnvironment
+  sectionAssociationTriggerMode, validateWorkerEnvironment, discoveryPeriodsConfiguration
 } = require('../src/sectionAssociations/config');
 const { startSectionAssociationTrigger } = require('../src/sectionAssociations/trigger');
 
@@ -28,6 +28,19 @@ test('required application and worker configuration accepts missing LTI registra
   const env = validEnvironment();
   assert.equal(validateRequiredEnvironment(env), true);
   assert.equal(ltiConfiguration(env).complete, false);
+});
+
+test('discovery period configuration distinguishes automatic, explicit and all modes and rejects malformed values', () => {
+  assert.deepEqual(discoveryPeriodsConfiguration({}), { mode:'auto', periods:[] });
+  assert.deepEqual(discoveryPeriodsConfiguration({ SECTION_ASSOCIATION_DISCOVERY_PERIODS:' AuTo ' }), { mode:'auto', periods:[] });
+  assert.deepEqual(discoveryPeriodsConfiguration({ SECTION_ASSOCIATION_DISCOVERY_PERIODS:' 2601, 2602,2601,2701 ' }), { mode:'explicit', periods:['2601','2602','2701'] });
+  assert.deepEqual(discoveryPeriodsConfiguration({ SECTION_ASSOCIATION_DISCOVERY_PERIODS:'2701' }), { mode:'explicit', periods:['2701'] });
+  assert.deepEqual(discoveryPeriodsConfiguration({ SECTION_ASSOCIATION_DISCOVERY_PERIODS:'ALL' }), { mode:'all', periods:[] });
+  assert.deepEqual(discoveryPeriodsConfiguration({ SECTION_ASSOCIATION_DISCOVERY_PERIODS:'' }), { mode:'all', periods:[] });
+  for (const value of ['2603','202601','2601,','auto,2601','2601,,2602']) {
+    const env = validEnvironment({ SECTION_ASSOCIATION_DISCOVERY_PERIODS:value });
+    assert.throws(() => validateRequiredEnvironment(env), /SECTION_ASSOCIATION_DISCOVERY_PERIODS/);
+  }
 });
 
 test('partial LTI registration settings stay in setup mode and skip platform registration', async () => {

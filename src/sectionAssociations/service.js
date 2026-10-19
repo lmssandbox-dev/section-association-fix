@@ -17,8 +17,18 @@ function academicPeriods(value = Date.now()) {
   const currentYear = year % 100;
   const previousYear = semester === 1 ? (currentYear + 99) % 100 : currentYear;
   const previousSemester = semester === 1 ? 2 : 1;
-  return { current: `${String(currentYear).padStart(2, '0')}0${semester}`,
-    previous: `${String(previousYear).padStart(2, '0')}0${previousSemester}` };
+  const nextYear = semester === 1 ? currentYear : (currentYear + 1) % 100;
+  const nextSemester = semester === 1 ? 2 : 1;
+  const current = `${String(currentYear).padStart(2, '0')}0${semester}`;
+  const previous = `${String(previousYear).padStart(2, '0')}0${previousSemester}`;
+  const next = `${String(nextYear).padStart(2, '0')}0${nextSemester}`;
+  return { mode: 'auto', previous, current, next, periods: [previous, current, next] };
+}
+
+function discoveryScope(configuration = { mode: 'auto' }, value = Date.now()) {
+  if (configuration.mode === 'all') return { mode: 'all', periods: [] };
+  if (configuration.mode === 'explicit') return { mode: 'explicit', periods: [...configuration.periods] };
+  return academicPeriods(value);
 }
 
 function isReverificationWindow(value = Date.now()) {
@@ -40,7 +50,7 @@ function fullDiscoveryDue(lastCompletedAt, value = Date.now()) {
 
 function createSectionAssociationService({ client, store, reconciler, stabilityMinutes = 10,
   maxReconciliationsPerRun = 50, recoveryIntervalHours = 4, completedReverifyHours = 24,
-  now = Date.now, logger = console }) {
+  discoveryConfiguration = { mode: 'auto', periods: [] }, now = Date.now, logger = console }) {
   let busy = false;
   const stabilityLogged = new Set();
   const recoveryIntervalMs = recoveryIntervalHours * 60 * 60 * 1000;
@@ -93,17 +103,18 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     const baselineStatus = typeof store.baselineStatus === 'function' ? await store.baselineStatus() : { state: 'ready' };
     const baselineRequired = !baselineStatus || baselineStatus.state !== 'ready';
     const lastFull = typeof store.lastFullDiscoveryAt === 'function' ? await store.lastFullDiscoveryAt() : new Date(currentTime);
+    const scope = discoveryScope(discoveryConfiguration, currentTime);
     const runFullDiscovery = baselineRequired || fullDiscoveryDue(lastFull, currentTime);
     setPhase('discovery');
     let full = [];
     let fullDiscoveryError;
-    if (runFullDiscovery) {
+    if (scope.mode === 'all' || runFullDiscovery) {
       try {
         full = await discover('I0001');
-        stats.discoveryActivities.historical = true;
+        if (runFullDiscovery || scope.mode === 'all') stats.discoveryActivities.historical = true;
       }
       catch (error) {
-        if (baselineRequired) throw error;
+        if (baselineRequired || scope.mode === 'all') throw error;
         fullDiscoveryError = error;
         logEvent(logger, 'warn', 'full discovery deferred', safeErrorFields(error, {
           phase: error?.phase || 'discovery', endpoint: error?.endpoint || 'association-candidates'
@@ -126,27 +137,24 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
         stats.alreadyKnown += counts.alreadyKnown;
         baseline = { state: 'ready' };
       }
-    } else if (runFullDiscovery && !fullDiscoveryError) {
+    } else if ((runFullDiscovery || scope.mode === 'all') && !fullDiscoveryError) {
       const counts = await store.recordDiscoveries(full.map(item => ({ id: item.Identifier ?? item.OrgUnitId, code: item.Code })));
       stats.new += counts.newlyRecorded;
       stats.alreadyKnown += counts.alreadyKnown;
     }
-    if (runFullDiscovery && !fullDiscoveryError && typeof store.markFullDiscoveryCompleted === 'function') {
+    if ((runFullDiscovery || scope.mode === 'all') && !fullDiscoveryError && typeof store.markFullDiscoveryCompleted === 'function') {
       await store.markFullDiscoveryCompleted();
     }
     setPhase('discovery');
-    const periods = academicPeriods(currentTime);
-    const [current, previous] = await Promise.all([
-      discover(`${periods.current}-I0001`), discover(`${periods.previous}-I0001`)
-    ]);
-    stats.discoveryPeriods = periods;
-    stats.discoveryActivities.currentPrevious = true;
-    const associations = [...new Map([...full, ...current, ...previous]
+    const periodResults = scope.mode === 'all' ? [] : await Promise.all(scope.periods.map(period => discover(`${period}-I0001`)));
+    stats.discoveryPeriods = scope;
+    if (scope.mode !== 'all') stats.discoveryActivities.periods = true;
+    const associations = [...new Map([...full, ...periodResults.flat()]
       .map(item => [String(item.Identifier ?? item.OrgUnitId), item])).values()];
     stats.discovered = associations.length;
     setPhase('database');
     if (baseline?.state === 'ready') {
-      const discoveryRecords = (runFullDiscovery && !fullDiscoveryError
+      const discoveryRecords = ((runFullDiscovery || scope.mode === 'all') && !fullDiscoveryError
         ? associations.filter(item => !fullIds.has(String(item.Identifier ?? item.OrgUnitId)))
         : associations)
         .map(item => ({ id: item.Identifier ?? item.OrgUnitId, code: item.Code }));
@@ -246,4 +254,4 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
   return { discover, fastTick, recoveryTick };
 }
 
-module.exports = { createSectionAssociationService, academicPeriods, isReverificationWindow, fullDiscoveryDue };
+module.exports = { createSectionAssociationService, academicPeriods, discoveryScope, isReverificationWindow, fullDiscoveryDue };

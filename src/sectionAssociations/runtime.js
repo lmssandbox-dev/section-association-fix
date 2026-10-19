@@ -8,6 +8,7 @@ const { createSectionAssociationClient } = require('./client');
 const { createSectionAssociationStore } = require('./store');
 const { createReconciler } = require('./reconciler');
 const { createSectionAssociationService } = require('./service');
+const { discoveryPeriodsConfiguration } = require('./config');
 
 function createSectionAssociationRuntime({ env = process.env, http, logger = console }) {
   const brightspace = new URL(env.BS_URL);
@@ -31,11 +32,12 @@ function createSectionAssociationRuntime({ env = process.env, http, logger = con
   const recoveryIntervalHours = positiveInteger(env.SECTION_ASSOCIATION_FIX_RECOVERY_INTERVAL_HOURS, 4);
   const maxReconciliationsPerRun = positiveInteger(env.SECTION_ASSOCIATION_FIX_MAX_RECONCILIATIONS_PER_RUN, 50);
   const completedReverifyHours = positiveInteger(env.SECTION_ASSOCIATION_FIX_COMPLETED_REVERIFY_HOURS, 24);
+  const discoveryConfiguration = discoveryPeriodsConfiguration(env);
   const reconciler = createReconciler({ client, store, dryRun, logger });
   const service = createSectionAssociationService({ client, store, reconciler, stabilityMinutes,
-    recoveryIntervalHours, maxReconciliationsPerRun, completedReverifyHours, logger });
+    recoveryIntervalHours, maxReconciliationsPerRun, completedReverifyHours, discoveryConfiguration, logger });
   return { oauth, apiGate, client, store, reconciler, service, namespace, dryRun,
-    fastIntervalMinutes, recoveryIntervalHours, maxReconciliationsPerRun, completedReverifyHours,
+    fastIntervalMinutes, recoveryIntervalHours, maxReconciliationsPerRun, completedReverifyHours, discoveryConfiguration,
     async close() { await Promise.allSettled([store.close(), apiGate.close()]); } };
 }
 

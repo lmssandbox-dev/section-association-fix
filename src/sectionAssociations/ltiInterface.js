@@ -24,7 +24,7 @@ section{padding:16px 18px;margin:14px 0}h2{font-size:1.05rem;font-weight:650;let
 .reports-menu>summary:after{content:"";width:7px;height:7px;border-right:1.75px solid currentColor;border-bottom:1.75px solid currentColor;transform:rotate(-45deg);transform-origin:center;color:var(--muted);transition:none}.reports-menu[open]>summary:after{transform:rotate(45deg)}
 @media(max-width:620px){.execution-summary{padding-left:22px}}
 </style></head><body><main><header><h1>Section Association Fix</h1><div class="actions"><button id="refresh" type="button">Refresh</button><div class="export-action"><button id="export" class="secondary" type="button">Export History CSV</button><span id="exportFeedback" role="status" aria-live="polite"></span></div></div></header>
-<section aria-labelledby="service-heading"><h2 id="service-heading">Service status</h2><div class="status-list"><div><span class="label">Availability</span><span id="availability" class="state unknown" role="status">Loading</span></div><div><span class="label">Current worker state</span><span id="worker" class="state unknown" role="status">Loading</span></div><div><span class="label">Discovery periods</span><span class="periods"><span class="period-chip" title="Current academic period">Current <strong id="currentPeriod">—</strong></span><span class="period-chip" title="Previous academic period">Previous <strong id="previousPeriod">—</strong></span></span></div></div>
+<section aria-labelledby="service-heading"><h2 id="service-heading">Service status</h2><div class="status-list"><div><span class="label">Availability</span><span id="availability" class="state unknown" role="status">Loading</span></div><div><span class="label">Current worker state</span><span id="worker" class="state unknown" role="status">Loading</span></div><div><span class="label">Discovery periods</span><span id="discoveryScope" class="periods">—</span></div></div>
 <div id="latest" class="latest" hidden><span class="label">Last execution</span><span id="latestDate" class="value">—</span><span id="outcome" class="outcome" role="status" aria-label="Execution outcome">—</span><span id="latestMessage" class="latest-message">—</span></div><p id="emptyLatest" class="empty" hidden>No maintenance execution recorded yet.</p></section>
 <section aria-labelledby="history-heading"><div class="history-header"><h2 id="history-heading">Execution history</h2><span id="updated" aria-live="polite">Not updated yet</span></div><form id="dateFilters" class="date-filters"><label>From <input id="fromDate" type="date"></label><label>To <input id="toDate" type="date"></label><button type="submit" class="secondary">Apply</button><button id="clearFilters" type="button" class="secondary">Clear</button><span id="filterError" role="status" aria-live="polite"></span></form><div role="table" aria-label="Maintenance executions" class="history-table"><div role="rowgroup"><div role="row" class="history-row history-head"><span role="columnheader">Date and time</span><span role="columnheader">Periods / Scope</span><span role="columnheader">Outcome</span><span role="columnheader" class="numeric">Checked</span><span role="columnheader" class="numeric">Corrections</span><span role="columnheader" class="numeric">Errors</span></div></div><p id="historyEmpty" class="empty" hidden>No executions recorded yet.</p><div id="history" role="rowgroup"></div></div><nav class="pagination" aria-label="Execution history pages"><button id="previousPage" class="secondary" type="button">Previous</button><span id="pageNumber" aria-live="polite">Page 1</span><button id="nextPage" class="secondary" type="button">Next</button></nav></section><p id="notice" role="status" aria-live="polite"></p>
 </main><script>
@@ -43,8 +43,9 @@ function exportMessage(value,type='',node=document.getElementById('exportFeedbac
 function duration(start,end){const a=new Date(start).getTime(),b=new Date(end).getTime();if(!Number.isFinite(a)||!Number.isFinite(b)||b<a)return '—';const seconds=Math.floor((b-a)/1000);return seconds<60?seconds+' seconds':Math.floor(seconds/60)+' min'+(seconds%60?' '+seconds%60+' sec':'')}
 function compactDuration(start,end){const a=new Date(start).getTime(),b=new Date(end).getTime();if(!Number.isFinite(a)||!Number.isFinite(b)||b<a)return '';const seconds=Math.floor((b-a)/1000);return seconds<60?seconds+' sec':Math.floor(seconds/60)+' min'+(seconds%60?' '+seconds%60+' sec':'')}
 function safe(value){return String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function discoveryActivityNames(run){const activities=run.discoveryActivities||{},names=[];if(activities.currentPrevious===true)names.push('Current + Previous');if(activities.historical===true)names.push('Historical');if(activities.reverification===true)names.push('Re-verification');return names}
-function discoveryScope(run){const names=discoveryActivityNames(run),periods=run.discoveryPeriods;if(/^\\d{4}$/.test(periods?.current||'')&&/^\\d{4}$/.test(periods?.previous||'')){const otherActivities=names.filter(name=>name!=='Current + Previous');return [periods.current,periods.previous,...(otherActivities.length?['Mixed']:[])].join(' · ')}if(!names.length)return '—';return names.length>1?'Mixed':names[0]}
+function discoveryActivityNames(run){const activities=run.discoveryActivities||{},names=[];if(activities.periods===true||activities.currentPrevious===true)names.push('Periods');if(activities.historical===true)names.push('Historical');if(activities.reverification===true)names.push('Re-verification');return names}
+function discoveryScope(run){const names=discoveryActivityNames(run),periods=run.discoveryPeriods,mode=periods?.mode;let labels=[];if(mode==='all')labels=['All periods'];else if(Array.isArray(periods?.periods)&&periods.periods.every(period=>/^\\d{2}0[12]$/.test(period)))labels=periods.periods;else if(/^\\d{4}$/.test(periods?.current||'')&&/^\\d{4}$/.test(periods?.previous||''))labels=[periods.current,periods.previous];if(labels.length){const otherActivities=names.filter(name=>name!=='Periods'&&!(mode==='all'&&name==='Historical'));return [...labels,...(otherActivities.length?['Mixed']:[])].join(' · ')}if(!names.length)return '—';return names.length>1?'Mixed':names[0]}
+function renderDiscoveryPeriods(scope){const node=document.getElementById('discoveryScope');if(!scope){node.textContent='—';return}if(scope.mode==='all'){node.textContent='All periods';return}const entries=scope.mode==='auto'?[['Previous',scope.previous],['Current',scope.current],['Next',scope.next]]:Array.isArray(scope.periods)?scope.periods.map(period=>['',period]):[];if(!entries.length||entries.some(([,period])=>!/^\\d{2}0[12]$/.test(period||''))){node.textContent='—';return}node.innerHTML=entries.map(([label,period])=>'<span class="period-chip"'+(label?' title="'+label+' academic period"':'')+'>'+(label?label+' ':'')+'<strong>'+period+'</strong></span>').join(' ')}
 function latestMessage(run){if(run.status==='completed'&&run.associationsChecked===0&&run.errors===0)return '';const explanation=[run.error,run.failureReason,run.lastError].find(value=>typeof value==='string'&&value.trim());if(run.status!=='completed'&&explanation)return explanation.trim().replace(/\\s+/g,' ').slice(0,180);return 'Checked: '+count(run.associationsChecked)+' · Corrections: '+count(run.correctionsApplied)+' · Errors: '+count(run.errors)}
 function executionHtml(run){
   const label=safe(statusText(run.status)),quiet=run.status==='completed'&&run.associationsChecked===0&&run.errors===0;
@@ -72,13 +73,11 @@ async function refresh(){
       else if(response.status>=500)set('notice','Status service temporarily unavailable. Retry shortly.');
       else set('notice','Status request failed (HTTP '+response.status+').');
       renderState('availability','Unavailable',true);renderState('worker','Unavailable');
-      set('currentPeriod','—');set('previousPeriod','—');return;
+      renderDiscoveryPeriods(null);return;
     }
     const data=await response.json();
     renderState('availability',data.availability,true);renderState('worker',data.worker);
-    const periods=data.discoveryPeriods;
-    set('currentPeriod',/^\\d{4}$/.test(periods?.current||'')?periods.current:'—');
-    set('previousPeriod',/^\\d{4}$/.test(periods?.previous||'')?periods.previous:'—');
+    renderDiscoveryPeriods(data.discoveryPeriods);
     const latest=data.latestExecution;
     document.getElementById('latest').hidden=!latest;document.getElementById('emptyLatest').hidden=!!latest;
     if(latest){set('latestDate',formatDate(latest.startedAt));showOutcome('outcome',latest.status);set('latestMessage',latestMessage(latest))}
@@ -88,7 +87,7 @@ async function refresh(){
     set('updated','Last refreshed '+new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit'}).format(new Date()));set('notice','');
   }catch{
     set('notice','Could not reach the status service. Check your connection and retry.');
-    renderState('availability','Unavailable',true);renderState('worker','Unavailable');set('currentPeriod','—');set('previousPeriod','—');
+    renderState('availability','Unavailable',true);renderState('worker','Unavailable');renderDiscoveryPeriods(null);
   }
 }
 async function exportCsv(){exportMessage('Preparing CSV…');try{const response=await fetch('/api/section-association/executions.csv',{credentials:'same-origin',headers:{Accept:'text/csv',Authorization:'Bearer '+ltiToken}});if(!response.ok){exportMessage(response.status===401?'Session expired. Relaunch Brightspace.':response.status===403?'Deployment not authorized.':'CSV export failed. Retry.','error');return}const blob=await response.blob(),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=response.headers.get('Content-Disposition')?.match(/filename="?([^";]+)"?/i)?.[1]||'section-association-executions.csv';link.click();URL.revokeObjectURL(url);exportMessage('CSV downloaded.','success')}catch{exportMessage('Could not download CSV. Retry.','error')}}
@@ -115,9 +114,9 @@ const CSV_COLUMNS = [
   ['Already compliant', run => run.alreadyCompliant], ['Corrections applied', run => run.correctionsApplied],
   ['Errors', run => run.errors], ['Historical backlog remaining', run => run.coverage?.remainingHistoricalBacklog],
   ['Coverage', run => run.coverage?.type],
-  ['Discovery period identifiers', run => run.discoveryPeriods ? `${run.discoveryPeriods.current || ''} + ${run.discoveryPeriods.previous || ''}` : ''],
+  ['Discovery period identifiers', run => {const periods=run.discoveryPeriods;if(periods?.mode==='all')return 'All periods';if(Array.isArray(periods?.periods))return periods.periods.join(' + ');return periods ? `${periods.current || ''} + ${periods.previous || ''}` : ''}],
   ['Discovery activities', run => Object.entries(run.discoveryActivities || {}).filter(([, performed]) => performed === true)
-    .map(([activity]) => ({ currentPrevious: 'current + previous', historical: 'historical', reverification: 're-verification' }[activity] || activity)).join('; ')]
+    .map(([activity]) => ({ periods: 'configured periods', currentPrevious: 'current + previous', historical: 'historical', reverification: 're-verification' }[activity] || activity)).join('; ')]
 ];
 
 function csvCell(value) {

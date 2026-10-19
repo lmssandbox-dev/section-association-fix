@@ -66,12 +66,14 @@ The app only acts when **all** of these conditions hold:
 
 | Timing (São Paulo) | What happens |
 | --- | --- |
-| **Every 15 minutes** | Find associations in the current and previous periods; process eligible work. |
-| **Daily, at or after 02:00** | Full historical/future-period discovery. |
+| **Every 15 minutes** | Find associations in the configured scope; automatic mode searches previous/current/next, while `all` searches every period. Process eligible work. |
+| **Daily, at or after 02:00** | Full historical/future-period discovery for automatic and explicit scopes; `all` mode uses its regular broad query for this too. |
 | **Every 4 hours** | Recovery of pending and retryable blocked work. |
 | **03:00–06:00** | Recheck completed associations whose last successful verification is at least 24 hours old. |
 
 A scheduled cron execution processes **at most 50 associations** across its normal and recovery work. One association can point to several original courses. Newly discovered associations usually wait **10 minutes** before processing; historical baseline associations do not.
+
+Academic periods use `YY01` for January–June and `YY02` for July–December in `America/Sao_Paulo`. `SECTION_ASSOCIATION_DISCOVERY_PERIODS` is optional: leave it unset for automatic previous/current/next discovery, use a comma-separated period list to select specific periods, or set it to `all` for every fast cycle. No manual rollover is needed.
 
 ## 6. What can an administrator see?
 

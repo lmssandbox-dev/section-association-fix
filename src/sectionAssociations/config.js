@@ -14,6 +14,19 @@ const WORKER_ENVIRONMENT = [
   'BS_OAUTH2_TOKEN_ENDPOINT', 'BS_OAUTH2_SCOPES', 'D2L_API_LP_VERSION', 'SECTION_ASSOCIATION_FIX_DRY_RUN'
 ];
 const TRIGGER_MODES = new Set(['cron', 'internal']);
+const PERIOD_CODE = /^\d{2}0[12]$/;
+
+function discoveryPeriodsConfiguration(env = process.env) {
+  if (!Object.prototype.hasOwnProperty.call(env, 'SECTION_ASSOCIATION_DISCOVERY_PERIODS')) return { mode: 'auto', periods: [] };
+  const value = String(env.SECTION_ASSOCIATION_DISCOVERY_PERIODS).trim();
+  if (!value || value.toLowerCase() === 'all') return { mode: 'all', periods: [] };
+  if (value.toLowerCase() === 'auto') return { mode: 'auto', periods: [] };
+  const periods = [...new Set(value.split(',').map(period => period.trim()))];
+  if (periods.some(period => !PERIOD_CODE.test(period))) {
+    throw new Error('SECTION_ASSOCIATION_DISCOVERY_PERIODS must be auto, all, an empty value, or a comma-separated list of YY01/YY02 periods.');
+  }
+  return { mode: 'explicit', periods };
+}
 
 function sectionAssociationTriggerMode(env = process.env) {
   const value = String(env.SECTION_ASSOCIATION_FIX_TRIGGER_MODE || 'cron').trim();
@@ -22,6 +35,7 @@ function sectionAssociationTriggerMode(env = process.env) {
 }
 
 function validateRequiredEnvironment(env = process.env) {
+  discoveryPeriodsConfiguration(env);
   const missing = REQUIRED_ENVIRONMENT.filter(name => !String(env[name] || '').trim());
   if (missing.length) throw new Error(`Missing required environment settings: ${missing.join(', ')}`);
   if (!/^\d+\.\d+$/.test(env.D2L_API_LP_VERSION)) throw new Error('D2L_API_LP_VERSION must use the form major.minor.');
@@ -29,6 +43,7 @@ function validateRequiredEnvironment(env = process.env) {
 }
 
 function validateWorkerEnvironment(env = process.env, { requireDryRun = true } = {}) {
+  discoveryPeriodsConfiguration(env);
   const required = requireDryRun ? WORKER_ENVIRONMENT : WORKER_ENVIRONMENT.filter(name => name !== 'SECTION_ASSOCIATION_FIX_DRY_RUN');
   const missing = required.filter(name => !String(env[name] || '').trim());
   if (missing.length) throw new Error(`Missing required worker environment settings: ${missing.join(', ')}`);
@@ -62,5 +77,5 @@ function installPublicBootstrapEndpoints(provider, jwks) {
 }
 
 module.exports = { REQUIRED_ENVIRONMENT, LTI_ENVIRONMENT, WORKER_ENVIRONMENT, TRIGGER_MODES,
-  sectionAssociationTriggerMode, validateRequiredEnvironment, validateWorkerEnvironment,
+  sectionAssociationTriggerMode, discoveryPeriodsConfiguration, validateRequiredEnvironment, validateWorkerEnvironment,
   ltiConfiguration, registerBrightspacePlatform, installPublicBootstrapEndpoints };

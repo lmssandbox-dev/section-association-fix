@@ -59,9 +59,9 @@ test('launch page is a compact responsive monitor with authenticated refresh and
   const { onConnect } = setup(); const res = response(); res.locals.ltik = 'signed-lti-token';
   onConnect({ deploymentId: 'deployment-1' }, {}, res);
   assert.equal(res.contentType, 'html');
-  for (const text of ['Service status', 'Current worker state', 'Discovery periods', 'Current academic period', 'Previous academic period', 'Last execution', 'Execution history', 'Periods / Scope', 'Export History CSV']) assert.ok(res.body.includes(text));
+  for (const text of ['Service status', 'Current worker state', 'Discovery periods', 'Last execution', 'Execution history', 'Periods / Scope', 'Export History CSV']) assert.ok(res.body.includes(text));
   assert.doesNotMatch(res.body, /<span class="label">Source<\/span>|latestMetrics|zeroWork/);
-  assert.match(res.body, /title="Current academic period"/);assert.match(res.body, /title="Previous academic period"/);
+  assert.match(res.body, /academic period/);assert.match(res.body, /\['Previous',scope\.previous\],\['Current',scope\.current\],\['Next',scope\.next\]/);
   assert.match(res.body, /\.period-chip\{display:inline-flex/);assert.match(res.body, /\.scope\{overflow-wrap:anywhere;white-space:nowrap\}/);
   assert.doesNotMatch(res.body, />Download CSV</);
   assert.match(res.body, /Authorization:'Bearer '\+ltiToken/); assert.match(res.body, /credentials:'same-origin'/);
@@ -96,7 +96,7 @@ const execution = { executionId: 'run-1', source: 'manual', startedAt: '2026-10-
 
 async function runPage(fetchImpl) {
   const script = pageForLaunch('signed-lti-token').match(/<script>([\s\S]*?)<\/script>/)[1];
-  const ids = ['availability','worker','currentPeriod','previousPeriod','latest','latestDate','outcome','latestMessage','emptyLatest','historyEmpty','history','updated','notice','refresh','export','exportFeedback','dateFilters','fromDate','toDate','clearFilters','filterError','previousPage','nextPage','pageNumber'];
+  const ids = ['availability','worker','discoveryScope','latest','latestDate','outcome','latestMessage','emptyLatest','historyEmpty','history','updated','notice','refresh','export','exportFeedback','dateFilters','fromDate','toDate','clearFilters','filterError','previousPage','nextPage','pageNumber'];
   let finish; const finished = new Promise(resolve => { finish = resolve; });const timers=[];
   const summary={focused:false,focus(){this.focused=true}},reportMenu={open:true,querySelector(){return summary}},reportFeedback={textContent:'',className:''},reportEntry={querySelector(){return reportFeedback}};
   const links=[];
@@ -117,7 +117,7 @@ test('Refresh renders latest status and 50-row history, including expandable det
   assert.equal(request[1].credentials, 'same-origin');
   assert.equal(elements.latestMessage.textContent, 'Checked: 1,234 · Corrections: 1 · Errors: 0');
   assert.equal(elements.historyEmpty.hidden, true);
-  assert.equal(elements.currentPeriod.textContent, '—');assert.equal(elements.previousPeriod.textContent, '—');
+  assert.equal(elements.discoveryScope.textContent, '—');
   assert.match(elements.history.innerHTML, /<span class="scope">2602 · 2601<\/span>/);
   assert.doesNotMatch(elements.history.innerHTML, /<span class="source">/);
   assert.equal(elements.outcome.className, 'outcome completed'); assert.equal(elements.outcome['aria-label'], 'Outcome: Completed');
@@ -134,17 +134,26 @@ test('Refresh renders latest status and 50-row history, including expandable det
   assert.match(elements.updated.textContent, /^Last refreshed /);
 });
 
-test('current service periods render from status data and use a neutral fallback for unavailable values', async () => {
-  const payload={availability:'Available',worker:'idle',discoveryPeriods:{current:'2701',previous:'2602'},latestExecution:null,executions:[]};
+test('service discovery scope renders auto, explicit and all modes and uses a neutral fallback', async () => {
+  const payload={availability:'Available',worker:'idle',discoveryPeriods:{mode:'auto',previous:'2602',current:'2701',next:'2702',periods:['2602','2701','2702']},latestExecution:null,executions:[]};
   const elements=await runPage(async()=>({ok:true,async json(){return payload}}));
-  assert.equal(elements.currentPeriod.textContent,'2701');assert.equal(elements.previousPeriod.textContent,'2602');
+  assert.match(elements.discoveryScope.innerHTML,/Previous <strong>2602<\/strong>/);
+  assert.match(elements.discoveryScope.innerHTML,/Current <strong>2701<\/strong>/);
+  assert.match(elements.discoveryScope.innerHTML,/Next <strong>2702<\/strong>/);
+  const explicit=await runPage(async()=>({ok:true,async json(){return{...payload,discoveryPeriods:{mode:'explicit',periods:['2601','2602']}}}}));
+  assert.match(explicit.discoveryScope.innerHTML,/<strong>2601<\/strong>/);assert.match(explicit.discoveryScope.innerHTML,/<strong>2602<\/strong>/);
+  const all=await runPage(async()=>({ok:true,async json(){return{...payload,discoveryPeriods:{mode:'all',periods:[]}}}}));
+  assert.equal(all.discoveryScope.textContent,'All periods');
   const invalid=await runPage(async()=>({ok:true,async json(){return {...payload,discoveryPeriods:null}}}));
-  assert.equal(invalid.currentPeriod.textContent,'—');assert.equal(invalid.previousPeriod.textContent,'—');
+  assert.equal(invalid.discoveryScope.textContent,'—');
 });
 
 test('history scope shows recorded codes and expanded details avoid repeating periods', async()=>{
   const scopeCases=[
     [{currentPrevious:true},{current:'2602',previous:'2601'},'2602 · 2601','Already compliant: 1 · 2 min'],
+    [{periods:true},{mode:'auto',periods:['2601','2602','2701']},'2601 · 2602 · 2701','Already compliant: 1 · 2 min'],
+    [{periods:true},{mode:'explicit',periods:['2701']},'2701','Already compliant: 1 · 2 min'],
+    [{historical:true},{mode:'all',periods:[]},'All periods','Already compliant: 1 · 2 min'],
     [{historical:true},null,'Historical','Already compliant: 1 · 2 min'],
     [{reverification:true},null,'Re-verification','Already compliant: 1 · 2 min'],
     [{currentPrevious:true,historical:true},{current:'2602',previous:'2601'},'2602 · 2601 · Mixed','Already compliant: 1 · 2 min'],

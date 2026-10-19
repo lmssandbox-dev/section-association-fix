@@ -22,9 +22,21 @@ function buildMaintenanceExecutionSummary(execution, { status, results = [], exe
     }
   }
   if (executionErrors > 0) summary.errors = (summary.errors || 0) + executionErrors;
-  const periodsResult = [...results].reverse().find(result =>
-    /^\d{4}$/.test(result?.discoveryPeriods?.current || '') && /^\d{4}$/.test(result?.discoveryPeriods?.previous || ''));
-  if (periodsResult) summary.discoveryPeriods = { ...periodsResult.discoveryPeriods };
+  const validPeriod = period => /^\d{2}0[12]$/.test(period || '');
+  const periodsResult = [...results].reverse().find(result => {
+    const periods = result?.discoveryPeriods;
+    return periods?.mode === 'all' || (['auto', 'explicit'].includes(periods?.mode) &&
+      Array.isArray(periods.periods) && periods.periods.every(validPeriod));
+  });
+  if (periodsResult) summary.discoveryPeriods = { mode: periodsResult.discoveryPeriods.mode,
+    periods: [...(periodsResult.discoveryPeriods.periods || [])], ...(periodsResult.discoveryPeriods.previous ? {
+      previous: periodsResult.discoveryPeriods.previous, current: periodsResult.discoveryPeriods.current,
+      next: periodsResult.discoveryPeriods.next } : {}) };
+  else {
+    const legacyPeriods = [...results].reverse().find(result =>
+      /^\d{4}$/.test(result?.discoveryPeriods?.current || '') && /^\d{4}$/.test(result?.discoveryPeriods?.previous || ''));
+    if (legacyPeriods) summary.discoveryPeriods = { ...legacyPeriods.discoveryPeriods };
+  }
   const discoveryActivities = {};
   for (const result of results) {
     for (const [activity, performed] of Object.entries(result?.discoveryActivities || {})) {
