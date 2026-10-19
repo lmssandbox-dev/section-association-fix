@@ -19,10 +19,11 @@ main{margin-top:16px}section{padding:12px 15px}.history-head{font-size:.76rem;pa
 /* Final spacing and alignment pass. */
 section{padding:16px 18px;margin:14px 0}h2{font-size:1.05rem;font-weight:650;letter-spacing:-.01em}section>h2{margin-bottom:12px}.status-list{gap:11px 22px}.status-list .label{margin-bottom:4px}.latest{margin-top:14px;padding-top:12px;gap:9px 14px}.history-header{margin-bottom:12px}.history-row{grid-template-columns:minmax(145px,1.45fr) minmax(92px,.85fr) minmax(112px,.9fr) repeat(3,minmax(78px,.65fr));gap:12px}.history-head{padding:7px 8px}.history-head> :nth-child(3){text-align:center}.execution-summary{padding-top:9px;padding-bottom:9px}.execution-summary .outcome-cell{display:flex;justify-content:center}.detail-strip{gap:14px;min-height:40px;padding:8px 12px}.execution-info{flex:1}.reports-menu>summary{padding:5px 10px}.actions{gap:10px}.actions button{padding:6px 11px}
 @media(max-width:620px){section{padding:14px 14px;margin:12px 0}.status-list{gap:10px 16px}.latest{margin-top:12px;padding-top:10px}.history-header{margin-bottom:10px}.history-row{grid-template-columns:minmax(0,1fr) auto;gap:6px 12px}.history-head{padding:7px 8px}.execution-summary{padding:10px 4px}.execution-summary .outcome-cell{justify-content:flex-start}.detail-strip{gap:8px 12px;padding:9px 10px}.execution-info{flex-basis:100%}.actions{gap:8px}.actions button{padding:6px 10px}}
+.date-filters{display:flex;align-items:end;flex-wrap:wrap;gap:8px;margin:0 0 10px}.date-filters label{display:grid;gap:2px;color:var(--muted);font-size:.8rem}.date-filters input{min-height:34px;border:1px solid #aeb8c1;border-radius:3px;padding:4px 7px;color:var(--ink);font:inherit}.date-filters button{padding:5px 9px;font-size:.86rem}.date-filters #filterError{color:var(--bad);font-size:.8rem}.pagination{display:flex;align-items:center;justify-content:center;gap:12px;padding-top:12px}.pagination button:disabled{opacity:.5;cursor:default}
 </style></head><body><main><header><h1>Section Association Fix</h1><div class="actions"><button id="refresh" type="button">Refresh</button><div class="export-action"><button id="export" class="secondary" type="button">Export History CSV</button><span id="exportFeedback" role="status" aria-live="polite"></span></div></div></header>
 <section aria-labelledby="service-heading"><h2 id="service-heading">Service status</h2><div class="status-list"><div><span class="label">Availability</span><span id="availability" class="state unknown" role="status">Loading</span></div><div><span class="label">Current worker state</span><span id="worker" class="state unknown" role="status">Loading</span></div><div><span class="label">Discovery periods</span><span class="periods"><span class="period-chip" title="Current academic period">Current <strong id="currentPeriod">—</strong></span><span class="period-chip" title="Previous academic period">Previous <strong id="previousPeriod">—</strong></span></span></div></div>
 <div id="latest" class="latest" hidden><span class="label">Last execution</span><span id="latestDate" class="value">—</span><span id="outcome" class="outcome" role="status" aria-label="Execution outcome">—</span><span id="latestMessage" class="latest-message">—</span></div><p id="emptyLatest" class="empty" hidden>No maintenance execution recorded yet.</p></section>
-<section aria-labelledby="history-heading"><div class="history-header"><h2 id="history-heading">Execution history</h2><span id="updated" aria-live="polite">Not updated yet</span></div><div role="table" aria-label="Recent maintenance executions" class="history-table"><div role="rowgroup"><div role="row" class="history-row history-head"><span role="columnheader">Date and time</span><span role="columnheader">Periods / Scope</span><span role="columnheader">Outcome</span><span role="columnheader" class="numeric">Checked</span><span role="columnheader" class="numeric">Corrections</span><span role="columnheader" class="numeric">Errors</span></div></div><p id="historyEmpty" class="empty" hidden>No executions recorded yet.</p><div id="history" role="rowgroup"></div></div></section><p id="notice" role="status" aria-live="polite"></p>
+<section aria-labelledby="history-heading"><div class="history-header"><h2 id="history-heading">Execution history</h2><span id="updated" aria-live="polite">Not updated yet</span></div><form id="dateFilters" class="date-filters"><label>From <input id="fromDate" type="date"></label><label>To <input id="toDate" type="date"></label><button type="submit" class="secondary">Apply</button><button id="clearFilters" type="button" class="secondary">Clear</button><span id="filterError" role="status" aria-live="polite"></span></form><div role="table" aria-label="Maintenance executions" class="history-table"><div role="rowgroup"><div role="row" class="history-row history-head"><span role="columnheader">Date and time</span><span role="columnheader">Periods / Scope</span><span role="columnheader">Outcome</span><span role="columnheader" class="numeric">Checked</span><span role="columnheader" class="numeric">Corrections</span><span role="columnheader" class="numeric">Errors</span></div></div><p id="historyEmpty" class="empty" hidden>No executions recorded yet.</p><div id="history" role="rowgroup"></div></div><nav class="pagination" aria-label="Execution history pages"><button id="previousPage" class="secondary" type="button">Previous</button><span id="pageNumber" aria-live="polite">Page 1</span><button id="nextPage" class="secondary" type="button">Next</button></nav></section><p id="notice" role="status" aria-live="polite"></p>
 </main><script>
 const ltiToken=__LTI_TOKEN__;
 function set(id,value){document.getElementById(id).textContent=value}
@@ -34,7 +35,7 @@ const numberFormat=new Intl.NumberFormat(undefined,{maximumFractionDigits:0});
 function count(value){return Number.isSafeInteger(value)&&value>=0?numberFormat.format(value):'—'}
 function outcomeClass(value){return ['failed','skipped','pending'].includes(String(value).toLowerCase())?String(value).toLowerCase():String(value).toLowerCase()==='completed'?'completed':'unknown'}
 function showOutcome(id,value){const node=document.getElementById(id),label=statusText(value);node.textContent=label;node.className='outcome '+outcomeClass(value);node.setAttribute('aria-label','Outcome: '+label)}
-let exportFeedbackTimer;
+let exportFeedbackTimer;let currentPage=1;let hasMore=false;
 function exportMessage(value,type='',node=document.getElementById('exportFeedback')){node.textContent=value;node.className='feedback '+type;if(exportFeedbackTimer)clearTimeout(exportFeedbackTimer);if(type==='success')exportFeedbackTimer=setTimeout(()=>{node.textContent='';node.className='feedback'},1800)}
 function duration(start,end){const a=new Date(start).getTime(),b=new Date(end).getTime();if(!Number.isFinite(a)||!Number.isFinite(b)||b<a)return '—';const seconds=Math.floor((b-a)/1000);return seconds<60?seconds+' seconds':Math.floor(seconds/60)+' min'+(seconds%60?' '+seconds%60+' sec':'')}
 function compactDuration(start,end){const a=new Date(start).getTime(),b=new Date(end).getTime();if(!Number.isFinite(a)||!Number.isFinite(b)||b<a)return '';const seconds=Math.floor((b-a)/1000);return seconds<60?seconds+' sec':Math.floor(seconds/60)+' min'+(seconds%60?' '+seconds%60+' sec':'')}
@@ -59,8 +60,10 @@ function executionHtml(run){
 async function refresh(){
   set('notice','Refreshing…');
   try{
-    const response=await fetch('/api/section-association/status',{credentials:'same-origin',headers:{Accept:'application/json',Authorization:'Bearer '+ltiToken}});
+    const query=new URLSearchParams({page:String(currentPage)});if(document.getElementById('fromDate').value)query.set('from',document.getElementById('fromDate').value);if(document.getElementById('toDate').value)query.set('to',document.getElementById('toDate').value);
+    const response=await fetch('/api/section-association/status?'+query.toString(),{credentials:'same-origin',headers:{Accept:'application/json',Authorization:'Bearer '+ltiToken}});
     if(!response.ok){
+      if(response.status===400){const problem=await response.json().catch(()=>({}));set('filterError',problem.error||'History filter is invalid.');}
       if(response.status===401)set('notice','LTI session expired. Relaunch this tool from Brightspace.');
       else if(response.status===403)set('notice','This LTI deployment is not authorized.');
       else if(response.status>=500)set('notice','Status service temporarily unavailable. Retry shortly.');
@@ -76,8 +79,9 @@ async function refresh(){
     const latest=data.latestExecution;
     document.getElementById('latest').hidden=!latest;document.getElementById('emptyLatest').hidden=!!latest;
     if(latest){set('latestDate',formatDate(latest.startedAt));showOutcome('outcome',latest.status);set('latestMessage',latestMessage(latest))}
-    const runs=Array.isArray(data.executions)?data.executions.slice(0,50):[];
+    const runs=Array.isArray(data.executions)?data.executions:[];currentPage=data.history?.page||currentPage;hasMore=data.history?.hasMore===true;
     document.getElementById('historyEmpty').hidden=runs.length>0;document.getElementById('history').innerHTML=runs.map(executionHtml).join('');
+    set('pageNumber','Page '+currentPage);document.getElementById('previousPage').disabled=currentPage<=1;document.getElementById('nextPage').disabled=!hasMore;
     set('updated','Last refreshed '+new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit'}).format(new Date()));set('notice','');
   }catch{
     set('notice','Could not reach the status service. Check your connection and retry.');
@@ -89,7 +93,7 @@ async function exportAudit(kind,executionId,feedback){const show=(message,type='
 document.getElementById('history').addEventListener('click',event=>{const button=event.target.closest('[data-audit]');if(!button)return;const menu=button.closest('.reports-menu'),entry=button.closest('.report-entry');menu.open=false;menu.querySelector('summary').focus();return exportAudit(button.dataset.audit,button.dataset.execution,entry.querySelector('.report-feedback'))});
 document.addEventListener('click',event=>{if(event.target.closest('.reports-menu'))return;document.querySelectorAll('.reports-menu[open]').forEach(menu=>menu.open=false)});
 document.addEventListener('keydown',event=>{if(event.key!=='Escape')return;const menu=document.querySelector('.reports-menu[open]');if(menu){menu.open=false;menu.querySelector('summary').focus();event.stopPropagation()}});
-document.getElementById('refresh').addEventListener('click',refresh);document.getElementById('export').addEventListener('click',exportCsv);refresh();
+document.getElementById('dateFilters').addEventListener('submit',event=>{event.preventDefault();const from=document.getElementById('fromDate').value,to=document.getElementById('toDate').value;if(from&&to&&from>to){set('filterError','From date must be on or before To date.');return}set('filterError','');currentPage=1;return refresh()});document.getElementById('clearFilters').addEventListener('click',()=>{document.getElementById('fromDate').value='';document.getElementById('toDate').value='';set('filterError','');currentPage=1;return refresh()});document.getElementById('previousPage').addEventListener('click',()=>{if(currentPage>1){currentPage--;return refresh()}});document.getElementById('nextPage').addEventListener('click',()=>{if(hasMore){currentPage++;return refresh()}});document.getElementById('refresh').addEventListener('click',refresh);document.getElementById('export').addEventListener('click',exportCsv);refresh();
 </script></body></html>`;
 
 function pageForLaunch(ltik) {
@@ -134,7 +138,11 @@ function registerSectionAssociationLtiInterface(provider, { deploymentId, getSta
   const authorize = deploymentGuard(deploymentId);
   provider.app.get('/api/section-association/status', async (req, res) => {
     if (!authorize(res.locals?.token, req, res)) return;
-    try { res.set('Cache-Control', 'no-store').json(await getStatus()); }
+    try {
+      const parsed = parseHistoryQuery(req.query || {});
+      if (parsed.error) return res.status(400).json({ error: parsed.error });
+      res.set('Cache-Control', 'no-store').json(await getStatus(parsed));
+    }
     catch { res.status(503).json({ availability: 'Unavailable', worker: 'Unavailable', latestExecution: null, executions: [] }); }
   });
   provider.app.get('/api/section-association/executions.csv', async (req, res) => {
@@ -178,6 +186,30 @@ function registerSectionAssociationLtiInterface(provider, { deploymentId, getSta
     if (typeof ltik !== 'string' || !ltik) return res.status(401).send('LTI launch token unavailable. Relaunch this tool from Brightspace.');
     res.set('Cache-Control', 'no-store').type('html').send(pageForLaunch(ltik));
   });
+}
+
+function parseHistoryQuery(query) {
+  const pageRaw = query.page === undefined ? '1' : query.page;
+  if (typeof pageRaw !== 'string' || !/^[1-9]\d*$/.test(pageRaw) || !Number.isSafeInteger(Number(pageRaw)) || Number(pageRaw) > Math.floor(Number.MAX_SAFE_INTEGER / 50)) return { error: 'Page must be a positive integer.' };
+  const from = query.from === undefined || query.from === '' ? null : query.from;
+  const to = query.to === undefined || query.to === '' ? null : query.to;
+  const validDate = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0,10) === value;
+  if ((from && !validDate(from)) || (to && !validDate(to))) return { error: 'Dates must be valid calendar dates.' };
+  if (from && to && from > to) return { error: 'From date must be on or before To date.' };
+  return { page: Number(pageRaw), from: from ? saoPauloMidnight(from) : null,
+    to: to ? saoPauloMidnight(nextDate(to)) : null };
+}
+function nextDate(value) { const date = new Date(`${value}T00:00:00Z`); date.setUTCDate(date.getUTCDate() + 1); return date.toISOString().slice(0,10); }
+function saoPauloMidnight(dateText) {
+  const target = Date.parse(`${dateText}T00:00:00Z`);
+  let instant = target;
+  const formatter = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hourCycle:'h23' });
+  for (let i=0;i<3;i++) {
+    const parts = Object.fromEntries(formatter.formatToParts(new Date(instant)).map(part=>[part.type,part.value]));
+    const represented = Date.UTC(Number(parts.year), Number(parts.month)-1, Number(parts.day), Number(parts.hour), Number(parts.minute), Number(parts.second));
+    instant += target - represented;
+  }
+  return new Date(instant);
 }
 
 module.exports = { registerSectionAssociationLtiInterface, pageForLaunch, CSV_COLUMNS, csvCell, AUDIT_COLUMNS, auditCsvCell };

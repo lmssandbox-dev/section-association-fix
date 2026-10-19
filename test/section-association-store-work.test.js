@@ -16,6 +16,8 @@ function matches(record, filter) {
       if ('$exists' in expected && (actual !== undefined) !== expected.$exists) return false;
       if ('$in' in expected && !expected.$in.includes(actual)) return false;
       if ('$lte' in expected && !(actual instanceof Date && actual <= expected.$lte)) return false;
+      if ('$gte' in expected && !(actual instanceof Date && actual >= expected.$gte)) return false;
+      if ('$lt' in expected && !(actual instanceof Date && actual < expected.$lt)) return false;
       if ('$gt' in expected && !(actual instanceof Date && actual > expected.$gt)) return false;
     } else if (actual !== expected) return false;
   }
@@ -183,5 +185,19 @@ test('execution history is retained incrementally, idempotent by execution ID, a
   const exported = [];
   for await (const run of store.allMaintenanceExecutions()) exported.push(run.executionId);
   assert.equal(exported.length, 60);
-  assert.equal(await store.recentMaintenanceExecutions(3).then(rows => rows.length), 3);
+  assert.equal(await store.recentMaintenanceExecutions(3).then(result => result.length), 3);
+});
+
+test('execution history pages are stable, date-filtered, and indicate whether another page exists', async () => {
+  const { store } = makeStore([]);
+  for (let i=0;i<123;i++) await store.saveMaintenanceExecution({ executionId:`run-${String(i).padStart(3,'0')}`, source:'automatic', startedAt:date(i), status:'completed' });
+  const first = await store.recentMaintenanceExecutions(50,{page:1});
+  const second = await store.recentMaintenanceExecutions(50,{page:2});
+  const third = await store.recentMaintenanceExecutions(50,{page:3});
+  assert.equal(first.hasMore,true);assert.equal(second.hasMore,true);assert.equal(third.hasMore,false);
+  assert.equal(first.length,50);assert.equal(second.length,50);assert.equal(third.length,23);
+  assert.equal(first[49].executionId,'run-073');assert.equal(second[0].executionId,'run-072');
+  const filtered = await store.recentMaintenanceExecutions(50,{page:1,from:date(40),to:date(44)});
+  assert.deepEqual(filtered.map(run=>run.executionId),['run-043','run-042','run-041','run-040']);
+  const empty = await store.recentMaintenanceExecutions(50,{page:99});assert.deepEqual([...empty],[]);assert.equal(empty.hasMore,false);
 });

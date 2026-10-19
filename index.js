@@ -44,7 +44,7 @@ registerSectionAssociationLtiInterface(lti, { deploymentId: env.BS_LTI_DEPLOYMEN
   getExecutionHistory: () => runtime.store.allMaintenanceExecutions(),
   getExecutionAudit: (executionId, kind) => runtime.store.executionAudit(executionId, kind),
   getAuditAvailability: executionId => runtime.store.auditAvailability(executionId),
-  async getStatus() {
+  async getStatus(historyQuery = {}) {
     let worker = 'unknown';
     if (sectionAssociationScheduler) {
       worker = sectionAssociationScheduler.status().state;
@@ -54,11 +54,11 @@ registerSectionAssociationLtiInterface(lti, { deploymentId: env.BS_LTI_DEPLOYMEN
         worker = lease.expired ? 'idle' : 'running';
       } catch { /* Keep worker state unknown if lease storage is temporarily unavailable. */ }
     }
-    const executions = await runtime.store.recentMaintenanceExecutions(50);
+    const history = await runtime.store.recentMaintenanceExecutions(50, historyQuery);
     let discoveryPeriods = null;
     try { discoveryPeriods = academicPeriods(); } catch { /* Use a neutral placeholder if time-zone resolution is unavailable. */ }
     return { availability: 'Available', worker, discoveryPeriods,
-      latestExecution: await runtime.store.latestMaintenanceExecution(), executions,
+      latestExecution: await runtime.store.latestMaintenanceExecution(), executions: history, history: { page: history.page, hasMore: history.hasMore },
       nextScheduledExecution: null };
   } });
 

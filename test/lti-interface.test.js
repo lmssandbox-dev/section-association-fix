@@ -42,6 +42,19 @@ test('status route reports temporary status-source failures', async () => {
   assert.equal(res.statusCode, 503); assert.equal(res.body.availability, 'Unavailable');
 });
 
+test('status route validates pagination and converts inclusive São Paulo dates to query boundaries', async () => {
+  let received;
+  const { routes } = setup(async query => { received=query; return { availability:'Available',worker:'idle',executions:[] }; });
+  const res=response();res.locals.token={deploymentId:'deployment-1'};
+  await routes['/api/section-association/status']({query:{page:'2',from:'2026-10-01',to:'2026-10-01'}},res);
+  assert.equal(res.statusCode,200);assert.equal(received.page,2);
+  assert.equal(received.from.toISOString(),'2026-10-01T03:00:00.000Z');assert.equal(received.to.toISOString(),'2026-10-02T03:00:00.000Z');
+  for(const query of [{page:'0'},{page:'1.2'},{from:'2026-02-30'},{from:'2026-10-02',to:'2026-10-01'}]){
+    const invalid=response();invalid.locals.token={deploymentId:'deployment-1'};
+    await routes['/api/section-association/status']({query},invalid);assert.equal(invalid.statusCode,400);
+  }
+});
+
 test('launch page is a compact responsive monitor with authenticated refresh and expandable history', () => {
   const { onConnect } = setup(); const res = response(); res.locals.ltik = 'signed-lti-token';
   onConnect({ deploymentId: 'deployment-1' }, {}, res);
@@ -52,7 +65,7 @@ test('launch page is a compact responsive monitor with authenticated refresh and
   assert.match(res.body, /\.period-chip\{display:inline-flex/);assert.match(res.body, /\.scope\{overflow-wrap:anywhere;white-space:nowrap\}/);
   assert.doesNotMatch(res.body, />Download CSV</);
   assert.match(res.body, /Authorization:'Bearer '\+ltiToken/); assert.match(res.body, /credentials:'same-origin'/);
-  assert.match(res.body, /slice\(0,50\)/); assert.match(res.body, /@media\(max-width:620px\)/);
+  assert.match(res.body, /id="previousPage"/);assert.match(res.body,/id="nextPage"/);assert.match(res.body,/type="date"/); assert.match(res.body, /@media\(max-width:620px\)/);
   assert.match(res.body, /role="columnheader"/); assert.match(res.body, /data-label="Corrections"/);
   assert.match(res.body, /font-variant-numeric:tabular-nums/); assert.match(res.body, /id="exportFeedback" role="status" aria-live="polite"/);
   assert.match(res.body, /\.history-head\{display:none\}/); assert.match(res.body, /\.execution-summary \.numeric::before\{content:attr\(data-label\)/);
@@ -78,7 +91,7 @@ const execution = { executionId: 'run-1', source: 'manual', startedAt: '2026-10-
 
 async function runPage(fetchImpl) {
   const script = pageForLaunch('signed-lti-token').match(/<script>([\s\S]*?)<\/script>/)[1];
-  const ids = ['availability','worker','currentPeriod','previousPeriod','latest','latestDate','outcome','latestMessage','emptyLatest','historyEmpty','history','updated','notice','refresh','export','exportFeedback'];
+  const ids = ['availability','worker','currentPeriod','previousPeriod','latest','latestDate','outcome','latestMessage','emptyLatest','historyEmpty','history','updated','notice','refresh','export','exportFeedback','dateFilters','fromDate','toDate','clearFilters','filterError','previousPage','nextPage','pageNumber'];
   let finish; const finished = new Promise(resolve => { finish = resolve; });const timers=[];
   const summary={focused:false,focus(){this.focused=true}},reportMenu={open:true,querySelector(){return summary}},reportFeedback={textContent:'',className:''},reportEntry={querySelector(){return reportFeedback}};
   const links=[];
@@ -87,7 +100,7 @@ async function runPage(fetchImpl) {
     set textContent(value) { this.value = value; if (id === 'notice' && value !== 'Refreshing…') finish(); }, get textContent() { return this.value; } }]));
   const documentListeners={};
   vm.runInNewContext(script, { document: { getElementById: id => elements[id], addEventListener(event,handler){documentListeners[event]=handler}, querySelectorAll(){return reportMenu.open?[reportMenu]:[]}, querySelector(){return reportMenu.open?reportMenu:null}, createElement() { const link={click(){link.clicked=true}}; links.push(link); return link; } }, fetch: fetchImpl,
-    Intl, Date, setTimeout(fn){timers.push(fn);return timers.length}, clearTimeout(){}, URL: { createObjectURL() { return 'blob:url'; }, revokeObjectURL() {} } });
+    Intl, Date, URLSearchParams, setTimeout(fn){timers.push(fn);return timers.length}, clearTimeout(){}, URL: { createObjectURL() { return 'blob:url'; }, revokeObjectURL() {} } });
   await finished; elements.links=links;elements.reportMenu=reportMenu;elements.reportSummary=summary;elements.reportFeedback=reportFeedback;elements.reportEntry=reportEntry;elements.documentListeners=documentListeners;elements.timers=timers; return elements;
 }
 
@@ -95,7 +108,7 @@ test('Refresh renders latest status and 50-row history, including expandable det
   const runs = [execution, { ...execution, executionId: '<unsafe>', source: 'automatic', startedAt: '2026-10-16T10:00:00Z', completedAt: '2026-10-16T10:00:01Z' }];
   let request;
   const elements = await runPage(async (...args) => { request = args; return { ok: true, async json() { return { availability: 'Available', worker: 'idle', latestExecution: execution, executions: runs }; } }; });
-  assert.equal(request[0], '/api/section-association/status'); assert.equal(request[1].headers.Authorization, 'Bearer signed-lti-token');
+  assert.match(request[0], /^\/api\/section-association\/status\?page=1$/); assert.equal(request[1].headers.Authorization, 'Bearer signed-lti-token');
   assert.equal(request[1].credentials, 'same-origin');
   assert.equal(elements.latestMessage.textContent, 'Checked: 1,234 · Corrections: 1 · Errors: 0');
   assert.equal(elements.historyEmpty.hidden, true);
@@ -147,6 +160,17 @@ test('Refresh supports empty history and can be repeated', async () => {
   const elements = await runPage(async () => { calls++; return { ok: true, async json() { return { availability: 'Available', worker: 'idle', latestExecution: null, executions: [] }; } }; });
   assert.equal(elements.emptyLatest.hidden, false); assert.equal(elements.historyEmpty.hidden, false);
   await elements.refresh.listeners.click(); assert.equal(calls, 2);
+});
+
+test('date filters reset pagination and Refresh preserves active filters and page', async () => {
+  const requests=[];let calls=0;
+  const elements=await runPage(async url=>{requests.push(url);calls++;return{ok:true,async json(){return{availability:'Available',worker:'idle',latestExecution:null,executions:[],history:{page:calls===1?2:1,hasMore:calls===1}}}}});
+  elements.fromDate.value='2026-10-01';elements.toDate.value='2026-10-05';
+  await elements.dateFilters.listeners.submit({preventDefault(){}});
+  assert.match(requests[1],/page=1/);assert.match(requests[1],/from=2026-10-01/);assert.match(requests[1],/to=2026-10-05/);
+  await elements.refresh.listeners.click();assert.match(requests[2],/page=1/);assert.match(requests[2],/from=2026-10-01/);assert.match(requests[2],/to=2026-10-05/);
+  elements.fromDate.value='2026-10-06';elements.toDate.value='2026-10-05';
+  await elements.dateFilters.listeners.submit({preventDefault(){}});assert.equal(elements.filterError.textContent,'From date must be on or before To date.');assert.equal(requests.length,3);
 });
 
 test('successful zero-work latest execution omits redundant summary text and keeps concise history details', async () => {

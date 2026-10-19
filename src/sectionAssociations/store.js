@@ -342,11 +342,22 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
     const summary = await meta.findOne({ _id: `maintenance-history:${namespace}:${String(executionId)}` }, { projection: { detailedAuditAvailable: 1 } });
     return summary?.detailedAuditAvailable === true;
   }
-  async function recentMaintenanceExecutions(limit = 50) {
+  async function recentMaintenanceExecutions(limit = 50, options = {}) {
     const { meta } = await collections();
-    const rows = await meta.find({ namespace, history: true }).sort({ startedAt: -1, executionId: -1 })
-      .limit(Math.min(50, Math.max(0, limit))).toArray();
-    return rows.map(({ _id, namespace: _namespace, history: _history, ...summary }) => summary);
+    const page = Number.isSafeInteger(options.page) && options.page > 0 ? options.page : 1;
+    const filter = { namespace, history: true };
+    if (options.from || options.to) filter.startedAt = {
+      ...(options.from ? { $gte: options.from } : {}), ...(options.to ? { $lt: options.to } : {})
+    };
+    const pageSize = Math.min(50, Math.max(0, limit));
+    const rows = await meta.find(filter).sort({ startedAt: -1, executionId: -1 })
+      .skip((page - 1) * pageSize).limit(pageSize + 1).toArray();
+    const hasMore = rows.length > pageSize;
+    const executions = rows.slice(0, pageSize).map(({ _id, namespace: _namespace, history: _history, ...summary }) => summary);
+    // Keep the historical array return shape for internal callers while exposing page metadata.
+    executions.page = page;
+    executions.hasMore = hasMore;
+    return executions;
   }
   async function *allMaintenanceExecutions() {
     const { meta } = await collections();
