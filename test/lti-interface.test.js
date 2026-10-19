@@ -75,9 +75,9 @@ test('launch page is a compact responsive monitor with authenticated refresh and
   assert.match(res.body, /section>h2\{margin-bottom:12px\}/);
   assert.match(res.body, /\.history-head> :nth-child\(3\)\{text-align:center\}/);
   assert.match(res.body, /\.execution\[open\] \.execution-summary:before\{transform:translateY\(-50%\) rotate\(45deg\)\}/);
-  assert.match(res.body, /\.reports-menu\[open\]>summary:after\{transform:rotate\(225deg\)\}/);
-  assert.match(res.body, /\.execution-summary:before\{left:5px;width:9px;height:9px;border-width:1\.75px/);
-  assert.match(res.body, /\.reports-menu>summary:after\{content:"";width:8px;height:8px;border-right:1\.75px/);
+  assert.match(res.body, /\.reports-menu>summary:after\{content:"";width:7px;height:7px;border-right:1\.75px[^}]*transform:rotate\(-45deg\)/);
+  assert.match(res.body, /\.reports-menu\[open\]>summary:after\{transform:rotate\(45deg\)\}/);
+  assert.match(res.body, /\.execution-summary:before\{left:5px;width:7px;height:7px;border-width:1\.75px/);
   assert.match(res.body, /@media\(max-width:620px\)\{\.execution-summary\{padding-left:22px\}\}/);
   assert.match(res.body, /\.execution-summary \.outcome-cell\{display:flex;justify-content:center\}/);
   assert.match(res.body, /\.execution-summary\{padding-top:9px;padding-bottom:9px\}/);
