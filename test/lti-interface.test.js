@@ -78,9 +78,9 @@ test('launch page is a compact responsive monitor with authenticated refresh and
   assert.match(res.body, /\.reports-menu>summary:after\{content:"";width:7px;height:7px;border-right:1\.75px[^}]*transform:rotate\(-45deg\)/);
   assert.match(res.body, /\.reports-menu\[open\]>summary:after\{transform:rotate\(45deg\)\}/);
   assert.match(res.body, /\.execution-summary:before\{left:5px;width:7px;height:7px;border-width:1\.75px/);
-  assert.match(res.body, /@media\(max-width:620px\)\{\.execution-summary\{padding-left:22px\}\}/);
+  assert.match(res.body, /\.execution-summary\{padding-top:9px;padding-bottom:9px;padding-left:8px\}/);
+  assert.match(res.body, /\.execution-summary \.date\{padding-left:14px\}/);
   assert.match(res.body, /\.execution-summary \.outcome-cell\{display:flex;justify-content:center\}/);
-  assert.match(res.body, /\.execution-summary\{padding-top:9px;padding-bottom:9px\}/);
   assert.match(res.body, /\.detail-strip\{display:flex;align-items:center;gap:10px;min-height:36px;margin:0 8px 8px 25px;padding:7px 10px/);
   assert.match(res.body, /\.latest-message:empty\{display:none\}/);
   assert.match(res.body, /function executionHtml\(run\)/);
