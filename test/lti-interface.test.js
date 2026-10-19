@@ -74,6 +74,8 @@ test('launch page is a compact responsive monitor with authenticated refresh and
   assert.match(res.body, /section\{padding:16px 18px;margin:14px 0\}/);
   assert.match(res.body, /section>h2\{margin-bottom:12px\}/);
   assert.match(res.body, /\.history-head> :nth-child\(3\)\{text-align:center\}/);
+  assert.match(res.body, /\.execution\[open\] \.execution-summary:before\{transform:translateY\(-50%\) rotate\(45deg\)\}/);
+  assert.match(res.body, /\.reports-menu\[open\]>summary:after\{transform:rotate\(225deg\)\}/);
   assert.match(res.body, /\.execution-summary \.outcome-cell\{display:flex;justify-content:center\}/);
   assert.match(res.body, /\.execution-summary\{padding-top:9px;padding-bottom:9px\}/);
   assert.match(res.body, /\.detail-strip\{display:flex;align-items:center;gap:10px;min-height:36px;margin:0 8px 8px 25px;padding:7px 10px/);
