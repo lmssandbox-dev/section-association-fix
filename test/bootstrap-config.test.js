@@ -30,13 +30,14 @@ test('required application and worker configuration accepts missing LTI registra
   assert.equal(ltiConfiguration(env).complete, false);
 });
 
-test('discovery period configuration distinguishes automatic, explicit and all modes and rejects malformed values', () => {
+test('discovery period configuration treats unset and empty as automatic and rejects malformed values', () => {
   assert.deepEqual(discoveryPeriodsConfiguration({}), { mode:'auto', periods:[] });
   assert.deepEqual(discoveryPeriodsConfiguration({ SECTION_ASSOCIATION_DISCOVERY_PERIODS:' AuTo ' }), { mode:'auto', periods:[] });
   assert.deepEqual(discoveryPeriodsConfiguration({ SECTION_ASSOCIATION_DISCOVERY_PERIODS:' 2601, 2602,2601,2701 ' }), { mode:'explicit', periods:['2601','2602','2701'] });
   assert.deepEqual(discoveryPeriodsConfiguration({ SECTION_ASSOCIATION_DISCOVERY_PERIODS:'2701' }), { mode:'explicit', periods:['2701'] });
   assert.deepEqual(discoveryPeriodsConfiguration({ SECTION_ASSOCIATION_DISCOVERY_PERIODS:'ALL' }), { mode:'all', periods:[] });
-  assert.deepEqual(discoveryPeriodsConfiguration({ SECTION_ASSOCIATION_DISCOVERY_PERIODS:'' }), { mode:'all', periods:[] });
+  assert.deepEqual(discoveryPeriodsConfiguration({ SECTION_ASSOCIATION_DISCOVERY_PERIODS:'' }), { mode:'auto', periods:[] });
+  assert.deepEqual(discoveryPeriodsConfiguration({ SECTION_ASSOCIATION_DISCOVERY_PERIODS:'   ' }), { mode:'auto', periods:[] });
   for (const value of ['2603','202601','2601,','auto,2601','2601,,2602']) {
     const env = validEnvironment({ SECTION_ASSOCIATION_DISCOVERY_PERIODS:value });
     assert.throws(() => validateRequiredEnvironment(env), /SECTION_ASSOCIATION_DISCOVERY_PERIODS/);

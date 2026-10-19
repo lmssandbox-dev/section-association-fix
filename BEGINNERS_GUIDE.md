@@ -37,11 +37,11 @@ An academic period is a semester code. The app uses **São Paulo time** to apply
 
 The optional setting `SECTION_ASSOCIATION_DISCOVERY_PERIODS` controls the regular searches:
 
-- Leave it unset, or set it to `auto`, to search previous/current/next.
+- Leave it unset or empty, or set it to `auto`, to search previous/current/next.
 - Set a list such as `2601,2602,2701` to search exactly those periods, or `2701` to search just one.
-- Set it to `all` or an explicitly empty value to search every period on every 15-minute cycle. An empty value means “all”; leaving the setting unset means “automatic”.
+- Set it to `all` to search every period on every 15-minute cycle.
 
-In Render, remove the setting or choose `auto` for the default; choose `all` or an explicitly empty value for every period. The daily broad search is separate from regular period searches, except in `all` mode where the same broad query serves both. Period settings only search for offerings that exist in Brightspace; they cannot fix an IPSIS import that failed to create its offering.
+In Render, remove the setting, leave its value empty, or choose `auto` for the default; choose `all` for every period. The daily broad search is separate from regular period searches, except in `all` mode where the same broad query serves both. Period settings only search for offerings that exist in Brightspace; they cannot fix an IPSIS import that failed to create its offering.
 
 ```mermaid
 flowchart TD
@@ -81,7 +81,7 @@ The app only acts when **all** of these conditions hold:
 
 A scheduled cron execution processes **at most 50 associations** across its normal and recovery work. One association can point to several original courses. Newly discovered associations usually wait **10 minutes** before processing; historical baseline associations do not.
 
-Academic periods use `YY01` for January–June and `YY02` for July–December in `America/Sao_Paulo`. `SECTION_ASSOCIATION_DISCOVERY_PERIODS` is optional: leave it unset for automatic previous/current/next discovery, use a comma-separated period list to select specific periods, or set it to `all` for every fast cycle. No manual rollover is needed.
+Academic periods use `YY01` for January–June and `YY02` for July–December in `America/Sao_Paulo`. `SECTION_ASSOCIATION_DISCOVERY_PERIODS` is optional: leave it unset or empty for automatic previous/current/next discovery, use a comma-separated period list to select specific periods, or set it to `all` for every fast cycle. No manual rollover is needed.
 
 ## 6. What can an administrator see?
 

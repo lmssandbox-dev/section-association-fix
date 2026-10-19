@@ -19,11 +19,11 @@ const PERIOD_CODE = /^\d{2}0[12]$/;
 function discoveryPeriodsConfiguration(env = process.env) {
   if (!Object.prototype.hasOwnProperty.call(env, 'SECTION_ASSOCIATION_DISCOVERY_PERIODS')) return { mode: 'auto', periods: [] };
   const value = String(env.SECTION_ASSOCIATION_DISCOVERY_PERIODS).trim();
-  if (!value || value.toLowerCase() === 'all') return { mode: 'all', periods: [] };
-  if (value.toLowerCase() === 'auto') return { mode: 'auto', periods: [] };
+  if (!value || value.toLowerCase() === 'auto') return { mode: 'auto', periods: [] };
+  if (value.toLowerCase() === 'all') return { mode: 'all', periods: [] };
   const periods = [...new Set(value.split(',').map(period => period.trim()))];
   if (periods.some(period => !PERIOD_CODE.test(period))) {
-    throw new Error('SECTION_ASSOCIATION_DISCOVERY_PERIODS must be auto, all, an empty value, or a comma-separated list of YY01/YY02 periods.');
+    throw new Error('SECTION_ASSOCIATION_DISCOVERY_PERIODS must be auto, all, or a comma-separated list of YY01/YY02 periods.');
   }
   return { mode: 'explicit', periods };
 }

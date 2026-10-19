@@ -55,7 +55,7 @@ The OAuth application needs the two scopes above. Its linked Brightspace Service
 | `SECTION_ASSOCIATION_FIX_COMPLETED_REVERIFY_HOURS` | `24` | Minimum age before a verified completed association can be re-read during nightly maintenance. |
 | `SECTION_ASSOCIATION_DISCOVERY_PERIODS` | Unset (`auto`) | Regular discovery scope. See supported values below; invalid values fail startup. |
 
-`SECTION_ASSOCIATION_DISCOVERY_PERIODS` controls only regular fast discovery. Undefined and explicitly empty values are distinct: remove the variable for automatic scope; set it to an empty string to search all periods.
+`SECTION_ASSOCIATION_DISCOVERY_PERIODS` controls only regular fast discovery. An undefined variable, an explicitly empty value, or `auto` selects automatic scope. Only `all` selects every period on each fast cycle.
 
 | Value | Regular discovery behavior |
 | --- | --- |
@@ -64,9 +64,9 @@ The OAuth application needs the two scopes above. Its linked Brightspace Service
 | `2601,2602,2701` | Search exactly those periods. |
 | `2701` | Search only `2701`. |
 | `all` | Search every period on each fast cycle. |
-| Explicit empty string | Same as `all`; do not confuse this with an unset variable. |
+| Explicit empty string | Same automatic behavior as unset or `auto`. |
 
-Automatic periods use `America/Sao_Paulo`: `YY01` covers January–June and `YY02` covers July–December. October 2026 resolves to `2601`, `2602`, and `2701`. Values are trimmed, explicit values are deduplicated, and periods must match `YY01` or `YY02`; keywords are case-insensitive. Invalid values stop startup. In Render, configure automatic discovery by removing this variable or setting it to `auto`; configure all-period discovery by setting `all` or an explicitly empty value. No academic-period rollover setting is needed. The `FAST_INTERVAL_MINUTES` setting controls internal-mode fast timers; the deployed Render Cron Job remains on `*/15 * * * *`.
+Automatic periods use `America/Sao_Paulo`: `YY01` covers January–June and `YY02` covers July–December. October 2026 resolves to `2601`, `2602`, and `2701`. Values are trimmed, explicit values are deduplicated, and periods must match `YY01` or `YY02`; keywords are case-insensitive. Invalid values stop startup. In Render, configure automatic discovery by removing this variable, leaving it empty, or setting it to `auto`; configure all-period discovery by setting it to `all`. No academic-period rollover setting is needed. The `FAST_INTERVAL_MINUTES` setting controls internal-mode fast timers; the deployed Render Cron Job remains on `*/15 * * * *`.
 
 ## Hosting / Trigger Modes
 
