@@ -28,16 +28,24 @@ Brightspace is the **source of truth** for course status. MongoDB is the app's w
 
 ## 3. How does it find association courses efficiently?
 
-The app determines academic periods automatically using **São Paulo time**:
+An academic period is a semester code. The app uses **São Paulo time** to apply the institution's code convention:
 
-- `YY01` = January–June; `YY02` = July–December.
-- In **October 2026**, the current period is **2602** and the previous period is **2601**.
-- Every 15 minutes, it searches association codes containing `2602-I0001` and `2601-I0001` (the exact periods change automatically).
-- Once a day, **at or after 02:00**, it also searches **all** `I0001` periods to catch older, future, or otherwise missed associations. On first installation, this full search establishes the initial baseline.
+- `YY01` means January–June; `YY02` means July–December.
+- By default, the app searches the previous, current, and next periods. In **October 2026**, that is **2601 · 2602 · 2701**.
+- The next period is included because Brightspace offerings for a future semester may be created early, before that semester begins.
+- Every 15 minutes, the worker searches the configured periods. Once a day, **at or after 02:00**, it also searches all `I0001` periods to catch older, future, or otherwise missed associations. On first installation, this broad search establishes the initial baseline.
+
+The optional setting `SECTION_ASSOCIATION_DISCOVERY_PERIODS` controls the regular searches:
+
+- Leave it unset, or set it to `auto`, to search previous/current/next.
+- Set a list such as `2601,2602,2701` to search exactly those periods, or `2701` to search just one.
+- Set it to `all` or an explicitly empty value to search every period on every 15-minute cycle. An empty value means “all”; leaving the setting unset means “automatic”.
+
+In Render, remove the setting or choose `auto` for the default; choose `all` or an explicitly empty value for every period. The daily broad search is separate from regular period searches, except in `all` mode where the same broad query serves both. Period settings only search for offerings that exist in Brightspace; they cannot fix an IPSIS import that failed to create its offering.
 
 ```mermaid
 flowchart TD
-  A[Every 15 minutes] --> B[Search current + previous periods]
+  A[Every 15 minutes] --> B[Search configured periods]
   A --> C{Full scan due?}
   C -- First run or daily after 02:00 --> D[Search all I0001 periods]
   C -- No --> E[Use period results]

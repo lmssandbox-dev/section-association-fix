@@ -61,8 +61,10 @@ test('launch page is a compact responsive monitor with authenticated refresh and
   assert.equal(res.contentType, 'html');
   for (const text of ['Service status', 'Current worker state', 'Discovery periods', 'Last execution', 'Execution history', 'Periods / Scope', 'Export History CSV']) assert.ok(res.body.includes(text));
   assert.doesNotMatch(res.body, /<span class="label">Source<\/span>|latestMetrics|zeroWork/);
-  assert.match(res.body, /academic period/);assert.match(res.body, /\['Previous',scope\.previous\],\['Current',scope\.current\],\['Next',scope\.next\]/);
-  assert.match(res.body, /\.period-chip\{display:inline-flex/);assert.match(res.body, /\.scope\{overflow-wrap:anywhere;white-space:nowrap\}/);
+  assert.match(res.body, /id="discoveryScope" class="discovery-period-value"/);
+  assert.match(res.body, /\.state:before/);assert.match(res.body, /\.discovery-period-value\{font-weight:600;overflow-wrap:anywhere\}/);
+  assert.match(res.body, /\.status-list\{grid-template-columns:repeat\(3,minmax\(0,1fr\)\)/);assert.match(res.body, /\.scope\{overflow-wrap:anywhere;white-space:nowrap\}/);
+  assert.doesNotMatch(res.body, /Previous academic period|Current academic period|Next academic period/);
   assert.doesNotMatch(res.body, />Download CSV</);
   assert.match(res.body, /Authorization:'Bearer '\+ltiToken/); assert.match(res.body, /credentials:'same-origin'/);
   assert.match(res.body, /id="previousPage"/);assert.match(res.body,/id="nextPage"/);assert.match(res.body,/type="date"/); assert.match(res.body, /@media\(max-width:620px\)/);
@@ -134,14 +136,13 @@ test('Refresh renders latest status and 50-row history, including expandable det
   assert.match(elements.updated.textContent, /^Last refreshed /);
 });
 
-test('service discovery scope renders auto, explicit and all modes and uses a neutral fallback', async () => {
+test('service discovery scope shows bold period codes without labels for auto and explicit modes', async () => {
   const payload={availability:'Available',worker:'idle',discoveryPeriods:{mode:'auto',previous:'2602',current:'2701',next:'2702',periods:['2602','2701','2702']},latestExecution:null,executions:[]};
   const elements=await runPage(async()=>({ok:true,async json(){return payload}}));
-  assert.match(elements.discoveryScope.innerHTML,/Previous <strong>2602<\/strong>/);
-  assert.match(elements.discoveryScope.innerHTML,/Current <strong>2701<\/strong>/);
-  assert.match(elements.discoveryScope.innerHTML,/Next <strong>2702<\/strong>/);
+  assert.equal(elements.discoveryScope.textContent,'2602 · 2701 · 2702');
+  assert.doesNotMatch(elements.discoveryScope.textContent,/Previous|Current|Next/);
   const explicit=await runPage(async()=>({ok:true,async json(){return{...payload,discoveryPeriods:{mode:'explicit',periods:['2601','2602']}}}}));
-  assert.match(explicit.discoveryScope.innerHTML,/<strong>2601<\/strong>/);assert.match(explicit.discoveryScope.innerHTML,/<strong>2602<\/strong>/);
+  assert.equal(explicit.discoveryScope.textContent,'2601 · 2602');
   const all=await runPage(async()=>({ok:true,async json(){return{...payload,discoveryPeriods:{mode:'all',periods:[]}}}}));
   assert.equal(all.discoveryScope.textContent,'All periods');
   const invalid=await runPage(async()=>({ok:true,async json(){return {...payload,discoveryPeriods:null}}}));
