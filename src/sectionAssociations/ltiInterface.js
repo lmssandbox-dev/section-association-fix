@@ -30,10 +30,13 @@ section{padding:16px 18px;margin:14px 0}h2{font-size:1.05rem;font-weight:650;let
 }
 .execution-summary:before{left:5px;width:7px;height:7px;border-width:1.75px;transition:none}.execution[open] .execution-summary:before{transform:translateY(-50%) rotate(45deg)}
 .reports-menu>summary:after{content:"";width:7px;height:7px;border-right:1.75px solid currentColor;border-bottom:1.75px solid currentColor;transform:rotate(-45deg);transform-origin:center;color:var(--muted);transition:none}.reports-menu[open]>summary:after{transform:rotate(45deg)}
-</style></head><body><main><header><h1>Section Association Fix</h1><div class="actions"><button id="refresh" type="button">Refresh</button><div class="export-action"><button id="export" class="secondary" type="button">Export History CSV</button><span id="exportFeedback" role="status" aria-live="polite"></span></div></div></header>
-<section aria-labelledby="service-heading"><h2 id="service-heading">Service status</h2><div class="status-list"><div><span class="label">Availability</span><span id="availability" class="state unknown" role="status">Loading</span></div><div><span class="label">Current worker state</span><span id="worker" class="state unknown" role="status">Loading</span></div><div><span class="label">Discovery periods</span><span id="discoveryScope" class="discovery-period-value">—</span></div></div>
+.service-title{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.service-title h2{margin:0}.health-open{padding:4px 8px!important;font-size:.82rem!important}.health-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px 18px}.health-value{font-weight:600;overflow-wrap:anywhere}.health-counts{display:flex;gap:7px;flex-wrap:wrap;margin:10px 0}.health-count{border:1px solid var(--line);border-radius:3px;padding:3px 7px;font-size:.8rem}.health-count strong{margin-left:4px}.health-details{margin-top:12px;border-top:1px solid var(--line);padding-top:10px}.health-details summary{cursor:pointer;font-weight:600}.health-table-wrap{overflow-x:auto;margin-top:9px}.health-table{border-collapse:collapse;width:100%;min-width:1050px;font-size:.82rem}.health-table th,.health-table td{border-bottom:1px solid var(--line);padding:8px;text-align:left;vertical-align:top}.health-table th{color:var(--muted);font-weight:600}.health-table a{color:var(--accent)}.health-actions{display:flex;align-items:center;gap:10px;margin-top:12px}.health-feedback{font-size:.84rem;color:var(--muted)}.health-feedback.error{color:var(--bad)}.health-status{font-weight:650}.health-status.healthy{color:var(--ok)}.health-status.critical,.health-status.unknown,.health-status.at-risk{color:var(--bad)}.health-status.update-available{color:#795000}
+@media(max-width:620px){.service-title{align-items:flex-start;flex-wrap:wrap}.health-grid{grid-template-columns:1fr}.health-actions{align-items:flex-start;flex-direction:column}}
+</style></head><body><main><header><h1>Section Association Fix</h1><div id="dashboardActions" class="actions"><button id="refresh" type="button">Refresh</button><div class="export-action"><button id="export" class="secondary" type="button">Export History CSV</button><span id="exportFeedback" role="status" aria-live="polite"></span></div></div></header>
+<div id="dashboardView"><section aria-labelledby="service-heading"><div class="service-title"><h2 id="service-heading">Service status</h2><button id="apiHealthOpen" class="secondary health-open" type="button">API Health Check</button></div><div class="status-list"><div><span class="label">Availability</span><span id="availability" class="state unknown" role="status">Loading</span></div><div><span class="label">Current worker state</span><span id="worker" class="state unknown" role="status">Loading</span></div><div><span class="label">Discovery periods</span><span id="discoveryScope" class="discovery-period-value">—</span></div></div>
 <div id="latest" class="latest" hidden><span class="label">Last execution</span><span id="latestDate" class="value">—</span><span id="outcome" class="outcome" role="status" aria-label="Execution outcome">—</span><span id="latestMessage" class="latest-message">—</span></div><p id="emptyLatest" class="empty" hidden>No maintenance execution recorded yet.</p></section>
 <section aria-labelledby="history-heading"><div class="history-header"><h2 id="history-heading">Execution history</h2><span id="updated" aria-live="polite">Not updated yet</span></div><form id="dateFilters" class="date-filters"><label>From <input id="fromDate" type="date"></label><label>To <input id="toDate" type="date"></label><button type="submit" class="secondary">Apply</button><button id="clearFilters" type="button" class="secondary">Clear</button><span id="filterError" role="status" aria-live="polite"></span></form><div role="table" aria-label="Maintenance executions" class="history-table"><div role="rowgroup"><div role="row" class="history-row history-head"><span role="columnheader">Date and time</span><span role="columnheader">Periods / Scope</span><span role="columnheader">Outcome</span><span role="columnheader" class="numeric">Checked</span><span role="columnheader" class="numeric">Corrections</span><span role="columnheader" class="numeric">Errors</span></div></div><p id="historyEmpty" class="empty" hidden>No executions recorded yet.</p><div id="history" role="rowgroup"></div></div><nav class="pagination" aria-label="Execution history pages"><button id="previousPage" class="secondary" type="button">Previous</button><span id="pageNumber" aria-live="polite">Page 1</span><button id="nextPage" class="secondary" type="button">Next</button></nav></section><p id="notice" role="status" aria-live="polite"></p>
+</div><section id="apiHealthView" aria-labelledby="apiHealthHeading" hidden><div class="history-header"><h2 id="apiHealthHeading" tabindex="-1">API Health Check</h2><button id="apiHealthBack" class="secondary" type="button">Back to Dashboard</button></div><div class="health-grid"><div><span class="label">Learning Platform configured version</span><span id="healthConfigured" class="health-value">—</span></div><div><span class="label">Latest tenant-supported LP version</span><span id="healthLatest" class="health-value">—</span></div><div><span class="label">Overall API version health</span><span id="healthOverall" class="health-value health-status">Unknown</span></div><div><span class="label">Last successful check</span><span id="healthChecked" class="health-value">—</span></div><div><span class="label">Evidence freshness</span><span id="healthFreshness" class="health-value">Unknown</span></div></div><div id="healthCounts" class="health-counts" aria-label="Endpoint counts"></div><div class="health-actions"><button id="healthRun" type="button" class="secondary">Run Check</button><span id="healthFeedback" class="health-feedback" role="status" aria-live="polite"></span></div><details id="healthDetails" class="health-details"><summary>Endpoint Details</summary><div class="health-table-wrap"><table class="health-table"><thead><tr><th>Component</th><th>Method</th><th>Endpoint pattern</th><th>Configured</th><th>Minimum</th><th>Version Health</th><th>Contract Verification</th><th>Purpose</th><th>Risk / action</th><th>Documentation</th></tr></thead><tbody id="healthEndpointRows"></tbody></table></div></details></section><p id="notice" role="status" aria-live="polite"></p>
 </main><script>
 const ltiToken=__LTI_TOKEN__;
 function set(id,value){document.getElementById(id).textContent=value}
@@ -97,11 +100,39 @@ async function refresh(){
     renderState('availability','Unavailable',true);renderState('worker','Unavailable');renderDiscoveryPeriods(null);
   }
 }
+function healthClass(value){return String(value||'Unknown').toLowerCase().replace(/\s+/g,'-')}
+function renderApiHealth(data){
+  const successful=data?.latestSuccessful,configured=successful?.configuredVersion||data?.configuredVersion||'—';
+  set('healthConfigured',configured);set('healthLatest',successful?.latestSupportedVersion||'—');
+  const overall=document.getElementById('healthOverall'),status=data?.currentStatus||'Unknown';overall.textContent=status;overall.className='health-value health-status '+healthClass(status);
+  set('healthChecked',successful?.assessedAt?formatDate(successful.assessedAt):'—');
+  set('healthFreshness',data?.stale?'Stale or unavailable':status==='Unknown'?'Unknown':'Current');
+  const counts=data?.counts||{};document.getElementById('healthCounts').innerHTML=['Healthy','Update Available','At Risk','Critical','Unknown'].map(name=>'<span class="health-count">'+safe(name)+'<strong>'+safe(count(counts[name]))+'</strong></span>').join('');
+  const rows=Array.isArray(data?.endpoints)?data.endpoints:[];
+  document.getElementById('healthEndpointRows').innerHTML=rows.map(endpoint=>{
+    const docs=Array.isArray(endpoint.docs)?endpoint.docs:[];
+    const links=docs.map(url=>{try{const parsed=new URL(url);if(parsed.protocol!=='https:')return '';return '<a href="'+safe(parsed.href)+'" target="_blank" rel="noopener">D2L docs</a>'}catch{return ''}}).filter(Boolean).join('<br>')||'—';
+    const state=endpoint.versionHealth||'Unknown';
+    return '<tr><td>'+safe(endpoint.component||'—')+'</td><td>'+safe(endpoint.method||'—')+'</td><td><code>'+safe(endpoint.route||'—')+'</code></td><td>'+safe(endpoint.configuredVersion||'—')+'</td><td>'+safe(endpoint.minimumVersion||'Unknown')+'</td><td><span class="health-status '+healthClass(state)+'">'+safe(state)+'</span></td><td>'+safe(endpoint.contractVerification||'Not Verified')+'</td><td>'+safe(endpoint.purpose||'—')+'</td><td>'+safe(endpoint.riskExplanation||'No endpoint-specific risk documented.')+'</td><td>'+links+'</td></tr>'
+  }).join('');
+}
+async function loadApiHealth(){
+  set('healthFeedback','Loading cached results…');document.getElementById('healthRun').disabled=true;
+  try{const response=await fetch('/api/section-association/api-health',{credentials:'same-origin',headers:{Accept:'application/json',Authorization:'Bearer '+ltiToken}});if(!response.ok)throw new Error('unavailable');renderApiHealth(await response.json());set('healthFeedback','');}
+  catch{set('healthFeedback','Cached API Health Check results are unavailable. Retry shortly.');document.getElementById('healthFeedback').className='health-feedback error'}
+  finally{document.getElementById('healthRun').disabled=false}
+}
+async function runApiHealth(){
+  const button=document.getElementById('healthRun');button.disabled=true;set('healthFeedback','Running tenant version check…');document.getElementById('healthFeedback').className='health-feedback';
+  try{const response=await fetch('/api/section-association/api-health/run',{method:'POST',credentials:'same-origin',headers:{Accept:'application/json','Content-Type':'application/json','X-Requested-With':'XMLHttpRequest',Authorization:'Bearer '+ltiToken},body:'{}'});const payload=await response.json().catch(()=>({}));if(payload.health)renderApiHealth(payload.health);if(response.status===429)set('healthFeedback','Run Check is cooling down. Try again after '+formatDate(payload.result?.retryAfter)+'.');else if(response.status===409)set('healthFeedback','Another assessment is already running.');else if(!response.ok||payload.result?.status==='failed'){set('healthFeedback','The check failed. Current health is Unknown; previous successful evidence is retained.');document.getElementById('healthFeedback').className='health-feedback error'}else if(payload.result?.status==='completed'){set('healthFeedback','Check completed at '+formatDate(payload.health?.latestSuccessful?.assessedAt));}else{set('healthFeedback','Check could not start. Retry shortly.');document.getElementById('healthFeedback').className='health-feedback error'}}
+  catch{set('healthFeedback','Could not reach the API Health Check service. Retry shortly.');document.getElementById('healthFeedback').className='health-feedback error'}finally{button.disabled=false}
+}
 async function exportCsv(){exportMessage('Preparing CSV…');try{const response=await fetch('/api/section-association/executions.csv',{credentials:'same-origin',headers:{Accept:'text/csv',Authorization:'Bearer '+ltiToken}});if(!response.ok){exportMessage(response.status===401?'Session expired. Relaunch Brightspace.':response.status===403?'Deployment not authorized.':'CSV export failed. Retry.','error');return}const blob=await response.blob(),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=response.headers.get('Content-Disposition')?.match(/filename="?([^";]+)"?/i)?.[1]||'section-association-executions.csv';link.click();URL.revokeObjectURL(url);exportMessage('CSV downloaded.','success')}catch{exportMessage('Could not download CSV. Retry.','error')}}
 async function exportAudit(kind,executionId,feedback){const show=(message,type='')=>exportMessage(message,type,feedback);show('Preparing CSV…');try{const response=await fetch('/api/section-association/'+kind+'.csv?executionId='+encodeURIComponent(executionId),{credentials:'same-origin',headers:{Accept:'text/csv',Authorization:'Bearer '+ltiToken}});if(!response.ok){show(response.status===401?'Session expired. Relaunch Brightspace.':response.status===403?'Deployment not authorized.':'CSV export failed. Retry.','error');return}const blob=await response.blob(),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=response.headers.get('Content-Disposition')?.match(/filename="?([^";]+)"?/i)?.[1]||'section-association-'+kind+'.csv';link.click();URL.revokeObjectURL(url);show('CSV downloaded.','success')}catch{show('Could not download CSV. Retry.','error')}}
 document.getElementById('history').addEventListener('click',event=>{const button=event.target.closest('[data-audit]');if(!button)return;const menu=button.closest('.reports-menu'),entry=button.closest('.report-entry');menu.open=false;menu.querySelector('summary').focus();return exportAudit(button.dataset.audit,button.dataset.execution,entry.querySelector('.report-feedback'))});
 document.addEventListener('click',event=>{if(event.target.closest('.reports-menu'))return;document.querySelectorAll('.reports-menu[open]').forEach(menu=>menu.open=false)});
 document.addEventListener('keydown',event=>{if(event.key!=='Escape')return;const menu=document.querySelector('.reports-menu[open]');if(menu){menu.open=false;menu.querySelector('summary').focus();event.stopPropagation()}});
+if(document.getElementById('apiHealthOpen')){document.getElementById('apiHealthOpen').addEventListener('click',()=>{document.getElementById('dashboardView').hidden=true;document.getElementById('dashboardActions').hidden=true;document.getElementById('apiHealthView').hidden=false;document.getElementById('apiHealthHeading').focus?.();return loadApiHealth()});document.getElementById('apiHealthBack').addEventListener('click',()=>{document.getElementById('apiHealthView').hidden=true;document.getElementById('dashboardView').hidden=false;document.getElementById('dashboardActions').hidden=false;document.getElementById('apiHealthOpen').focus()});document.getElementById('healthRun').addEventListener('click',runApiHealth)}
 document.getElementById('dateFilters').addEventListener('submit',event=>{event.preventDefault();const from=document.getElementById('fromDate').value,to=document.getElementById('toDate').value;if(from&&to&&from>to){set('filterError','From date must be on or before To date.');return}set('filterError','');currentPage=1;return refresh()});document.getElementById('clearFilters').addEventListener('click',()=>{document.getElementById('fromDate').value='';document.getElementById('toDate').value='';set('filterError','');currentPage=1;return refresh()});document.getElementById('previousPage').addEventListener('click',()=>{if(currentPage>1){currentPage--;return refresh()}});document.getElementById('nextPage').addEventListener('click',()=>{if(hasMore){currentPage++;return refresh()}});document.getElementById('refresh').addEventListener('click',refresh);document.getElementById('export').addEventListener('click',exportCsv);refresh();
 </script></body></html>`;
 
@@ -143,7 +174,7 @@ function auditCsvCell(value) {
   return `"${text.replace(/"/g, '""')}"`;
 }
 
-function registerSectionAssociationLtiInterface(provider, { deploymentId, getStatus, getExecutionHistory, getExecutionAudit, getAuditAvailability }) {
+function registerSectionAssociationLtiInterface(provider, { deploymentId, getStatus, getExecutionHistory, getExecutionAudit, getAuditAvailability, apiHealthService }) {
   const authorize = deploymentGuard(deploymentId);
   provider.app.get('/api/section-association/status', async (req, res) => {
     if (!authorize(res.locals?.token, req, res)) return;
@@ -153,6 +184,22 @@ function registerSectionAssociationLtiInterface(provider, { deploymentId, getSta
       res.set('Cache-Control', 'no-store').json(await getStatus(parsed));
     }
     catch { res.status(503).json({ availability: 'Unavailable', worker: 'Unavailable', latestExecution: null, executions: [] }); }
+  });
+  provider.app.get('/api/section-association/api-health', async (req, res) => {
+    if (!authorize(res.locals?.token, req, res)) return;
+    if (!apiHealthService) return res.status(503).json({ error: 'API Health Check is unavailable.' });
+    try { res.set('Cache-Control', 'no-store').json(await apiHealthService.getCached()); }
+    catch { res.status(503).json({ error: 'API Health Check results are temporarily unavailable.' }); }
+  });
+  provider.app.post('/api/section-association/api-health/run', async (req, res) => {
+    if (!authorize(res.locals?.token, req, res)) return;
+    if (!sameOriginRequest(req)) return res.status(403).json({ error: 'Request integrity check failed.' });
+    if (!apiHealthService) return res.status(503).json({ error: 'API Health Check is unavailable.' });
+    try {
+      const result = await apiHealthService.runManual();
+      const status = result.status === 'cooldown' ? 429 : result.status === 'busy' ? 409 : 200;
+      res.set('Cache-Control', 'no-store').status(status).json({ result, health: await apiHealthService.getCached() });
+    } catch { res.status(503).json({ error: 'API Health Check could not be completed.' }); }
   });
   provider.app.get('/api/section-association/executions.csv', async (req, res) => {
     if (!authorize(res.locals?.token, req, res)) return;
@@ -197,6 +244,16 @@ function registerSectionAssociationLtiInterface(provider, { deploymentId, getSta
   });
 }
 
+function sameOriginRequest(req) {
+  const origin = req.get?.('origin') || req.headers?.origin;
+  const host = req.get?.('host') || req.headers?.host;
+  const fetchSite = req.get?.('sec-fetch-site') || req.headers?.['sec-fetch-site'];
+  const requestedWith = req.get?.('x-requested-with') || req.headers?.['x-requested-with'];
+  if (typeof origin !== 'string' || typeof host !== 'string' || requestedWith !== 'XMLHttpRequest') return false;
+  try { const parsed = new URL(origin); return parsed.protocol === 'https:' && parsed.host === host && (!fetchSite || fetchSite === 'same-origin'); }
+  catch { return false; }
+}
+
 function parseHistoryQuery(query) {
   const pageRaw = query.page === undefined ? '1' : query.page;
   if (typeof pageRaw !== 'string' || !/^[1-9]\d*$/.test(pageRaw) || !Number.isSafeInteger(Number(pageRaw)) || Number(pageRaw) > Math.floor(Number.MAX_SAFE_INTEGER / 50)) return { error: 'Page must be a positive integer.' };
@@ -221,4 +278,4 @@ function saoPauloMidnight(dateText) {
   return new Date(instant);
 }
 
-module.exports = { registerSectionAssociationLtiInterface, pageForLaunch, CSV_COLUMNS, csvCell, AUDIT_COLUMNS, auditCsvCell };
+module.exports = { registerSectionAssociationLtiInterface, pageForLaunch, CSV_COLUMNS, csvCell, AUDIT_COLUMNS, auditCsvCell, sameOriginRequest };

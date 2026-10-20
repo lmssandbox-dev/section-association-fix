@@ -8,6 +8,7 @@ const { createSectionAssociationClient } = require('./client');
 const { createSectionAssociationStore } = require('./store');
 const { createReconciler } = require('./reconciler');
 const { createSectionAssociationService } = require('./service');
+const { createApiHealthService } = require('./apiHealth');
 const { discoveryPeriodsConfiguration } = require('./config');
 
 function createSectionAssociationRuntime({ env = process.env, http, logger = console }) {
@@ -36,7 +37,10 @@ function createSectionAssociationRuntime({ env = process.env, http, logger = con
   const reconciler = createReconciler({ client, store, dryRun, logger });
   const service = createSectionAssociationService({ client, store, reconciler, stabilityMinutes,
     recoveryIntervalHours, maxReconciliationsPerRun, completedReverifyHours, discoveryConfiguration, logger });
+  const apiHealthService = createApiHealthService({ get, http: apiHttp, oauth, baseUrl: env.BS_URL,
+    configuredVersion: env.D2L_API_LP_VERSION, store, logger });
   return { oauth, apiGate, client, store, reconciler, service, namespace, dryRun,
+    apiHealthService,
     fastIntervalMinutes, recoveryIntervalHours, maxReconciliationsPerRun, completedReverifyHours, discoveryConfiguration,
     async close() { await Promise.allSettled([store.close(), apiGate.close()]); } };
 }

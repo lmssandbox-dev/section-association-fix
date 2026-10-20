@@ -2,7 +2,7 @@
 
 const { startSectionAssociationScheduler } = require('./scheduler');
 
-function startSectionAssociationTrigger({ mode, service, store, fastIntervalMinutes, recoveryIntervalHours, logger = console,
+function startSectionAssociationTrigger({ mode, service, store, apiHealthService, fastIntervalMinutes, recoveryIntervalHours, logger = console,
   scheduler = startSectionAssociationScheduler }) {
   if (mode === 'cron') {
     logger.log?.('[section-association] trigger mode=cron internal scheduler disabled');
@@ -10,7 +10,7 @@ function startSectionAssociationTrigger({ mode, service, store, fastIntervalMinu
   }
   if (mode !== 'internal') throw new Error('SECTION_ASSOCIATION_FIX_TRIGGER_MODE must be either cron or internal.');
   logger.log?.('[section-association] trigger mode=internal');
-  return scheduler({ service, store, fastIntervalMinutes, recoveryIntervalHours });
+  return scheduler({ service, store, apiHealthService, fastIntervalMinutes, recoveryIntervalHours });
 }
 
 module.exports = { startSectionAssociationTrigger };

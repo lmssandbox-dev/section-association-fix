@@ -22,6 +22,7 @@ async function main(env = process.env, dependencies = {}) {
     if (missingScopes.length) throw new Error(`BS_OAUTH2_SCOPES must include: ${missingScopes.join(', ')}`);
     runtime = (dependencies.createRuntime || createSectionAssociationRuntime)({ env, http: axios });
     const result = await (dependencies.runCron || runSectionAssociationCron)({ service: runtime.service, store: runtime.store,
+      apiHealthService: runtime.apiHealthService,
       recoveryIntervalHours: runtime.recoveryIntervalHours, maxReconciliationsPerRun: runtime.maxReconciliationsPerRun,
       source: maintenanceSource(dependencies.argv || process.argv) });
     return result.exitCode;

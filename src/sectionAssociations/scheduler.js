@@ -3,7 +3,7 @@
 const { logEvent, safeErrorFields } = require('./log');
 const { startMaintenanceExecution, buildMaintenanceExecutionSummary, persistMaintenanceExecution } = require('./executionSummary');
 
-function startSectionAssociationScheduler({ service, store, fastIntervalMinutes, recoveryIntervalHours,
+function startSectionAssociationScheduler({ service, store, apiHealthService, fastIntervalMinutes, recoveryIntervalHours,
   setIntervalFn = setInterval, clearIntervalFn = clearInterval, logger = console }) {
   const fastIntervalMs = fastIntervalMinutes * 60000;
   const recoveryIntervalMs = recoveryIntervalHours * 60 * 60000;
@@ -69,6 +69,7 @@ function startSectionAssociationScheduler({ service, store, fastIntervalMinutes,
       if (store) await persistMaintenanceExecution(store, buildMaintenanceExecutionSummary(execution,
         { status: result?.status || (result?.failed ? 'failed' : 'completed'), results: result ? [result] : [] }), logger);
       fastRunning = false;
+      if (apiHealthService?.runIfDue) void Promise.resolve().then(() => apiHealthService.runIfDue()).catch(() => null);
     }
   }
 

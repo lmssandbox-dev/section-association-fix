@@ -73,3 +73,12 @@ test('recovery failure does not advance persisted recovery state', async () => {
   assert.deepEqual(await h.run(), { status: 'failed', exitCode: 1 });
   assert.equal(h.calls.includes('mark'), false);
 });
+
+test('cron health assessment failure does not fail or change reconciliation processing', async()=>{
+  const h=setup();let checks=0;
+  const result=await runSectionAssociationCron({service:h.service,store:h.store,recoveryIntervalHours:4,
+    apiHealthService:{async runIfDue(){checks++;throw new Error('private health diagnostic')}},
+    logger:{info(){},warn(){},error(){}},setIntervalFn(callback,ms){return{callback,ms}},clearIntervalFn(){}});
+  assert.deepEqual(result,{status:'completed',exitCode:0});assert.equal(checks,1);
+  assert.deepEqual(h.calls,['acquire','fast','due','release']);
+});

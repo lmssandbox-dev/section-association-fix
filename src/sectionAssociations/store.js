@@ -2,6 +2,7 @@
 
 const { MongoClient } = require('mongodb');
 const { randomUUID } = require('node:crypto');
+const { HISTORY_LIMIT } = require('./apiHealth');
 
 const DISCOVERY_BATCH_SIZE = 500;
 
@@ -342,6 +343,54 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
     const summary = await meta.findOne({ _id: `maintenance-history:${namespace}:${String(executionId)}` }, { projection: { detailedAuditAvailable: 1 } });
     return summary?.detailedAuditAvailable === true;
   }
+  const apiHealthId = `api-health:${namespace}`;
+  async function getApiHealthState() {
+    const { meta } = await collections();
+    const state = await meta.findOne({ _id: apiHealthId });
+    if (!state) return null;
+    const { _id, namespace: _namespace, ...safe } = state;
+    return safe;
+  }
+  async function acquireApiHealthLease(mode, leaseMs, cooldownMs, nowMs = now()) {
+    if (!['manual', 'automatic'].includes(mode)) throw new Error('Invalid API Health Check mode.');
+    const { meta } = await collections();
+    const time = new Date(nowMs);
+    const token = randomUUID();
+    const free = { $or: [{ leaseUntil: { $lte: time } }, { leaseUntil: { $exists: false } }] };
+    const manualReady = mode === 'manual' ? { $or: [{ lastManualAt: { $lte: new Date(nowMs - cooldownMs) } }, { lastManualAt: { $exists: false } }] } : null;
+    try {
+      const result = await meta.findOneAndUpdate({ _id: apiHealthId, $and: manualReady ? [free, manualReady] : [free] },
+        { $set: { namespace, leaseToken: token, leaseUntil: new Date(nowMs + leaseMs), lastAttemptAt: time,
+          lastAttemptMode: mode, ...(mode === 'manual' ? { lastManualAt: time } : { lastAutomaticAttemptAt: time }) } },
+        { upsert: true, returnDocument: 'after' });
+      if (result.value?.leaseToken === token) return { token };
+    } catch (error) { if (error.code !== 11000) throw error; }
+    const state = await meta.findOne({ _id: apiHealthId }, { projection: { leaseUntil: 1, lastManualAt: 1 } });
+    if (state?.leaseUntil && state.leaseUntil > time) return { reason: 'busy', retryAfter: state.leaseUntil };
+    if (mode === 'manual' && state?.lastManualAt && nowMs - state.lastManualAt.getTime() < cooldownMs) {
+      return { reason: 'cooldown', retryAfter: new Date(state.lastManualAt.getTime() + cooldownMs) };
+    }
+    return { reason: 'busy' };
+  }
+  async function saveApiHealthResult(token, mode, result) {
+    const { meta } = await collections();
+    const attemptedAt = result.attemptedAt instanceof Date ? result.attemptedAt : new Date(result.attemptedAt);
+    const fields = { lastAttemptAt: attemptedAt, lastAttemptMode: mode,
+      lastAttemptStatus: result.status, inventoryRevision: result.inventoryRevision || result.assessment?.inventoryRevision };
+    if (result.status === 'success') {
+      fields.latestSuccessful = result.assessment;
+      fields.currentHealth = { status: result.assessment.versionHealth, assessedAt: result.assessment.assessedAt,
+        inventoryRevision: result.assessment.inventoryRevision };
+    } else {
+      fields.lastFailure = result.failure;
+      fields.currentHealth = { status: 'Unknown', reason: result.failure?.errorCode || 'API_HEALTH_CHECK_FAILED', assessedAt: attemptedAt,
+        inventoryRevision: result.inventoryRevision };
+    }
+    const update = { $set: fields, $unset: { leaseToken: '', leaseUntil: '' } };
+    if (result.status === 'success') update.$push = { history: { $each: [result.assessment], $slice: -HISTORY_LIMIT } };
+    const saved = await meta.updateOne({ _id: apiHealthId, namespace, leaseToken: token }, update);
+    if (!saved.matchedCount) throw new Error('API Health Check lease was lost.');
+  }
   async function recentMaintenanceExecutions(limit = 50, options = {}) {
     const { meta } = await collections();
     const page = Number.isSafeInteger(options.page) && options.page > 0 ? options.page : 1;
@@ -377,7 +426,7 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
     lastFullDiscoveryAt, markFullDiscoveryCompleted,
     acquireCronLease, renewCronLease, releaseCronLease, cronLeaseStatus, recoveryDue, markRecoveryCompleted,
     saveMaintenanceExecution, latestMaintenanceExecution, recentMaintenanceExecutions, allMaintenanceExecutions,
-    recordAudit, executionAudit, auditAvailability, close };
+    recordAudit, executionAudit, auditAvailability, getApiHealthState, acquireApiHealthLease, saveApiHealthResult, close };
 }
 
 module.exports = { createSectionAssociationStore };

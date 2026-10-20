@@ -40,7 +40,7 @@ lti.setup(APP_LTI_SECRET, databaseConfig(DB_MONGODB_URL), {
   appRoute: '/', loginRoute: '/login', cookies: { secure: true, sameSite: 'None' }, devMode: false
 });
 installPublicBootstrapEndpoints(lti, oauth.jwks);
-registerSectionAssociationLtiInterface(lti, { deploymentId: env.BS_LTI_DEPLOYMENT_ID,
+registerSectionAssociationLtiInterface(lti, { deploymentId: env.BS_LTI_DEPLOYMENT_ID, apiHealthService: runtime.apiHealthService,
   getExecutionHistory: () => runtime.store.allMaintenanceExecutions(),
   getExecutionAudit: (executionId, kind) => runtime.store.executionAudit(executionId, kind),
   getAuditAvailability: executionId => runtime.store.auditAvailability(executionId),
@@ -69,6 +69,7 @@ async function start() {
     else console.log('LTI setup mode: Brightspace LTI registration is not fully configured.');
     console.log(`Section Association Fix service listening on ${port}; dry-run=${dryRun}.`);
     sectionAssociationScheduler = startSectionAssociationTrigger({ mode: triggerMode, service, store: runtime.store,
+      apiHealthService: runtime.apiHealthService,
       fastIntervalMinutes: fastMinutes, recoveryIntervalHours: recoveryHours });
     if (ltiConfig.complete) {
       try { await registerBrightspacePlatform(lti, ltiConfig); }

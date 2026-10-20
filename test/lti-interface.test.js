@@ -7,7 +7,7 @@ const { registerSectionAssociationLtiInterface, pageForLaunch, csvCell, auditCsv
 
 function setup(getStatus = async () => ({ availability: 'Available', worker: 'idle', latestExecution: null, executions: [] }), getExecutionHistory = async function *() {}) {
   const routes = {}; let onConnect;
-  const provider = { app: { get(path, handler) { routes[path] = handler; } }, onConnect(handler) { onConnect = handler; } };
+  const provider = { app: { get(path, handler) { routes[path] = handler; }, post(path, handler) { routes[path] = handler; } }, onConnect(handler) { onConnect = handler; } };
   registerSectionAssociationLtiInterface(provider, { deploymentId: 'deployment-1', getStatus, getExecutionHistory });
   return { routes, onConnect };
 }
@@ -33,6 +33,43 @@ test('status route returns no-cache status only after deployment verification', 
   const denied = response(); denied.locals.token = { deploymentId: 'other' };
   await routes['/api/section-association/status']({}, denied);
   assert.equal(denied.statusCode, 403); assert.equal(reads, 1);
+});
+
+test('API Health Check read route returns cached results and manual route enforces LTI deployment plus request integrity', async () => {
+  const routes = {};
+  let manualCalls = 0, cachedCalls = 0;
+  const provider = { app: { get(path, handler) { routes['GET '+path] = handler; }, post(path, handler) { routes['POST '+path] = handler; } }, onConnect() {} };
+  const apiHealthService = { async getCached() { cachedCalls++; return { currentStatus: 'Unknown', stale: true }; },
+    async runManual() { manualCalls++; return { status: 'completed' }; } };
+  registerSectionAssociationLtiInterface(provider, { deploymentId: 'deployment-1', apiHealthService,
+    getStatus: async () => ({}), getExecutionHistory: async function *() {} });
+  const route='/api/section-association/api-health';
+  const unauthorized=response();await routes['GET '+route]({},unauthorized);assert.equal(unauthorized.statusCode,403);assert.equal(cachedCalls,0);
+  const read=response();read.locals.token={deploymentId:'deployment-1'};await routes['GET '+route]( {},read);
+  assert.equal(cachedCalls,1);assert.equal(read.headers['Cache-Control'],'no-store');assert.equal(read.body.currentStatus,'Unknown');
+  const badPost=response();badPost.locals.token={deploymentId:'deployment-1'};
+  await routes['POST '+route+'/run']({headers:{origin:'https://evil.example',host:'app.example','x-requested-with':'XMLHttpRequest'}},badPost);
+  assert.equal(badPost.statusCode,403);assert.equal(manualCalls,0);
+  const goodPost=response();goodPost.locals.token={deploymentId:'deployment-1'};
+  await routes['POST '+route+'/run']({protocol:'https',headers:{origin:'https://app.example',host:'app.example','x-requested-with':'XMLHttpRequest','sec-fetch-site':'same-origin'}},goodPost);
+  assert.equal(manualCalls,1);assert.equal(goodPost.statusCode,200);assert.equal(goodPost.headers['Cache-Control'],'no-store');
+});
+
+test('API Health Check view is reachable in the existing page with expandable endpoint evidence', () => {
+  const page=pageForLaunch('signed-lti-token');
+  for(const expected of ['id="apiHealthOpen"','API Health Check','id="apiHealthView"','Back to Dashboard','Run Check','Endpoint Details',
+    'Minimum','Version Health','Contract Verification','X-Requested-With','/api/section-association/api-health']) assert.ok(page.includes(expected),expected);
+  assert.match(page,/overflow-x:auto/);assert.match(page,/@media\(max-width:620px\)/);
+});
+
+test('API Health Check button navigates in-page and uses cached GET results', async()=>{
+  const requests=[];
+  const elements=await runPage(async(url,options)=>{requests.push({url,options});return{ok:true,async json(){return url==='/api/section-association/api-health'?{currentStatus:'Unknown',stale:true,counts:{Unknown:6},endpoints:[]}:{availability:'Available',worker:'idle',latestExecution:null,executions:[]}}}});
+  await elements.apiHealthOpen.listeners.click();
+  assert.equal(elements.dashboardView.hidden,true);assert.equal(elements.dashboardActions.hidden,true);assert.equal(elements.apiHealthView.hidden,false);
+  assert.equal(requests[1].url,'/api/section-association/api-health');assert.equal(requests[1].options.method,undefined);
+  assert.equal(elements.healthOverall.textContent,'Unknown');assert.equal(elements.healthFreshness.textContent,'Stale or unavailable');
+  elements.apiHealthBack.listeners.click();assert.equal(elements.dashboardView.hidden,false);assert.equal(elements.dashboardActions.hidden,false);assert.equal(elements.apiHealthView.hidden,true);
 });
 
 test('status route reports temporary status-source failures', async () => {
@@ -118,11 +155,11 @@ const execution = { executionId: 'run-1', source: 'manual', startedAt: '2026-10-
 
 async function runPage(fetchImpl) {
   const script = pageForLaunch('signed-lti-token').match(/<script>([\s\S]*?)<\/script>/)[1];
-  const ids = ['availability','worker','discoveryScope','latest','latestDate','outcome','latestMessage','emptyLatest','historyEmpty','history','updated','notice','refresh','export','exportFeedback','dateFilters','fromDate','toDate','clearFilters','filterError','previousPage','nextPage','pageNumber'];
+  const ids = ['availability','worker','discoveryScope','latest','latestDate','outcome','latestMessage','emptyLatest','historyEmpty','history','updated','notice','refresh','export','exportFeedback','dateFilters','fromDate','toDate','clearFilters','filterError','previousPage','nextPage','pageNumber','apiHealthOpen','apiHealthView','apiHealthHeading','apiHealthBack','healthConfigured','healthLatest','healthOverall','healthChecked','healthFreshness','healthCounts','healthRun','healthFeedback','healthEndpointRows','dashboardView','dashboardActions'];
   let finish; const finished = new Promise(resolve => { finish = resolve; });const timers=[];
   const summary={focused:false,focus(){this.focused=true}},reportMenu={open:true,querySelector(){return summary}},reportFeedback={textContent:'',className:''},reportEntry={querySelector(){return reportFeedback}};
   const links=[];
-  const elements = Object.fromEntries(ids.map(id => [id, { value: '', hidden: ['latest','emptyLatest','historyEmpty'].includes(id), className: '', innerHTML: '', listeners: {},
+  const elements = Object.fromEntries(ids.map(id => [id, { value: '', hidden: ['latest','emptyLatest','historyEmpty','apiHealthView'].includes(id), className: '', innerHTML: '', listeners: {},focus(){this.focused=true},
     addEventListener(event, handler) { this.listeners[event] = handler; }, setAttribute(name,value) { this[name]=value; },
     set textContent(value) { this.value = value; if (id === 'notice' && value !== 'Refreshing…') finish(); }, get textContent() { return this.value; } }]));
   const documentListeners={};
@@ -277,7 +314,7 @@ test('CSV endpoint is authenticated, streams all execution rows, and quotes CSV 
 
 test('audit CSV endpoint is authenticated, execution-scoped, empty-report safe, and formula-safe', async () => {
   const routes = {};
-  const provider = { app: { get(path, handler) { routes[path] = handler; } }, onConnect() {} };
+  const provider = { app: { get(path, handler) { routes[path] = handler; }, post(path, handler) { routes[path] = handler; } }, onConnect() {} };
   registerSectionAssociationLtiInterface(provider, { deploymentId: 'deployment-1', getStatus: async()=>({}),
     getAuditAvailability: async id => id === '12345678-1234-1234-1234-123456789abc',
     async *getExecutionAudit() {} });

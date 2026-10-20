@@ -6,7 +6,7 @@ const { startMaintenanceExecution, buildMaintenanceExecutionSummary, persistMain
 async function runSectionAssociationCron({ service, store, recoveryIntervalHours, logger = console,
   now = Date.now, setIntervalFn = setInterval, clearIntervalFn = clearInterval,
   leaseMs = 10 * 60 * 1000, heartbeatMs = 60 * 1000, maxReconciliationsPerRun = 50,
-  source = 'automatic' }) {
+  source = 'automatic', apiHealthService }) {
   const startedAt = now();
   const execution = startMaintenanceExecution(source, now);
   logEvent(logger, 'info', 'cron started');
@@ -84,6 +84,7 @@ async function runSectionAssociationCron({ service, store, recoveryIntervalHours
     }
     await persistMaintenanceExecution(store, buildMaintenanceExecutionSummary(execution,
       { status: executionStatus, results, executionErrors, now }), logger);
+    if (apiHealthService?.runIfDue) await Promise.resolve().then(() => apiHealthService.runIfDue()).catch(() => null);
   }
 }
 

@@ -101,3 +101,15 @@ test('internal scheduled cycles use and release the shared Mongo lease', async (
   await scheduler.initialFastCycle;
   assert.deepEqual(calls, ['acquire:internal', 'fast', 'release:lease']);
 });
+
+test('automatic API Health Check failure stays isolated from the internal reconciliation tick', async () => {
+  let fastCalls=0,healthCalls=0;
+  const {scheduler}= (()=>{
+    const scheduler=startSectionAssociationScheduler({service:{async fastTick(){fastCalls++;return{status:'completed'}},async recoveryTick(){}},
+      apiHealthService:{async runIfDue(){healthCalls++;throw new Error('private health failure')}},fastIntervalMinutes:15,recoveryIntervalHours:4,
+      setIntervalFn(callback,milliseconds){return{callback,milliseconds}},clearIntervalFn(){},logger:{info(){},warn(){},error(){}}});
+    return{scheduler};
+  })();
+  await scheduler.initialFastCycle;await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(fastCalls,1);assert.equal(healthCalls,1);assert.equal(scheduler.status().state,'idle');
+});
