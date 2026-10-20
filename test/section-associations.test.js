@@ -198,6 +198,74 @@ test('failed verification creates an exception and no successful correction reco
   assert.equal(audit[0].kind, 'exception'); assert.equal(audit[0].category, 'verification-failed');
 });
 
+test('read failures retain their stage, HTTP status, and available association/target context without writes', async () => {
+  const cases = [
+    { label: 'association detail', override: { async orgUnit() { throw apiRead(404); } }, stage: 'association-read', endpoint: null, status: 404 },
+    { label: 'Group children', override: { async orgUnit() { return { ...association, Name: 'Association Name' }; }, async children() { throw apiRead(404, 'orgstructure-children'); } }, stage: 'children-read', endpoint: 'direct Group children', status: 404 },
+    { label: 'exact code lookup', override: { async orgUnit() { return { ...association, Name: 'Association Name' }; }, async exactCode() { throw apiRead(503, 'exact-org-code'); } }, stage: 'exact-code-lookup', endpoint: 'exact Org Code', status: 503 },
+    { label: 'target offering', override: { async orgUnit() { return { ...association, Name: 'Association Name' }; }, async children() { return [groups[0]]; }, async exactCode(code) { return [{ Identifier: 100, Code: code, Name: 'Original Name', Type: { Code: 'Course Offering' } }]; }, async course() { throw apiRead(404, 'course-offering'); } }, stage: 'target-read', endpoint: 'original Course Offering', status: 404 }
+  ];
+  for (const item of cases) {
+    const { client, writes } = api(item.override); const audit = []; const logger = captureLogger();
+    const result = await createReconciler({ client, store: memoryStore(), dryRun: false, logger })
+      .reconcileAssociation('33664', { execution: { executionId: `failure-${item.stage}`, source: 'manual' }, recordAudit: async row => audit.push(row) });
+    assert.equal(result.status, 'pending', item.label); assert.equal(writes.length, 0, item.label);
+    assert.equal(audit[0].category, 'read-failed', item.label);
+    assert.match(audit[0].explanation, new RegExp(item.endpoint || 'association Course Offering'));
+    assert.match(audit[0].explanation, new RegExp(`HTTP ${item.status}`));
+    assert.ok(logger.lines.some(line => line.includes(`stage=${item.stage}`) && line.includes(`httpStatus=${item.status}`)), item.label);
+    assert.equal(audit[0].parentAssociationName, item.stage === 'association-read' ? '' : 'Association Name');
+    if (item.stage === 'exact-code-lookup') assert.match(audit[0].explanation, /002521-01-2602-GS2-EL1S/);
+    if (item.stage === 'target-read') {
+      assert.equal(audit[0].affectedCourseOfferingD2lId, '100');
+      assert.equal(audit[0].affectedCourseOfferingName, 'Original Name');
+    }
+  }
+});
+
+test('network, timeout, and OAuth errors have safe explanations without invented HTTP status', async () => {
+  for (const [reason, phrase, code] of [['api-network-failed', 'network error', 'ECONNRESET'], ['api-timeout', 'network timeout', 'ETIMEDOUT'], ['oauth-failed', 'OAuth token request failed', 'TOKEN_EXCHANGE_FAILED']]) {
+    const { client } = api({ async orgUnit() { throw Object.assign(new Error('secret=abc https://private.example/path'), { code, reason, ...(reason === 'oauth-failed' ? {} : { status: null }) }); } });
+    const audit = [];
+    const result = await createReconciler({ client, store: memoryStore(), dryRun: false })
+      .reconcileAssociation('33664', { execution: { executionId: `network-${code}`, source: 'manual' }, recordAudit: async row => audit.push(row) });
+    assert.equal(result.status, 'pending'); assert.equal(audit[0].category, 'read-failed');
+    assert.match(audit[0].explanation, new RegExp(phrase)); assert.doesNotMatch(audit[0].explanation, /HTTP \d|abc|private\.example/);
+  }
+});
+
+test('Brightspace read wrapper retains only safe HTTP or known network diagnostics', async () => {
+  const httpError = Object.assign(new Error('private response body token=secret'), { response: { status: 404, data: 'private' }, config: { url: 'https://tenant.example/private?token=secret' } });
+  const client = createSectionAssociationClient({ baseUrl: 'https://tenant.example', lpVersion: '1.60', oauth: {}, http: async () => {}, get: async () => { throw httpError; } });
+  await assert.rejects(client.children('33664'), error => {
+    assert.equal(error.status, 404); assert.equal(error.endpoint, 'orgstructure-children'); assert.equal(error.reason, 'api-read-failed');
+    assert.equal(error.cause, httpError); assert.doesNotMatch(error.message, /private|secret|tenant/); return true;
+  });
+  const networkClient = createSectionAssociationClient({ baseUrl: 'https://tenant.example', lpVersion: '1.60', oauth: {}, http: async () => {},
+    get: async () => { throw Object.assign(new Error('socket reset'), { code: 'ECONNRESET' }); } });
+  await assert.rejects(networkClient.orgUnit('33664'), error => {
+    assert.equal(error.status, null); assert.equal(error.reason, 'api-network-failed'); return true;
+  });
+});
+
+test('PUT and verification GET failures retain distinct exception categories', async () => {
+  const putFailure = api({ async putCourse() { throw Object.assign(new Error('Course Offering update failed.'), { status: 503, reason: 'api-update-failed' }); } });
+  const putAudit = [];
+  const putResult = await createReconciler({ client: putFailure.client, store: memoryStore(), dryRun: false })
+    .reconcileAssociation('33664', { execution: { executionId: 'put-failed', source: 'manual' }, recordAudit: async row => putAudit.push(row) });
+  assert.equal(putResult.status, 'pending'); assert.equal(putFailure.writes.length, 0);
+  assert.equal(putAudit[0].category, 'update-failed'); assert.match(putAudit[0].explanation, /HTTP 503/);
+
+  const verifyFailure = api({ async course(id) { if (this.reads++ >= 3) throw apiRead(502, 'course-offering'); return { ...courseRecord(), IsActive: true }; }, reads: 0 });
+  const verifyAudit = [];
+  const verifyResult = await createReconciler({ client: verifyFailure.client, store: memoryStore(), dryRun: false })
+    .reconcileAssociation('33664', { execution: { executionId: 'verify-failed', source: 'manual' }, recordAudit: async row => verifyAudit.push(row) });
+  assert.equal(verifyResult.status, 'pending'); assert.equal(verifyFailure.writes.length, 1);
+  assert.equal(verifyAudit[0].category, 'verification-failed'); assert.match(verifyAudit[0].explanation, /HTTP 502/);
+});
+
+function apiRead(status, endpoint) { return Object.assign(new Error('Brightspace API read failed'), { code: 'API_READ_FAILED', status, endpoint, reason: 'api-read-failed' }); }
+
 test('all-inactive dry-run records positive verification evidence and completed records are skipped until due', async () => {
   const inactive = api({ course: async () => courseRecord({ IsActive: false }) });
   const store = memoryStore(() => 123456);

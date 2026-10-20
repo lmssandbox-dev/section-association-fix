@@ -15,12 +15,13 @@ const FIELDS = new Set([
   'fastIntervalMinutes', 'recoveryIntervalHours',
   'associationId', 'targetId', 'code', 'children', 'targets', 'action',
   'isActive', 'reason', 'skipped', 'phase', 'code', 'protocolCode', 'httpStatus', 'endpoint', 'elapsedMs', 'status', 'fatal', 'due',
-  'owner', 'expiresAt', 'acquiredAt', 'leaseKey', 'expired'
+  'owner', 'expiresAt', 'acquiredAt', 'leaseKey', 'expired', 'stage'
 ]);
 
 const PHASES = new Set(['discovery', 'database', 'oauth/api-read', 'oauth', 'reconciliation', 'scheduler']);
 const PROTOCOL_CODES = new Set(['invalid_request', 'invalid_client', 'invalid_grant', 'unauthorized_client',
   'unsupported_grant_type', 'invalid_scope', 'server_error', 'temporarily_unavailable']);
+const STAGES = new Set(['association-read', 'children-read', 'exact-code-lookup', 'target-read', 'target-update', 'verification-read']);
 
 function safeValue(key, value, event) {
   if (['candidates', 'discovered', 'new', 'alreadyKnown', 'pending', 'historicalPending', 'completed', 'blocked',
@@ -38,10 +39,11 @@ function safeValue(key, value, event) {
   }
   if (key === 'reason') return /^[a-z0-9-]{1,60}$/.test(String(value)) ? String(value) : 'unknown';
   if (key === 'phase') return PHASES.has(value) ? value : null;
+  if (key === 'stage') return STAGES.has(value) ? value : null;
   if (key === 'protocolCode') return PROTOCOL_CODES.has(value) ? value : null;
   if (key === 'httpStatus') return Number.isInteger(value) && value >= 100 && value <= 599 ? String(value) : null;
   if (key === 'elapsedMs') return Number.isSafeInteger(value) && value >= 0 ? String(value) : null;
-  if (key === 'endpoint') return ['association-candidates', 'oauth-token', 'brightspace-api'].includes(value) ? value : null;
+  if (key === 'endpoint') return ['association-candidates', 'oauth-token', 'brightspace-api', 'association-detail', 'orgstructure-children', 'exact-org-code', 'course-offering'].includes(value) ? value : null;
   if (key === 'status') return ['completed', 'failed', 'skipped'].includes(value) ? value : null;
   if (key === 'fatal') return typeof value === 'boolean' ? String(value) : null;
   if (key === 'due') return typeof value === 'boolean' ? String(value) : null;

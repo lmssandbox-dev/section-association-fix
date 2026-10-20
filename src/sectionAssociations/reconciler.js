@@ -34,20 +34,35 @@ function createReconciler({ client, store, dryRun = true, now = Date.now, logger
     let associationCode = requestedCode || existing?.associationCode || '';
     let childCount = 0;
     let currentTargetId = '';
+    let currentTargetCode = '';
+    let currentTargetName = '';
+    let associationName = '';
+    let stage = 'association-read';
     let writeOutcomeUncertain = false;
     let uncertainLogged = false;
     let writesAttempted = 0;
     let writesVerified = 0;
     let alreadyInactive = 0;
+    async function diagnosed(currentStage, operation, context = {}) {
+      stage = currentStage;
+      try { return await operation(); }
+      catch (error) {
+        error.stage ||= currentStage;
+        for (const [key, value] of Object.entries(context)) if (error[key] == null) error[key] = value;
+        throw error;
+      }
+    }
     if (associationCode) logEvent(logger, 'info', 'reconcile started', { associationId: id, code: associationCode });
     try {
-      const association = await client.orgUnit(id);
+      const association = await diagnosed('association-read', () => client.orgUnit(id), { associationId: id });
       associationCode ||= association?.Code || '';
+      associationName = association?.Name || '';
       if (!requestedCode && !existing?.associationCode) logEvent(logger, 'info', 'reconcile started', { associationId: id, code: associationCode });
       if (association?.Type?.Code !== 'Course Offering') throw blocked('wrong-org-unit-type', 'Org unit is not a valid Section Association Course Offering.');
       if (!isAssociation(association)) throw blocked('invalid-association-code', 'Org unit is not a valid Section Association Course Offering.');
       const actualId = String(association.Identifier ?? association.OrgUnitId ?? '');
       if (actualId !== id) throw blocked('unresolved-target', 'Association ID did not match the requested ID.');
+      stage = 'children-read';
       const targets = await resolveTargets({ association, client, onValidated: result => { childCount = result.childCount; } });
       const auditBase = { executionId: execution?.executionId, source: execution?.source,
         parentAssociationD2lId: id, parentAssociationOrgCode: association.Code || associationCode || '',
@@ -57,7 +72,9 @@ function createReconciler({ client, store, dryRun = true, now = Date.now, logger
       const prepared = [];
       for (const target of targets) {
         currentTargetId = target.id;
-        const current = await client.course(target.id);
+        currentTargetCode = target.code; currentTargetName = target.name || '';
+        const current = await diagnosed('target-read', () => client.course(target.id), { targetId: target.id, targetCode: target.code });
+        currentTargetName ||= current?.Name || '';
         if (current?.IsActive === false) { prepared.push({ target, current, payload: null, status: 'already-inactive' }); alreadyInactive++; }
         else if (current?.IsActive === true) {
           let payload;
@@ -72,6 +89,7 @@ function createReconciler({ client, store, dryRun = true, now = Date.now, logger
       for (const item of prepared) {
         const { target, status: preparedStatus } = item;
         currentTargetId = target.id;
+        currentTargetCode = target.code; currentTargetName = target.name || currentTargetName;
         if (preparedStatus) {
           outcomes.push({ ...target, status: preparedStatus });
           if (dryRun) logEvent(logger, 'info', 'dry-run', { associationId: id, targetId: target.id, code: target.code, action: preparedStatus });
@@ -79,7 +97,8 @@ function createReconciler({ client, store, dryRun = true, now = Date.now, logger
           continue;
         }
         // Re-read immediately before this target's write and build from that current record.
-        const latest = await client.course(target.id);
+        const latest = await diagnosed('target-read', () => client.course(target.id), { targetId: target.id, targetCode: target.code });
+        currentTargetName ||= latest?.Name || '';
         if (latest?.IsActive === false) {
           alreadyInactive++;
           outcomes.push({ ...target, status: 'already-inactive' });
@@ -95,13 +114,13 @@ function createReconciler({ client, store, dryRun = true, now = Date.now, logger
         writeOutcomeUncertain = true;
         writesAttempted++;
         try {
-          await client.putCourse(target.id, payload);
+          await diagnosed('target-update', () => client.putCourse(target.id, payload), { targetId: target.id, targetCode: target.code });
         } catch (writeError) {
           // A failed/lost PUT is never repeated here. Resolve its outcome with one read.
           if (writeError.uncertain) {
             logEvent(logger, 'warn', 'uncertain outcome', { associationId: id, targetId: target.id, action: 'read-back-required' });
             uncertainLogged = true;
-            const afterUncertain = await client.course(target.id);
+            const afterUncertain = await diagnosed('verification-read', () => client.course(target.id), { targetId: target.id, targetCode: target.code });
             if (afterUncertain?.IsActive === false) {
               await recordCorrection(recordAudit, { ...auditBase, execution, target, current: latest });
               writeOutcomeUncertain = false;
@@ -115,7 +134,7 @@ function createReconciler({ client, store, dryRun = true, now = Date.now, logger
           if (!writeError.uncertain) writeOutcomeUncertain = false;
           throw writeError;
         }
-        const verified = await client.course(target.id);
+        const verified = await diagnosed('verification-read', () => client.course(target.id), { targetId: target.id, targetCode: target.code });
         if (verified?.IsActive !== false) {
           writeOutcomeUncertain = false;
           throw Object.assign(new Error(`Course Offering update was not verified: ${target.code}`), { reason: 'verification-failed' });
@@ -142,17 +161,22 @@ function createReconciler({ client, store, dryRun = true, now = Date.now, logger
       if (execution?.executionId && recordAudit) {
         try { await recordAudit({ kind: 'exception', executionId: execution.executionId, source: execution.source,
           timestamp: new Date(now()), parentAssociationD2lId: id, parentAssociationOrgCode: associationCode || '',
-          parentAssociationName: '', affectedCourseOfferingD2lId: currentTargetId || '',
-          affectedCourseOfferingOrgCode: '', affectedCourseOfferingName: '',
-          category: error.validationFailure || error.blocked ? 'validation-blocked' : error.reason === 'verification-failed' ? 'verification-failed' :
-            error.reason === 'api-request-failed' || error.code || error.uncertain ? 'update-failed' : 'processing-error',
-          explanation: safeError(error), finalOutcome: status, recordKey: `exception:${id}:${currentTargetId || 'association'}:${error.reason || status}` }); }
+          parentAssociationName: associationName, affectedCourseOfferingD2lId: currentTargetId || '',
+          affectedCourseOfferingOrgCode: currentTargetCode || error.targetCode || '', affectedCourseOfferingName: currentTargetName,
+          category: classifyError(error, error.stage || stage),
+          explanation: diagnosticExplanation(error, error.stage || stage, id, currentTargetId, currentTargetCode || error.targetCode),
+          finalOutcome: status, recordKey: `exception:${id}:${currentTargetId || 'association'}:${error.reason || error.stage || status}` }); }
         catch (auditError) { execution.auditIncomplete = true; logEvent(logger, 'error', 'audit persistence failed', { associationId: id, kind: 'exception' }); }
       }
       if (error.blocked || error.validationFailure) logEvent(logger, 'warn', 'blocked', { associationId: id, code: associationCode, reason: error.reason || 'validation-failed' });
       else if (writeOutcomeUncertain) {
         if (!uncertainLogged) logEvent(logger, 'warn', 'uncertain outcome', { associationId: id, targetId: currentTargetId, action: 'read-back-required' });
-      } else logEvent(logger, 'warn', 'reconcile failed', { associationId: id, reason: error.reason || 'api-request-failed' });
+        if (error.stage || error.status != null || error.reason) logEvent(logger, 'warn', 'reconcile failed', {
+          associationId: id, stage: error.stage || stage, endpoint: error.endpoint, targetId: currentTargetId || undefined,
+          httpStatus: error.status, reason: error.reason || 'processing-error' });
+      } else logEvent(logger, 'warn', 'reconcile failed', { associationId: id, stage: error.stage || stage,
+        endpoint: error.endpoint, targetId: currentTargetId || undefined, httpStatus: error.status,
+        reason: error.reason || 'processing-error' });
       await store.record(id, { lastCheckedAt: new Date(now()), status, lastError: safeError(error), processedAt: null });
       return { status, error: safeError(error), writesAttempted, writesVerified, alreadyInactive };
     }
@@ -181,6 +205,37 @@ function safeError(error) {
   return String(error?.message || 'Reconciliation failed').replace(/https?:\/\/\S+/g, '[URL]')
     .replace(/(authorization|token|secret|private.?key)\s*[:=]\s*[^\s,;]+/ig, '$1=[REDACTED]')
     .replace(/[\r\n\0-\x1f]/g, ' ').slice(0, 240);
+}
+
+const STAGE_LABELS = {
+  'association-read': 'retrieve association Course Offering',
+  'children-read': 'retrieve direct Group children',
+  'exact-code-lookup': 'resolve original Course Offering by exact Org Code',
+  'target-read': 'retrieve original Course Offering',
+  'target-update': 'update original Course Offering',
+  'verification-read': 'verify updated Course Offering'
+};
+
+function classifyError(error, stage) {
+  if (error.validationFailure || error.blocked) return 'validation-blocked';
+  if (stage === 'verification-read' || error.reason === 'verification-failed') return 'verification-failed';
+  if (stage === 'target-update' || error.uncertain) return 'update-failed';
+  if (error.code === 'API_READ_FAILED' || error.code === 'TOKEN_EXCHANGE_FAILED' ||
+      ['association-read', 'children-read', 'exact-code-lookup', 'target-read'].includes(stage)) return 'read-failed';
+  return 'processing-error';
+}
+
+function diagnosticExplanation(error, stage, associationId, targetId, targetCode) {
+  const operation = STAGE_LABELS[error.stage || stage] || 'process Section Association';
+  const subject = targetCode ? ` ${targetCode}` : targetId ? ` ${targetId}` : ` association ${associationId}`;
+  if (Number.isInteger(error.status) && error.status >= 100 && error.status <= 599)
+    return `Unable to ${operation}${subject} (HTTP ${error.status}).`;
+  if (error.reason === 'api-timeout') return `Unable to ${operation}${subject} (network timeout).`;
+  if (error.reason === 'api-network-failed') return `Unable to ${operation}${subject} (network error).`;
+  if (error.reason === 'oauth-failed') return `Unable to ${operation}${subject} (OAuth token request failed).`;
+  if (error.code === 'API_UPDATE_FAILED') return `Unable to ${operation}${subject} (HTTP status unavailable).`;
+  if (error.code === 'API_READ_FAILED') return `Unable to ${operation}${subject} (HTTP status unavailable).`;
+  return safeError(error);
 }
 
 module.exports = { createReconciler, richTextInput, courseUpdatePayload, RECONCILIATION_VERSION, hasVerifiedCompletion };

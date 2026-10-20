@@ -1,11 +1,15 @@
 'use strict';
 
 class ApiReadError extends Error {
-  constructor(status, fatal = false) {
-    super('Brightspace API read failed');
+  constructor(status, fatal = false, details = {}) {
+    super('Brightspace API read failed', details.cause ? { cause: details.cause } : undefined);
     this.code = 'API_READ_FAILED';
     this.status = Number.isInteger(status) ? status : null;
     this.fatal = fatal || status === 401 || status === 403 || status === 429 || status === 503 || status == null;
+    this.reason = details.reason || 'api-read-failed';
+    this.phase = details.phase;
+    this.protocolCode = details.protocolCode;
+    this.networkCode = details.networkCode;
   }
 }
 
@@ -19,10 +23,10 @@ function createBrightspaceGet({ http, oauth, baseUrl, retries = 0, delay = ms =>
     let token;
     try { token = await oauth.getAccessToken(); }
     catch (error) {
-      const safe = new ApiReadError(Number.isInteger(error?.status) ? error.status : 401, true);
-      safe.code = error?.code === 'TOKEN_EXCHANGE_FAILED' ? error.code : 'API_READ_FAILED';
-      safe.phase = error?.code === 'TOKEN_EXCHANGE_FAILED' ? 'oauth' : 'oauth/api-read';
-      safe.protocolCode = error?.protocolCode;
+      const safe = new ApiReadError(Number.isInteger(error?.status) ? error.status : null, true, {
+        cause: error, reason: 'oauth-failed', phase: 'oauth', protocolCode: error?.protocolCode
+      });
+      safe.code = 'TOKEN_EXCHANGE_FAILED';
       throw safe;
     }
     for (let attempt = 0; ; attempt++) {

@@ -18,7 +18,9 @@ async function resolveTargets({ association, client, onValidated }) {
   const targets = [];
   const targetIds = new Set();
   for (const code of codes) {
-    const matches = await client.exactCode(code);
+    let matches;
+    try { matches = await client.exactCode(code); }
+    catch (error) { error.stage ||= 'exact-code-lookup'; error.targetCode = code; throw error; }
     if (!Array.isArray(matches) || matches.length !== 1) throw validationError(matches?.length > 1 ? 'ambiguous-target' : 'unresolved-target', `Original Course Offering code is missing or ambiguous: ${code}`);
     const match = matches[0];
     const id = String(match.Identifier ?? match.OrgUnitId ?? '');

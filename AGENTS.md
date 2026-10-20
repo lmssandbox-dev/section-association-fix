@@ -25,6 +25,8 @@ Every association requires a Course Offering with the exact code pattern `^\\d{6
 
 Dry-run is the default and sends zero PUTs. If active targets remain, keep the record pending for later live processing. Do not change OAuth, LTI, discovery, association rules, Mongo state semantics, reconciliation, or scheduler intervals without explicit task scope.
 
+Reconciliation failures use stable diagnostic stages: `association-read`, `children-read`, `exact-code-lookup`, `target-read`, `target-update`, and `verification-read`. Render logs include the stage, safe endpoint identifier, stable reason, and HTTP status when known; they never include raw response data or request URLs. Timeout, network, and OAuth failures are identified when reliable evidence exists. Exceptions CSV categories distinguish `read-failed`, `update-failed`, `verification-failed`, `validation-blocked`, and `processing-error`; explanations include the failed operation and available status or target Org Code/ID. Operators can find these details in the Exceptions CSV for an execution; expanded Execution History uses the existing persisted run summary.
+
 Discovery persistence compares valid, distinct association IDs against the tenant-scoped `section_associations` collection in batches of 500. Only IDs missing from the comparison are upserted with `$setOnInsert`; already-known records are refreshed in bounded bulk writes so `lastSeenAt` retains its operational meaning without per-association round trips. Discovery and baseline bulk operations are bounded, counters count distinct valid association IDs, duplicate-key races are handled idempotently, and partial database failures must fail the cycle.
 
 ## LTI interface
