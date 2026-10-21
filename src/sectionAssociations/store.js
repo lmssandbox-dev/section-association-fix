@@ -32,12 +32,12 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
     const { associations } = await collections();
     const time = new Date(now());
     const filter = { namespace, associationOrgUnitId: String(id) };
-    const update = { $set: { ...fields, lastSeenAt: time },
+    const update = { $set: { ...fields },
       $setOnInsert: { firstSeenAt: time, associationOrgUnitId: String(id), namespace } };
     try { await associations.updateOne(filter, update, { upsert: true }); }
     catch (error) {
       if (error.code !== 11000) throw error;
-      await associations.updateOne(filter, { $set: { ...fields, lastSeenAt: time } });
+      await associations.updateOne(filter, { $set: { ...fields } });
     }
   }
   async function baselineStatus() {
@@ -58,7 +58,7 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
     if (!result.value || result.value.leaseToken !== token || result.value.state === 'ready') return null;
     return token;
   }
-  async function finishBaseline(token, records) {
+  async function finishBaseline(token, records, { observedIds = [], onRestored } = {}) {
     const { associations, meta } = await collections();
     const metaId = `baseline:${namespace}`;
     const baselineAt = new Date(now());
@@ -74,7 +74,9 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
       } })), { ordered: false });
       newlyRecorded += result.upsertedCount || 0;
       alreadyKnown += result.matchedCount || 0;
+      await refreshObservedIds(associations, batch.map(item => String(item.id)), new Set(), baselineAt, onRestored);
     }
+    await refreshObservedIds(associations, observedIds, new Set(records.map(item => String(item.id))), baselineAt, onRestored);
     const result = await meta.updateOne({ _id: metaId, leaseToken: token, state: { $ne: 'ready' } },
       { $set: { state: 'ready', completedAt: baselineAt }, $unset: { leaseToken: '', leaseUntil: '' } });
     if (!result.matchedCount) throw new Error('Could not finalize Section Association baseline.');
@@ -93,15 +95,99 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
         status: 'pending', baseline: false, lastError: null } };
     try {
       const result = await associations.updateOne(filter, update, { upsert: true });
+      await reactivateMissing(associations, String(id), time);
       return (result.upsertedCount || 0) > 0;
     }
     catch (error) {
       if (error.code !== 11000) throw error;
       await associations.updateOne(filter, { $set: update.$set });
+      await reactivateMissing(associations, String(id), time);
       return false;
     }
   }
-  async function recordDiscoveries(records) {
+  async function reactivateMissing(associations, id, time) {
+    await associations.updateOne({ namespace, associationOrgUnitId: id, status: 'missing' },
+    { $set: { status: 'pending', lastError: null, lastSeenAt: time }, $unset: {
+      missingObservedAt: '', missingConfirmedAt: '', missingDiscoveryAt: '', missingDiscoveryScope: ''
+    } });
+    await associations.updateOne({ namespace, associationOrgUnitId: id, missingObservedAt: { $exists: true }, status: { $ne: 'missing' } },
+      { $unset: { missingObservedAt: '', missingConfirmedAt: '', missingDiscoveryAt: '', missingDiscoveryScope: '' } });
+  }
+  async function refreshObservedIds(associations, observedIds, validIds, time, onRestored) {
+    const additionalIds = [...new Set(observedIds.map(String))].filter(id => !validIds.has(id));
+    for (let offset = 0; offset < additionalIds.length; offset += DISCOVERY_BATCH_SIZE) {
+      const ids = additionalIds.slice(offset, offset + DISCOVERY_BATCH_SIZE);
+      const existing = await associations.find({ namespace, associationOrgUnitId: { $in: ids },
+        $or: [{ status: 'missing' }, { missingObservedAt: { $exists: true } }] },
+      { projection: { associationOrgUnitId: 1, associationCode: 1, status: 1 } }).toArray();
+      if (!existing.length) continue;
+      await associations.bulkWrite(existing.map(row => ({ updateOne: { filter: { namespace,
+        associationOrgUnitId: String(row.associationOrgUnitId), ...(row.status === 'missing' ? { status: 'missing' } : {}) },
+        update: { $set: { lastSeenAt: time, ...(row.status === 'missing' ? { status: 'pending', lastError: null } : {}) },
+          $unset: { missingObservedAt: '', missingConfirmedAt: '', missingDiscoveryAt: '', missingDiscoveryScope: '' } } } })), { ordered: false });
+      for (const row of existing) if (row.status === 'missing') onRestored?.({ id: String(row.associationOrgUnitId), code: row.associationCode || '' });
+    }
+  }
+  async function recordPotentialMissing(id, observedAt = new Date(now())) {
+    const { associations } = await collections();
+    const key = String(id);
+    try {
+      const result = await associations.updateOne({ namespace, associationOrgUnitId: key,
+        missingObservedAt: { $exists: false } }, { $set: { missingObservedAt: observedAt }, $setOnInsert: {
+        namespace, associationOrgUnitId: key, status: 'pending', baseline: false, lastError: null, firstSeenAt: observedAt
+      } }, { upsert: true });
+      return Boolean(result.matchedCount || result.upsertedCount);
+    } catch (error) { if (error.code === 11000) return false; throw error; }
+  }
+  async function confirmMissing({ periods, broad = false, discoveredIds = [], discoveryAt, execution, recordAudit: audit, onConfirmed } = {}) {
+    if (!broad && (!Array.isArray(periods) || !periods.length)) return { confirmed: 0 };
+    if (!(discoveryAt instanceof Date) || !Number.isFinite(discoveryAt.getTime())) return { confirmed: 0 };
+    const { associations } = await collections();
+    const cutoff = new Date(discoveryAt.getTime() - 30 * 60 * 1000);
+    const found = new Set(discoveredIds.map(String));
+    let confirmed = 0;
+    for (const period of broad ? [null] : periods) {
+      if (period !== null && !/^\d{2}0[12]$/.test(period)) continue;
+      const filter = { namespace, status: { $ne: 'missing' }, missingObservedAt: { $lte: cutoff },
+        ...(period ? { associationCode: new RegExp(`^\\d{6}-\\d{2}-${period}-I0001$`) } : {}) };
+      while (true) {
+        const batch = await associations.find(filter, { projection: { associationOrgUnitId: 1,
+          associationCode: 1 } }).sort({ missingObservedAt: 1, associationOrgUnitId: 1 })
+          .limit(DISCOVERY_BATCH_SIZE).toArray();
+        if (!batch.length) break;
+        const absent = batch.filter(row => !found.has(String(row.associationOrgUnitId)));
+        const present = batch.filter(row => found.has(String(row.associationOrgUnitId)));
+        const operations = [
+          ...present.map(row => ({ updateOne: { filter: { namespace, associationOrgUnitId: String(row.associationOrgUnitId),
+            missingObservedAt: { $lte: cutoff }, status: { $ne: 'missing' } }, update: { $set: { lastSeenAt: discoveryAt },
+              $unset: { missingObservedAt: '', missingConfirmedAt: '', missingDiscoveryAt: '', missingDiscoveryScope: '' } } } })),
+          ...absent.map(row => ({ updateOne: { filter: { namespace, associationOrgUnitId: String(row.associationOrgUnitId),
+            missingObservedAt: { $lte: cutoff }, status: { $ne: 'missing' } }, update: { $set: { status: 'missing',
+              missingConfirmedAt: discoveryAt, missingDiscoveryAt: discoveryAt, missingDiscoveryScope: period || 'all' } } } }))
+        ];
+        if (operations.length) await associations.bulkWrite(operations, { ordered: false });
+        const transitioned = absent.length ? await associations.find({ namespace,
+          associationOrgUnitId: { $in: absent.map(row => String(row.associationOrgUnitId)) }, status: 'missing',
+          missingConfirmedAt: discoveryAt }, { projection: { associationOrgUnitId: 1, associationCode: 1 } }).toArray() : [];
+        confirmed += transitioned.length;
+        for (const row of transitioned) {
+          onConfirmed?.(row, period || 'all');
+          if (!execution?.executionId || typeof audit !== 'function') continue;
+          try {
+            await audit({ kind: 'exception', executionId: execution.executionId, source: execution.source,
+              timestamp: discoveryAt, parentAssociationD2lId: String(row.associationOrgUnitId),
+              parentAssociationOrgCode: row.associationCode || '', parentAssociationName: '',
+              affectedCourseOfferingD2lId: '', affectedCourseOfferingOrgCode: '', affectedCourseOfferingName: '',
+              category: 'missing-confirmed', explanation: `Association was marked missing after successful ${period ? `period ${period}` : 'broad'} discovery did not return its exact Org Unit ID.`,
+              finalOutcome: 'missing', recordKey: `missing-confirmed:${row.associationOrgUnitId}` });
+          } catch (error) { execution.auditIncomplete = true; throw error; }
+        }
+        if (batch.length < DISCOVERY_BATCH_SIZE) break;
+      }
+    }
+    return { confirmed };
+  }
+  async function recordDiscoveries(records, { onRestored, observedIds = [] } = {}) {
     const { associations } = await collections();
     const unique = [...new Map(records.map(item => [String(item.id), { id: String(item.id), code: item.code }])).values()];
     const time = new Date(now());
@@ -111,18 +197,25 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
       const batch = unique.slice(offset, offset + DISCOVERY_BATCH_SIZE);
       const ids = batch.map(item => item.id);
       const existing = await associations.find({ namespace, associationOrgUnitId: { $in: ids } },
-        { projection: { associationOrgUnitId: 1 } }).toArray();
-      const knownIds = new Set(existing.map(item => String(item.associationOrgUnitId)));
+        { projection: { associationOrgUnitId: 1, status: 1, missingObservedAt: 1 } }).toArray();
+      const existingById = new Map(existing.map(item => [String(item.associationOrgUnitId), item]));
+      const knownIds = new Set(existingById.keys());
       const known = batch.filter(item => knownIds.has(item.id));
       const fresh = batch.filter(item => !knownIds.has(item.id));
       alreadyKnown += known.length;
 
-      // Keep lastSeenAt current for operational visibility, but send updates in bounded batches.
+      // Positive discovery refreshes discovery time and reactivates the same ID only.
       if (known.length) {
-        await associations.bulkWrite(known.map(item => ({ updateOne: {
-          filter: { namespace, associationOrgUnitId: item.id },
-          update: { $set: { associationCode: item.code, lastSeenAt: time } }
-        } })), { ordered: false });
+        await associations.bulkWrite(known.map(item => {
+          const prior = existingById.get(item.id);
+          const restore = prior.status === 'missing' || prior.missingObservedAt != null;
+          return { updateOne: { filter: { namespace, associationOrgUnitId: item.id,
+            ...(prior.status === 'missing' ? { status: 'missing' } : {}) },
+            update: { $set: { associationCode: item.code, lastSeenAt: time,
+              ...(prior.status === 'missing' ? { status: 'pending', lastError: null } : {}) },
+              ...(restore ? { $unset: { missingObservedAt: '', missingConfirmedAt: '', missingDiscoveryAt: '', missingDiscoveryScope: '' } } : {}) } } };
+        }), { ordered: false });
+        for (const item of known) if (existingById.get(item.id).status === 'missing') onRestored?.(item);
       }
       if (!fresh.length) continue;
       const operations = fresh.map(item => ({ updateOne: {
@@ -152,6 +245,7 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
         alreadyKnown += fresh.length - inserted;
       }
     }
+    await refreshObservedIds(associations, observedIds, new Set(unique.map(item => item.id)), time, onRestored);
     return { newlyRecorded, alreadyKnown };
   }
   const sortOrder = { lastCheckedAt: 1, firstSeenAt: 1, associationOrgUnitId: 1 };
@@ -422,6 +516,7 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
   }
   async function close() { if (!mongoClient) await client.close(); }
   return { get, record, baselineStatus, beginBaseline, finishBaseline, releaseBaseline, recordDiscovery, recordDiscoveries,
+    recordPotentialMissing, confirmMissing,
     listFastWork, listWaitingNew, listRecoveryWork, countHistoricalBacklog, countDueCompleted, countRecoveryWork,
     lastFullDiscoveryAt, markFullDiscoveryCompleted,
     acquireCronLease, renewCronLease, releaseCronLease, cronLeaseStatus, recoveryDue, markRecoveryCompleted,

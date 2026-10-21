@@ -53,20 +53,25 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
   discoveryConfiguration = { mode: 'auto', periods: [] }, now = Date.now, logger = console }) {
   let busy = false;
   const stabilityLogged = new Set();
+  const attemptedByExecution = new WeakMap();
   const recoveryIntervalMs = recoveryIntervalHours * 60 * 60 * 1000;
   const completedReverifyMs = completedReverifyHours * 60 * 60 * 1000;
 
   async function discover(orgUnitCode) {
     const candidates = await client.associationCandidates(orgUnitCode);
     const valid = candidates.filter(item => isAssociation(item) && /^\d+$/.test(String(item.Identifier ?? item.OrgUnitId ?? '')));
-    return [...new Map(valid.map(item => [String(item.Identifier ?? item.OrgUnitId), item])).values()];
+    const discoveredIds = [...new Set(candidates.filter(item => /^\d+$/.test(String(item?.Identifier ?? item?.OrgUnitId ?? '')))
+      .map(item => String(item?.Identifier ?? item?.OrgUnitId)))];
+    const results = [...new Map(valid.map(item => [String(item.Identifier ?? item.OrgUnitId), item])).values()];
+    Object.defineProperty(results, 'discoveredIds', { value: discoveredIds });
+    return results;
   }
 
-  async function bootstrap(associations) {
+  async function bootstrap(associations, discoveryOptions = {}) {
     const token = await store.beginBaseline();
     if (!token) return null;
     try {
-      const counts = await store.finishBaseline(token, associations.map(item => ({ id: item.Identifier ?? item.OrgUnitId, code: item.Code })));
+      const counts = await store.finishBaseline(token, associations.map(item => ({ id: item.Identifier ?? item.OrgUnitId, code: item.Code })), discoveryOptions);
       const result = { newlyRecorded: counts?.newlyRecorded || 0, alreadyKnown: counts?.alreadyKnown || 0 };
       logEvent(logger, 'info', 'baseline recorded', { candidates: associations.length });
       return result;
@@ -97,7 +102,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     stats.alreadyInactive += result?.alreadyInactive || 0;
   }
 
-  async function prepareDiscovery(stats, setPhase = () => {}) {
+  async function prepareDiscovery(stats, setPhase = () => {}, execution) {
     const currentTime = now();
     setPhase('database');
     const baselineStatus = typeof store.baselineStatus === 'function' ? await store.baselineStatus() : { state: 'ready' };
@@ -107,10 +112,12 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     const runFullDiscovery = baselineRequired || fullDiscoveryDue(lastFull, currentTime);
     setPhase('discovery');
     let full = [];
+    let fullDiscoveryAt;
     let fullDiscoveryError;
     if (scope.mode === 'all' || runFullDiscovery) {
       try {
         full = await discover('I0001');
+        fullDiscoveryAt = new Date(now());
         if (runFullDiscovery || scope.mode === 'all') stats.discoveryActivities.historical = true;
       }
       catch (error) {
@@ -124,12 +131,20 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     setPhase('database');
     let baseline = baselineStatus;
     const fullIds = new Set(full.map(item => String(item.Identifier ?? item.OrgUnitId)));
+    const discoveryOptions = results => ({ observedIds: results.flatMap(result => result?.discoveredIds || []),
+      onRestored: item => logEvent(logger, 'info', 'association restored', { associationId: item.id, code: item.code }) });
+    const confirmMissing = async options => {
+      if (typeof store.confirmMissing !== 'function') return;
+      await store.confirmMissing({ ...options, execution, recordAudit: store.recordAudit,
+        onConfirmed: (item, coverage) => logEvent(logger, 'warn', 'association marked missing', {
+          associationId: item.associationOrgUnitId, code: item.associationCode, reason: 'discovery-absence' }) });
+    };
     if (!baseline || baseline.state !== 'ready') {
-      const counts = await bootstrap(full);
+      const counts = await bootstrap(full, discoveryOptions([full]));
       if (!counts) {
         baseline = await store.baselineStatus();
         if (!baseline || baseline.state !== 'ready') return false;
-        const persisted = await store.recordDiscoveries(full.map(item => ({ id: item.Identifier ?? item.OrgUnitId, code: item.Code })));
+        const persisted = await store.recordDiscoveries(full.map(item => ({ id: item.Identifier ?? item.OrgUnitId, code: item.Code })), discoveryOptions([full]));
         stats.new += persisted.newlyRecorded;
         stats.alreadyKnown += persisted.alreadyKnown;
       } else {
@@ -138,15 +153,19 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
         baseline = { state: 'ready' };
       }
     } else if ((runFullDiscovery || scope.mode === 'all') && !fullDiscoveryError) {
-      const counts = await store.recordDiscoveries(full.map(item => ({ id: item.Identifier ?? item.OrgUnitId, code: item.Code })));
+      const counts = await store.recordDiscoveries(full.map(item => ({ id: item.Identifier ?? item.OrgUnitId, code: item.Code })), discoveryOptions([full]));
       stats.new += counts.newlyRecorded;
       stats.alreadyKnown += counts.alreadyKnown;
+    }
+    if (fullDiscoveryAt && (runFullDiscovery || scope.mode === 'all') && baseline?.state === 'ready') {
+      await confirmMissing({ broad: true, discoveredIds: full.discoveredIds || [...fullIds], discoveryAt: fullDiscoveryAt });
     }
     if ((runFullDiscovery || scope.mode === 'all') && !fullDiscoveryError && typeof store.markFullDiscoveryCompleted === 'function') {
       await store.markFullDiscoveryCompleted();
     }
     setPhase('discovery');
     const periodResults = scope.mode === 'all' ? [] : await Promise.all(scope.periods.map(period => discover(`${period}-I0001`)));
+    const periodDiscoveryAt = periodResults.length ? new Date(now()) : null;
     stats.discoveryPeriods = scope;
     if (scope.mode !== 'all') stats.discoveryActivities.periods = true;
     const associations = [...new Map([...full, ...periodResults.flat()]
@@ -158,10 +177,18 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
         ? associations.filter(item => !fullIds.has(String(item.Identifier ?? item.OrgUnitId)))
         : associations)
         .map(item => ({ id: item.Identifier ?? item.OrgUnitId, code: item.Code }));
-      if (discoveryRecords.length) {
-        const counts = await store.recordDiscoveries(discoveryRecords);
+      const periodObservedIds = periodResults.flatMap(result => result?.discoveredIds || []);
+      if (discoveryRecords.length || periodObservedIds.length) {
+        const counts = await store.recordDiscoveries(discoveryRecords, discoveryOptions(periodResults));
         stats.new += counts.newlyRecorded;
         stats.alreadyKnown += counts.alreadyKnown;
+      }
+      if (periodDiscoveryAt && typeof store.confirmMissing === 'function') {
+        for (let index = 0; index < scope.periods.length; index++) {
+          const result = periodResults[index] || [];
+          await confirmMissing({ periods: [scope.periods[index]],
+            discoveredIds: result.discoveredIds || result.map(item => String(item.Identifier ?? item.OrgUnitId)), discoveryAt: periodDiscoveryAt });
+        }
       }
     }
     logDiscovery(stats);
@@ -169,8 +196,15 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
   }
 
   async function processWork(items, stats, execution) {
+    let attempted;
+    if (execution && typeof execution === 'object') {
+      attempted = attemptedByExecution.get(execution);
+      if (!attempted) { attempted = new Set(); attemptedByExecution.set(execution, attempted); }
+    }
     for (const item of items) {
       const id = String(item.associationOrgUnitId);
+      if (attempted?.has(id)) continue;
+      attempted?.add(id);
       stabilityLogged.delete(id);
       if (item.workType === 'reverify') stats.discoveryActivities.reverification = true;
       const result = await reconciler.reconcileAssociation(id, { associationCode: item.associationCode, force: true,
@@ -203,7 +237,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     let succeeded = false;
     let recoveryComplete = true;
     try {
-      if (!discoveryAlreadyCompleted && !await prepareDiscovery(stats, value => { phase = value; })) {
+      if (!discoveryAlreadyCompleted && !await prepareDiscovery(stats, value => { phase = value; }, execution)) {
         succeeded = true;
         return { status: 'completed', ...stats, recoveryComplete: false };
       }

@@ -43,6 +43,7 @@ function createReconciler({ client, store, dryRun = true, now = Date.now, logger
     let writesAttempted = 0;
     let writesVerified = 0;
     let alreadyInactive = 0;
+    let firstMissingObservation = false;
     async function diagnosed(currentStage, operation, context = {}) {
       stage = currentStage;
       try { return await operation(); }
@@ -158,7 +159,13 @@ function createReconciler({ client, store, dryRun = true, now = Date.now, logger
       return { status, dryRun, targets: outcomes, writesAttempted, writesVerified, alreadyInactive };
     } catch (error) {
       const status = error.blocked || error.validationFailure ? 'blocked' : 'pending';
-      if (execution?.executionId && recordAudit) {
+      const isInitialAssociation404 = error.stage === 'association-read' && error.status === 404;
+      if (isInitialAssociation404) {
+        firstMissingObservation = typeof store.recordPotentialMissing === 'function'
+          ? await store.recordPotentialMissing(id, new Date(now())) : true;
+        if (firstMissingObservation) logEvent(logger, 'warn', 'association missing observed', { associationId: id, code: associationCode });
+      }
+      if (execution?.executionId && recordAudit && (!isInitialAssociation404 || firstMissingObservation)) {
         try { await recordAudit({ kind: 'exception', executionId: execution.executionId, source: execution.source,
           timestamp: new Date(now()), parentAssociationD2lId: id, parentAssociationOrgCode: associationCode || '',
           parentAssociationName: associationName, affectedCourseOfferingD2lId: currentTargetId || '',

@@ -138,3 +138,51 @@ test('completed re-verification is offered only during the maintenance window', 
   await inside.service.fastTick();
   assert.equal(inside.calls.find(([kind]) => kind === 'work')[1], true);
 });
+
+test('missing confirmation uses completed period results and exact IDs without extra API requests', async () => {
+  const time = Date.parse('2026-10-20T12:00:00Z'); const calls = []; const confirmations = [];
+  const store = { async baselineStatus() { return { state: 'ready' }; }, async lastFullDiscoveryAt() { return new Date(time); },
+    async recordDiscoveries() { return { newlyRecorded: 0, alreadyKnown: 0 }; },
+    async confirmMissing(input) { confirmations.push(input); return { confirmed: 0 }; },
+    async countHistoricalBacklog() { return 0; }, async listWaitingNew() { return []; }, async listFastWork() { return []; } };
+  const client = { async associationCandidates(code) { calls.push(code); return code === '2602-I0001'
+    ? [{ Identifier: 48865, Code: 'not-a-valid-association-now', Type: { Code: 'Group' } }] : []; } };
+  const service = createSectionAssociationService({ client, store, reconciler: {}, discoveryConfiguration: { mode: 'explicit', periods: ['2602'] },
+    now: () => time, logger: { info() {}, warn() {}, error() {} } });
+  const result = await service.fastTick({ execution: { executionId: 'period-evidence' } });
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(calls, ['2602-I0001']);
+  assert.equal(confirmations.length, 1);
+  assert.deepEqual(confirmations[0].periods, ['2602']);
+  assert.deepEqual(confirmations[0].discoveredIds, ['48865']);
+  assert.equal(confirmations[0].discoveryAt.getTime(), time);
+});
+
+test('failed period discovery never supplies absence evidence', async () => {
+  const time = Date.parse('2026-10-20T12:00:00Z'); const confirmations = [];
+  const store = { async baselineStatus() { return { state: 'ready' }; }, async lastFullDiscoveryAt() { return new Date(time); },
+    async recordDiscoveries() { return { newlyRecorded: 0, alreadyKnown: 0 }; }, async confirmMissing(input) { confirmations.push(input); },
+    async countHistoricalBacklog() { return 0; }, async listWaitingNew() { return []; }, async listFastWork() { return []; } };
+  const client = { async associationCandidates() { throw new Error('incomplete period scan'); } };
+  const service = createSectionAssociationService({ client, store, reconciler: {}, discoveryConfiguration: { mode: 'explicit', periods: ['2602'] },
+    now: () => time, logger: { info() {}, warn() {}, error() {} } });
+  assert.equal((await service.fastTick()).status, 'failed');
+  assert.equal(confirmations.length, 0);
+});
+
+test('fast and recovery phases do not reconcile one association twice in the same execution', async () => {
+  const time = Date.parse('2026-10-20T12:00:00Z'); let reconciles = 0;
+  const item = { associationOrgUnitId: '48865', associationCode: '002366-01-2602-I0001' };
+  const store = { async baselineStatus() { return { state: 'ready' }; }, async lastFullDiscoveryAt() { return new Date(time); },
+    async recordDiscoveries() { return { newlyRecorded: 0, alreadyKnown: 0 }; }, async confirmMissing() { return { confirmed: 0 }; },
+    async countHistoricalBacklog() { return 0; }, async listWaitingNew() { return []; }, async listFastWork() { return [item]; },
+    async listRecoveryWork() { return [item]; }, async countRecoveryWork() { return 0; } };
+  const client = { async associationCandidates() { return []; } };
+  const reconciler = { async reconcileAssociation() { reconciles++; return { status: 'pending', error: '404' }; } };
+  const service = createSectionAssociationService({ client, store, reconciler, discoveryConfiguration: { mode: 'all', periods: [] },
+    now: () => time, logger: { info() {}, warn() {}, error() {} } });
+  const execution = { executionId: 'one-execution' };
+  await service.fastTick({ execution });
+  await service.recoveryTick({ execution, discoveryAlreadyCompleted: true });
+  assert.equal(reconciles, 1);
+});

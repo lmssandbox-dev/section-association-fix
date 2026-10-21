@@ -223,6 +223,28 @@ test('read failures retain their stage, HTTP status, and available association/t
   }
 });
 
+test('initial association-detail 404 records one pending missing observation and one exception', async () => {
+  const store = memoryStore(() => Date.parse('2026-10-20T12:00:00Z'));
+  await store.record('48865', { associationCode: '002366-01-2602-I0001', status: 'pending' });
+  store.recordPotentialMissing = async (id, observedAt) => {
+    const prior = await store.get(id);
+    if (prior.missingObservedAt) return false;
+    await store.record(id, { missingObservedAt: observedAt });
+    return true;
+  };
+  const { client, writes } = api({ async orgUnit() { throw apiRead(404, 'association-detail'); } });
+  const audit = [];
+  const reconciler = createReconciler({ client, store, dryRun: false, now: () => Date.parse('2026-10-20T12:00:00Z'), logger: { warn() {}, info() {} } });
+  const first = await reconciler.reconcileAssociation('48865', { associationCode: '002366-01-2602-I0001',
+    execution: { executionId: '404-first', source: 'automatic' }, recordAudit: async row => audit.push(row) });
+  const second = await reconciler.reconcileAssociation('48865', { associationCode: '002366-01-2602-I0001',
+    execution: { executionId: '404-repeat', source: 'automatic' }, recordAudit: async row => audit.push(row) });
+  assert.equal(first.status, 'pending'); assert.equal(second.status, 'pending');
+  assert.equal((await store.get('48865')).missingObservedAt.getTime(), Date.parse('2026-10-20T12:00:00Z'));
+  assert.equal(audit.filter(row => row.category === 'read-failed').length, 1);
+  assert.equal(writes.length, 0);
+});
+
 test('network, timeout, and OAuth errors have safe explanations without invented HTTP status', async () => {
   for (const [reason, phrase, code] of [['api-network-failed', 'network error', 'ECONNRESET'], ['api-timeout', 'network timeout', 'ETIMEDOUT'], ['oauth-failed', 'OAuth token request failed', 'TOKEN_EXCHANGE_FAILED']]) {
     const { client } = api({ async orgUnit() { throw Object.assign(new Error('secret=abc https://private.example/path'), { code, reason, ...(reason === 'oauth-failed' ? {} : { status: null }) }); } });

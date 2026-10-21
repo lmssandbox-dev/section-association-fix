@@ -4,7 +4,8 @@ const EVENTS = new Set([
   'cron started', 'cron completed', 'cron failed', 'cron skipped', 'lease acquired', 'lease released', 'lease unavailable', 'lease release failed', 'recovery due', 'recovery deferred',
   'scheduler started', 'fast cycle started', 'fast cycle completed', 'fast cycle failed', 'fast cycle finished', 'fast cycle skipped',
   'recovery cycle started', 'recovery cycle completed', 'recovery cycle failed', 'recovery cycle finished', 'recovery cycle skipped',
-  'discovery completed', 'baseline recorded', 'reconcile started',
+  'discovery completed', 'baseline recorded', 'reconcile started', 'association missing observed',
+  'association marked missing', 'association restored',
   'validation passed', 'pending', 'dry-run', 'update starting',
   'update verified', 'target already compliant', 'blocked', 'uncertain outcome',
   'reconcile failed'
