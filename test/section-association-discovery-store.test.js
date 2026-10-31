@@ -191,6 +191,28 @@ test('broad discovery confirms across periods; same-ID rediscovery restores whil
   assert.notEqual(rows.get('tenant:22').associationOrgUnitId, rows.get('tenant:23').associationOrgUnitId);
 });
 
+test('missing confirmation is isolated by format and period, including broad PeopleSoft history', async () => {
+  const observed = new Date('2026-10-20T12:00:00Z'); const at = new Date(observed.getTime() + 31 * 60000);
+  const { store, rows } = fakeMongo([
+    { namespace:'tenant', associationOrgUnitId:'51', associationCode:'002366-01-2602-I0001', status:'pending', missingObservedAt:observed },
+    { namespace:'tenant', associationOrgUnitId:'52', associationCode:'ESPM-2602-GS2-C0011', status:'pending', missingObservedAt:observed },
+    { namespace:'tenant', associationOrgUnitId:'53', associationCode:'ESPM-2601-ALT-C9', status:'pending', missingObservedAt:observed },
+    { namespace:'tenant', associationOrgUnitId:'54', associationCode:'ESPM-2701-ALT-C9', status:'pending', missingObservedAt:observed }
+  ]);
+  await store.confirmMissing({ periods:['2602'], format:'legacy', discoveredIds:[], discoveryAt:at });
+  assert.equal(rows.get('tenant:51').status,'missing');
+  assert.equal(rows.get('tenant:52').status,'pending');
+  await store.confirmMissing({ periods:['2602'], format:'peoplesoft', discoveredIds:['52'], discoveryAt:at });
+  assert.equal(rows.get('tenant:52').status,'pending');
+  assert.equal(rows.get('tenant:53').status,'pending');
+  await store.confirmMissing({ broad:true, format:'peoplesoft', discoveredIds:[], discoveryAt:at });
+  assert.equal(rows.get('tenant:52').status,'pending');
+  assert.equal(rows.get('tenant:53').status,'missing');
+  assert.equal(rows.get('tenant:54').status,'missing');
+  assert.equal(rows.get('tenant:51').missingDiscoveryScope,'2602');
+  assert.equal(rows.get('tenant:54').missingDiscoveryScope,'all-peoplesoft');
+});
+
 test('raw successful discovery IDs clear observations and restore known missing IDs even if the returned code is invalid', async () => {
   const observedAt = new Date('2026-10-20T12:00:00Z'); const restored = [];
   const { store, rows } = fakeMongo([

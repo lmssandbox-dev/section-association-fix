@@ -2,7 +2,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { ASSOCIATION_CODE, isAssociation, originalOfferingCode } = require('../src/sectionAssociations/rules');
+const { ASSOCIATION_CODE, isAssociation, originalOfferingCode, associationCodeFamily } = require('../src/sectionAssociations/rules');
 const { resolveTargets } = require('../src/sectionAssociations/resolver');
 const { createReconciler, courseUpdatePayload, hasVerifiedCompletion, RECONCILIATION_VERSION } = require('../src/sectionAssociations/reconciler');
 const { createSectionAssociationClient } = require('../src/sectionAssociations/client');
@@ -95,6 +95,13 @@ function captureLogger() {
 
 test('association code and child suffix validation are exact', () => {
   assert.match('002521-01-2602-I0001', ASSOCIATION_CODE);
+  for (const code of ['ESPM-2602-GS2-C0011', 'ESPM-2601-ALT-XYZ999', 'ESPM-2701-SUMMER-C9']) {
+    assert.equal(isAssociation({ ...association, Code: code }), true);
+  }
+  for (const code of ['ESPM-2603-GS2-C0011', 'ESPM-2602-', 'ESPM-2602-   ', 'ESPM-2602-GS2-C0011 ', 'OTHER-2602-GS2-C0011']) {
+    assert.equal(isAssociation({ ...association, Code: code }), false, code);
+  }
+  assert.deepEqual(associationCodeFamily('ESPM-2602-GS2--C0011'), { format: 'peoplesoft', period: '2602' });
   assert.equal(isAssociation(association), true);
   assert.equal(isAssociation({ ...association, Code: 'x002521-01-2602-I0001' }), false);
   assert.equal(originalOfferingCode(groups[0].Code), '002521-01-2602-GS2-EL1S');
@@ -494,8 +501,8 @@ test('first successful discovery records baseline history and sends it through t
     reconciler: { async reconcileAssociation() { reconciles++; return { status: 'completed' }; } }, logger: { info() {} }, now: () => 10000000 });
   await service.fastTick();
   assert.equal(store.rows.length, 1);
-  assert.deepEqual(events.slice(0, 2), ['query:I0001', 'baseline-persisted']);
-  assert.match(events[2], /^query:\d{4}-I0001$/);
+  assert.deepEqual(events.slice(0, 3), ['query:I0001', 'query:ESPM-', 'baseline-persisted']);
+  assert.match(events[3], /^query:\d{4}-I0001$/);
   assert.equal(reconciles, 1);
 });
 

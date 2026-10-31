@@ -26,16 +26,19 @@ test('maintenance window and full discovery due checks use Sao Paulo boundaries'
   assert.equal(fullDiscoveryDue(new Date('2026-10-17T05:00:00Z'), Date.parse('2026-10-18T05:00:00Z')), true);
 });
 
-test('Brightspace discovery accepts only broad or period-specific codes and paginates each query', async () => {
+test('Brightspace discovery accepts both broad and period-specific code-family queries and paginates each', async () => {
   const requested = [];
   const client = createSectionAssociationClient({ baseUrl: 'https://tenant.example', lpVersion: '1.60', oauth: {}, http: async () => {},
     get: async url => { requested.push(url); return { Items: [], PagingInfo: { HasMoreItems: false } }; } });
   await client.associationCandidates('2602-I0001');
   await client.associationCandidates('2601-I0001');
   await client.associationCandidates('I0001');
+  await client.associationCandidates('ESPM-2602-');
+  await client.associationCandidates('ESPM-');
   assert.deepEqual(requested.map(url => new URL(url).searchParams.get('orgUnitCode')),
-    ['2602-I0001', '2601-I0001', 'I0001']);
+    ['2602-I0001', '2601-I0001', 'I0001', 'ESPM-2602-', 'ESPM-']);
   assert.throws(() => client.associationCandidates('history-I0001'), /Invalid Section Association discovery code/);
+  assert.throws(() => client.associationCandidates('ESPM-2603-'), /Invalid Section Association discovery code/);
 });
 
 function makeService({ time, failFull = false, duplicateAcrossQueries = false, discoveryConfiguration = {mode:'auto',periods:[]} } = {}) {
@@ -54,7 +57,7 @@ function makeService({ time, failFull = false, duplicateAcrossQueries = false, d
   const client = { async associationCandidates(code) {
     calls.push(['query', code]);
     if (code === 'I0001' && failFull) throw new Error('full scan failure');
-    return code === 'I0001' || duplicateAcrossQueries ? [association] : [];
+    return code === 'I0001' || code === 'ESPM-' || duplicateAcrossQueries ? [association] : [];
   } };
   const service = createSectionAssociationService({ client, store, reconciler: {}, discoveryConfiguration, now: () => time, logger: { info() {}, warn() {}, error() {} } });
   return { service, calls, store, persisted, get fullAt() { return fullAt; } };
@@ -68,10 +71,10 @@ test('nightly full discovery persists success once and resumes with period disco
   assert.deepEqual(first.discoveryPeriods, { mode:'auto', previous:'2601', current:'2602', next:'2701', periods:['2601','2602','2701'] });
   assert.deepEqual(first.discoveryActivities, { historical:true, periods:true });
   assert.ok(h.fullAt instanceof Date);
-  assert.deepEqual(h.calls.filter(([kind]) => kind === 'query').map(([, code]) => code), ['I0001', '2601-I0001', '2602-I0001', '2701-I0001']);
+  assert.deepEqual(h.calls.filter(([kind]) => kind === 'query').map(([, code]) => code), ['I0001', 'ESPM-', '2601-I0001', 'ESPM-2601-', '2602-I0001', 'ESPM-2602-', '2701-I0001', 'ESPM-2701-']);
   h.calls.length = 0;
   assert.equal((await h.service.fastTick()).status, 'completed');
-  assert.deepEqual(h.calls.filter(([kind]) => kind === 'query').map(([, code]) => code), ['2601-I0001', '2602-I0001', '2701-I0001']);
+  assert.deepEqual(h.calls.filter(([kind]) => kind === 'query').map(([, code]) => code), ['2601-I0001', 'ESPM-2601-', '2602-I0001', 'ESPM-2602-', '2701-I0001', 'ESPM-2701-']);
 });
 
 test('failed full discovery leaves its schedule unmarked for the next cron invocation', async () => {
@@ -79,7 +82,7 @@ test('failed full discovery leaves its schedule unmarked for the next cron invoc
   assert.equal((await h.service.fastTick()).status, 'completed');
   assert.equal(h.fullAt, null);
   assert.deepEqual(h.calls.filter(([kind]) => kind === 'query').map(([, code]) => code),
-    ['I0001', '2601-I0001', '2602-I0001', '2701-I0001']);
+    ['I0001', '2601-I0001', 'ESPM-2601-', '2602-I0001', 'ESPM-2602-', '2701-I0001', 'ESPM-2701-']);
 });
 
 test('period evidence is omitted when period discovery fails after a successful historical query', async () => {
@@ -94,7 +97,7 @@ test('period evidence is omitted when period discovery fails after a successful 
   assert.equal(result.status,'failed');
   assert.equal(result.discoveryPeriods,undefined);
   assert.deepEqual(result.discoveryActivities,{historical:true});
-  assert.deepEqual(calls,['I0001','2601-I0001','2602-I0001','2701-I0001']);
+  assert.deepEqual(calls,['I0001','ESPM-','2601-I0001']);
 });
 
 test('re-verification is recorded only when a re-verification work item is processed', async()=>{
@@ -114,11 +117,11 @@ test('explicit discovery queries configured periods and all mode reuses one broa
   const explicit=makeService({time:Date.parse('2026-10-18T15:00:00Z'),discoveryConfiguration:{mode:'explicit',periods:['2601','2701']}});
   const explicitResult=await explicit.service.fastTick();
   assert.deepEqual(explicitResult.discoveryPeriods,{mode:'explicit',periods:['2601','2701']});
-  assert.deepEqual(explicit.calls.filter(([kind])=>kind==='query').map(([,code])=>code),['I0001','2601-I0001','2701-I0001']);
+  assert.deepEqual(explicit.calls.filter(([kind])=>kind==='query').map(([,code])=>code),['I0001','ESPM-','2601-I0001','ESPM-2601-','2701-I0001','ESPM-2701-']);
   const all=makeService({time:Date.parse('2026-10-18T15:00:00Z'),discoveryConfiguration:{mode:'all',periods:[]}});
   const allResult=await all.service.fastTick();
   assert.deepEqual(allResult.discoveryPeriods,{mode:'all',periods:[]});
-  assert.deepEqual(all.calls.filter(([kind])=>kind==='query').map(([,code])=>code),['I0001']);
+  assert.deepEqual(all.calls.filter(([kind])=>kind==='query').map(([,code])=>code),['I0001','ESPM-']);
   assert.ok(all.fullAt instanceof Date);
 });
 
@@ -128,6 +131,37 @@ test('valid association IDs are deduplicated across broad and period searches be
   const result=await h.service.fastTick();
   assert.equal(result.discovered,1);
   assert.equal(h.persisted.filter(record=>String(record.id)==='7').length,1);
+});
+
+test('legacy and PeopleSoft candidates are both discovered and deduplicated by Brightspace ID', async () => {
+  const time=Date.parse('2026-10-18T15:00:00Z');
+  const legacy={Identifier:41,Code:'002521-01-2602-I0001',Type:{Code:'Course Offering'}};
+  const modern={Identifier:42,Code:'ESPM-2602-GS2-C0011',Type:{Code:'Course Offering'}};
+  const persisted=[];
+  const store={async baselineStatus(){return {state:'ready'}},async lastFullDiscoveryAt(){return new Date(time)},
+    async recordDiscoveries(records){persisted.push(...records);return {newlyRecorded:records.length,alreadyKnown:0}},
+    async countHistoricalBacklog(){return 0},async listWaitingNew(){return []},async listFastWork(){return []}};
+  const client={async associationCandidates(code){return code==='2602-I0001'?[legacy]:code==='ESPM-2602-'?[modern,{...legacy}]:[]}};
+  const service=createSectionAssociationService({client,store,reconciler:{},discoveryConfiguration:{mode:'explicit',periods:['2602']},now:()=>time,logger:{info(){},warn(){},error(){}}});
+  const result=await service.fastTick();
+  assert.equal(result.discovered,2);
+  assert.deepEqual(persisted.map(row=>String(row.id)).sort(),['41','42']);
+});
+
+test('initial historical baseline includes both broad code-family searches', async () => {
+  const time=Date.parse('2026-10-18T15:00:00Z'); const calls=[]; let baselineRecords=[];
+  const legacy={Identifier:61,Code:'002521-01-2602-I0001',Type:{Code:'Course Offering'}};
+  const modern={Identifier:62,Code:'ESPM-2602-GS2-C0011',Type:{Code:'Course Offering'}};
+  const store={async baselineStatus(){return {state:'pending'}},async lastFullDiscoveryAt(){return null},
+    async beginBaseline(){return 'lease'},async finishBaseline(token,records){baselineRecords=records;return {newlyRecorded:records.length,alreadyKnown:0}},
+    async recordDiscoveries(){return {newlyRecorded:0,alreadyKnown:0}},async markFullDiscoveryCompleted(){},
+    async countHistoricalBacklog(){return 0},async listWaitingNew(){return []},async listFastWork(){return []}};
+  const client={async associationCandidates(code){calls.push(code);return code==='I0001'?[legacy]:code==='ESPM-'?[modern]:[]}};
+  const service=createSectionAssociationService({client,store,reconciler:{},discoveryConfiguration:{mode:'explicit',periods:['2602']},now:()=>time,logger:{info(){},warn(){},error(){}}});
+  const result=await service.fastTick();
+  assert.equal(result.status,'completed');
+  assert.deepEqual(calls,['I0001','ESPM-','2602-I0001','ESPM-2602-']);
+  assert.deepEqual(baselineRecords.map(row=>String(row.id)).sort(),['61','62']);
 });
 
 test('completed re-verification is offered only during the maintenance window', async () => {
@@ -151,10 +185,12 @@ test('missing confirmation uses completed period results and exact IDs without e
     now: () => time, logger: { info() {}, warn() {}, error() {} } });
   const result = await service.fastTick({ execution: { executionId: 'period-evidence' } });
   assert.equal(result.status, 'completed');
-  assert.deepEqual(calls, ['2602-I0001']);
-  assert.equal(confirmations.length, 1);
+  assert.deepEqual(calls, ['2602-I0001', 'ESPM-2602-']);
+  assert.equal(confirmations.length, 2);
   assert.deepEqual(confirmations[0].periods, ['2602']);
   assert.deepEqual(confirmations[0].discoveredIds, ['48865']);
+  assert.equal(confirmations[0].format, 'legacy');
+  assert.equal(confirmations[1].format, 'peoplesoft');
   assert.equal(confirmations[0].discoveryAt.getTime(), time);
 });
 

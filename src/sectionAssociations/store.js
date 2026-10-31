@@ -139,8 +139,9 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
       return Boolean(result.matchedCount || result.upsertedCount);
     } catch (error) { if (error.code === 11000) return false; throw error; }
   }
-  async function confirmMissing({ periods, broad = false, discoveredIds = [], discoveryAt, execution, recordAudit: audit, onConfirmed } = {}) {
+  async function confirmMissing({ periods, broad = false, format = 'legacy', discoveredIds = [], discoveryAt, execution, recordAudit: audit, onConfirmed } = {}) {
     if (!broad && (!Array.isArray(periods) || !periods.length)) return { confirmed: 0 };
+    if (!['legacy', 'peoplesoft'].includes(format)) return { confirmed: 0 };
     if (!(discoveryAt instanceof Date) || !Number.isFinite(discoveryAt.getTime())) return { confirmed: 0 };
     const { associations } = await collections();
     const cutoff = new Date(discoveryAt.getTime() - 30 * 60 * 1000);
@@ -148,8 +149,11 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
     let confirmed = 0;
     for (const period of broad ? [null] : periods) {
       if (period !== null && !/^\d{2}0[12]$/.test(period)) continue;
+      const codeFilter = period === null
+        ? (format === 'legacy' ? /^\d{6}-\d{2}-\d{4}-I0001$/ : /^ESPM-\d{2}0[12]-.+$/)
+        : (format === 'legacy' ? new RegExp(`^\\d{6}-\\d{2}-${period}-I0001$`) : new RegExp(`^ESPM-${period}-.+$`));
       const filter = { namespace, status: { $ne: 'missing' }, missingObservedAt: { $lte: cutoff },
-        ...(period ? { associationCode: new RegExp(`^\\d{6}-\\d{2}-${period}-I0001$`) } : {}) };
+        associationCode: codeFilter };
       while (true) {
         const batch = await associations.find(filter, { projection: { associationOrgUnitId: 1,
           associationCode: 1 } }).sort({ missingObservedAt: 1, associationOrgUnitId: 1 })
@@ -163,7 +167,8 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
               $unset: { missingObservedAt: '', missingConfirmedAt: '', missingDiscoveryAt: '', missingDiscoveryScope: '' } } } })),
           ...absent.map(row => ({ updateOne: { filter: { namespace, associationOrgUnitId: String(row.associationOrgUnitId),
             missingObservedAt: { $lte: cutoff }, status: { $ne: 'missing' } }, update: { $set: { status: 'missing',
-              missingConfirmedAt: discoveryAt, missingDiscoveryAt: discoveryAt, missingDiscoveryScope: period || 'all' } } } }))
+              missingConfirmedAt: discoveryAt, missingDiscoveryAt: discoveryAt,
+              missingDiscoveryScope: period || (format === 'legacy' ? 'all' : 'all-peoplesoft') } } } }))
         ];
         if (operations.length) await associations.bulkWrite(operations, { ordered: false });
         const transitioned = absent.length ? await associations.find({ namespace,
@@ -178,7 +183,7 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
               timestamp: discoveryAt, parentAssociationD2lId: String(row.associationOrgUnitId),
               parentAssociationOrgCode: row.associationCode || '', parentAssociationName: '',
               affectedCourseOfferingD2lId: '', affectedCourseOfferingOrgCode: '', affectedCourseOfferingName: '',
-              category: 'missing-confirmed', explanation: `Association was marked missing after successful ${period ? `period ${period}` : 'broad'} discovery did not return its exact Org Unit ID.`,
+              category: 'missing-confirmed', explanation: `Association was marked missing after successful ${period ? `period ${period}` : 'broad'} ${format === 'legacy' ? 'legacy I0001' : 'PeopleSoft ESPM'} discovery did not return its exact Org Unit ID.`,
               finalOutcome: 'missing', recordKey: `missing-confirmed:${row.associationOrgUnitId}` });
           } catch (error) { execution.auditIncomplete = true; throw error; }
         }

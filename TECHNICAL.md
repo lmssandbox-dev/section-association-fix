@@ -6,7 +6,7 @@
 
 `client.js` contains bounded bookmark pagination and feature-specific API calls. `rules.js` enforces the association code and child suffix patterns. `resolver.js` validates every direct Group child and resolves exact Course Offering codes. `reconciler.js` validates every target before writes, then performs GET → full PUT → verification GET. `store.js` tracks association metadata, positive reconciliation evidence, baseline audit state, successful full-discovery timestamps, and the shared worker lease. `service.js` handles period-aware discovery, bounded priority selection, and fast/recovery passes.
 
-For scheduling, `client.js` accepts the broad `I0001` query or a validated four-digit period plus `-I0001`; `config.js` parses and validates `SECTION_ASSOCIATION_DISCOVERY_PERIODS`, and `service.js` resolves the configured scope and coordinates full, fast, and maintenance-window selection. `store.js` performs batched discovery persistence and stores full-scan completion and recovery state. `cron.js` enforces the shared 50-item invocation limit, while `scheduler.js` provides internal timers; both use the same distributed lease.
+For scheduling, `client.js` accepts broad `I0001`/`ESPM-` queries or validated period-specific queries `{period}-I0001`/`ESPM-{period}-`; `config.js` parses and validates `SECTION_ASSOCIATION_DISCOVERY_PERIODS`, and `service.js` resolves the configured scope and coordinates full, fast, and maintenance-window selection. The service runs these additional requests sequentially and deduplicates by Org Unit ID. `store.js` performs batched discovery persistence and stores full-scan completion and recovery state. `cron.js` enforces the shared 50-item invocation limit, while `scheduler.js` provides internal timers; both use the same distributed lease.
 
 The LTI provider is optional during bootstrap. Worker code uses only the Server-to-Server OAuth service account.
 
@@ -20,7 +20,7 @@ The summary contains a UUID, `source`, start/completion dates, final status, opt
 
 ## Reconciliation algorithm
 
-1. Require association Course Offering type and code `^\\d{6}-\\d{2}-\\d{4}-I0001$`.
+1. Require association Course Offering type and either legacy code `^\\d{6}-\\d{2}-\\d{4}-I0001$` or PeopleSoft shape `ESPM-{valid YY01/YY02 period}-{nonblank remainder}`. Session and sequence values are not fixed.
 2. Read bounded child pages. Require at least one child; every child must be Type `Group` and end with `-\\d{5}`.
 3. Derive each original Course Offering code by removing the five-digit child suffix; reject duplicate derived codes.
 4. Resolve every derived code exactly once and require a distinct Course Offering ID.
@@ -38,9 +38,10 @@ Auto and explicit fast passes make a fully paginated Brightspace request for eac
 
 ```text
 GET /d2l/api/lp/{version}/orgstructure/?orgUnitType=3&orgUnitCode={period}-I0001
+GET /d2l/api/lp/{version}/orgstructure/?orgUnitType=3&orgUnitCode=ESPM-{period}-
 ```
 
-The broad `orgUnitCode=I0001` scan is fully paginated and covers all historical and future periods, finding associations outside the regular scope without repeating that broad read every 15 minutes in auto/explicit modes. The first broad query initializes the baseline. Later full scans are due once daily at or after 02:00 local time. Their successful completion is timestamped in tenant-scoped `section_association_meta` only after records persist; missed executions remain due at the next invocation. If a broad query fails on an established tenant, its timestamp stays unchanged and regular period discovery continues; initial baseline failure stops the cycle. Mongo persistence failures fail the cycle and do not mark completion. In `all` mode, each fast cycle runs one broad query, persists its discoveries, and uses the same result as full discovery, avoiding a duplicate query.
+The two broad queries, `orgUnitCode=I0001` and `orgUnitCode=ESPM-`, are fully paginated and cover historical and future periods without repeating those reads every 15 minutes in auto/explicit modes. The initial broad pair initializes the baseline. Later full scans are due once daily at or after 02:00 local time. Their successful completion is timestamped in tenant-scoped `section_association_meta` only after both queries and records persist; missed executions remain due at the next invocation. If either broad query fails on an established tenant, its timestamp stays unchanged and regular period discovery continues; initial baseline failure stops the cycle. Mongo persistence failures fail the cycle and do not mark completion. In `all` mode, each fast cycle runs both broad queries, persists their discoveries, and reuses the same results as full discovery.
 
 The first successful full discovery uses a Mongo baseline lease and marks associations already present as `baseline: true` for audit. Baseline does not suppress reconciliation. Historical and new associations go through the same reconciler; historical work has no new-association stability delay. New associations wait the configured stability duration.
 
@@ -54,9 +55,9 @@ Completed associations with positive verification evidence become eligible after
 flowchart TD
   A[Fast tick every 15 minutes] --> B[Resolve configured scope]
   B --> C{Scope is all?}
-  C -- Yes --> D[One broad I0001 query; persist and mark full scan]
+  C -- Yes --> D[Two broad queries: I0001 and ESPM; persist and mark full scan]
   C -- No --> E{Initial baseline or full scan due after 02:00?}
-  E -- Yes --> F[Paginate broad I0001 scan and persist success timestamp]
+  E -- Yes --> F[Paginate both broad family scans and persist success timestamp]
   E -- No --> G[Skip broad scan]
   F --> H[Query configured periods and persist distinct IDs]
   G --> H
@@ -74,7 +75,7 @@ flowchart TD
 
 After the baseline is ready, discovery deduplicates valid association IDs and compares them with Mongo in tenant-scoped `$in` queries of at most 500 IDs, supported by the existing unique `{ namespace: 1, associationOrgUnitId: 1 }` index. Known records receive a bounded bulk refresh of `associationCode` and discovery-only `lastSeenAt`; inserts are limited to IDs absent from the comparison and use bounded unordered bulk upserts with `$setOnInsert`, preserving existing state, first-seen time, baseline marker, and reconciliation evidence. Reconciliation updates `lastCheckedAt` but never `lastSeenAt`. Duplicate-key races are confirmed against Mongo and counted as already known. Initial baseline writes are chunked to the same bound and still mark only inserted records as baseline. Counters count distinct valid discovered IDs. A partial bulk failure fails the execution so it cannot be reported as complete; already-applied operations are safe to observe on the next cycle.
 
-A 404 from the initial association-detail GET sets `missingObservedAt` once and leaves the association pending. `confirmMissing` scans candidates in bounded batches; it changes a record to `missing` only when a successful fresh discovery finishes at least 30 minutes after that observation and the exact D2L ID is absent. A period query filters candidates by the stored association period; broad `I0001` coverage checks every period. The service supplies IDs from the just-completed raw discovery response, including returned IDs that no longer pass association validation, so matching Org Codes cannot substitute for ID evidence. Failed or incomplete queries never invoke confirmation for their coverage. No discovery result sets are persisted and no Recycle Bin endpoint is called. `missing` is not a completed/blocked state and is excluded from fast/recovery selectors and backlog counts. Positive discovery of the same ID restores it to `pending`, clears observation/confirmation metadata, and preserves its history; another ID with the same Org Code is inserted independently. Confirmation writes a `missing-confirmed` exception audit row and structured log event, but does not increment completed or correction counters. Legacy documents without missing metadata remain unchanged and need no migration.
+A 404 from the initial association-detail GET sets `missingObservedAt` once and leaves the association pending. `confirmMissing` scans candidates in bounded batches; it changes a record to `missing` only when a successful fresh discovery finishes at least 30 minutes after that observation and the exact D2L ID is absent. Period queries filter by both stored family and academic period; broad `I0001` coverage checks only legacy records and broad `ESPM-` coverage checks only PeopleSoft records. The service supplies IDs from the just-completed raw discovery response, including returned IDs that no longer pass association validation, so matching Org Codes cannot substitute for ID evidence. Failed or incomplete queries never invoke confirmation for their coverage. No discovery result sets are persisted and no Recycle Bin endpoint is called. `missing` is not a completed/blocked state and is excluded from fast/recovery selectors and backlog counts. Positive discovery of the same ID restores it to `pending`, clears observation/confirmation metadata, and preserves its history; another ID with the same Org Code is inserted independently. Confirmation writes a `missing-confirmed` exception audit row and structured log event, but does not increment completed or correction counters. Legacy documents without missing metadata remain unchanged and need no migration.
 
 ## Transport and write boundary
 

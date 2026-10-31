@@ -72,7 +72,7 @@ function createSectionAssociationClient({ get, http, oauth, baseUrl, lpVersion }
     return read(`${root}/courses/${id}`, 'course-offering');
   };
   const associationCandidates = (orgUnitCode = 'I0001') => {
-    if (typeof orgUnitCode !== 'string' || !/^(?:\d{4}-)?I0001$/.test(orgUnitCode)) {
+    if (typeof orgUnitCode !== 'string' || !/^(?:I0001|\d{2}0[12]-I0001|ESPM-|ESPM-\d{2}0[12]-)$/.test(orgUnitCode)) {
       throw new Error('Invalid Section Association discovery code.');
     }
     return pages(`${root}/orgstructure/?orgUnitType=3&orgUnitCode=${encodeURIComponent(orgUnitCode)}`, 'association-candidates');

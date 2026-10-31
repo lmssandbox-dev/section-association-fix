@@ -112,11 +112,17 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     const runFullDiscovery = baselineRequired || fullDiscoveryDue(lastFull, currentTime);
     setPhase('discovery');
     let full = [];
+    const fullByFormat = {};
     let fullDiscoveryAt;
     let fullDiscoveryError;
     if (scope.mode === 'all' || runFullDiscovery) {
       try {
-        full = await discover('I0001');
+        fullByFormat.legacy = await discover('I0001');
+        fullByFormat.peoplesoft = await discover('ESPM-');
+        full = [...new Map([...fullByFormat.legacy, ...fullByFormat.peoplesoft]
+          .map(item => [String(item.Identifier ?? item.OrgUnitId), item])).values()];
+        Object.defineProperty(full, 'discoveredIds', { value: [...new Set([
+          ...(fullByFormat.legacy.discoveredIds || []), ...(fullByFormat.peoplesoft.discoveredIds || [])]) ] });
         fullDiscoveryAt = new Date(now());
         if (runFullDiscovery || scope.mode === 'all') stats.discoveryActivities.historical = true;
       }
@@ -158,17 +164,28 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
       stats.alreadyKnown += counts.alreadyKnown;
     }
     if (fullDiscoveryAt && (runFullDiscovery || scope.mode === 'all') && baseline?.state === 'ready') {
-      await confirmMissing({ broad: true, discoveredIds: full.discoveredIds || [...fullIds], discoveryAt: fullDiscoveryAt });
+      for (const format of ['legacy', 'peoplesoft']) {
+        await confirmMissing({ broad: true, format, discoveredIds: fullByFormat[format].discoveredIds || [], discoveryAt: fullDiscoveryAt });
+      }
     }
     if ((runFullDiscovery || scope.mode === 'all') && !fullDiscoveryError && typeof store.markFullDiscoveryCompleted === 'function') {
       await store.markFullDiscoveryCompleted();
     }
     setPhase('discovery');
-    const periodResults = scope.mode === 'all' ? [] : await Promise.all(scope.periods.map(period => discover(`${period}-I0001`)));
+    const periodResults = [];
+    if (scope.mode !== 'all') {
+      // Keep Brightspace discovery bounded and retain separate absence evidence for each code family.
+      for (const period of scope.periods) {
+        const legacy = await discover(`${period}-I0001`);
+        const peoplesoft = await discover(`ESPM-${period}-`);
+        periodResults.push({ period, legacy, peoplesoft });
+      }
+    }
     const periodDiscoveryAt = periodResults.length ? new Date(now()) : null;
     stats.discoveryPeriods = scope;
     if (scope.mode !== 'all') stats.discoveryActivities.periods = true;
-    const associations = [...new Map([...full, ...periodResults.flat()]
+    const flatPeriodResults = periodResults.flatMap(result => [result.legacy, result.peoplesoft]);
+    const associations = [...new Map([...full, ...flatPeriodResults.flat()]
       .map(item => [String(item.Identifier ?? item.OrgUnitId), item])).values()];
     stats.discovered = associations.length;
     setPhase('database');
@@ -177,17 +194,19 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
         ? associations.filter(item => !fullIds.has(String(item.Identifier ?? item.OrgUnitId)))
         : associations)
         .map(item => ({ id: item.Identifier ?? item.OrgUnitId, code: item.Code }));
-      const periodObservedIds = periodResults.flatMap(result => result?.discoveredIds || []);
+      const periodObservedIds = flatPeriodResults.flatMap(result => result?.discoveredIds || []);
       if (discoveryRecords.length || periodObservedIds.length) {
-        const counts = await store.recordDiscoveries(discoveryRecords, discoveryOptions(periodResults));
+        const counts = await store.recordDiscoveries(discoveryRecords, discoveryOptions(flatPeriodResults));
         stats.new += counts.newlyRecorded;
         stats.alreadyKnown += counts.alreadyKnown;
       }
       if (periodDiscoveryAt && typeof store.confirmMissing === 'function') {
-        for (let index = 0; index < scope.periods.length; index++) {
-          const result = periodResults[index] || [];
-          await confirmMissing({ periods: [scope.periods[index]],
-            discoveredIds: result.discoveredIds || result.map(item => String(item.Identifier ?? item.OrgUnitId)), discoveryAt: periodDiscoveryAt });
+        for (const result of periodResults) {
+          for (const format of ['legacy', 'peoplesoft']) {
+            const matches = result[format];
+            await confirmMissing({ periods: [result.period], format,
+              discoveredIds: matches.discoveredIds || matches.map(item => String(item.Identifier ?? item.OrgUnitId)), discoveryAt: periodDiscoveryAt });
+          }
         }
       }
     }

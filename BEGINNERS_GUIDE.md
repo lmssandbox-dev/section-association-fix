@@ -4,14 +4,16 @@
 
 ## 1. Why does it exist?
 
-When IPSIS groups multiple sections under a **Section Association Course Offering** (identified by `I0001`), the original standalone Course Offerings may remain active. The app finds these originals and deactivates them when their relationship to the association is unambiguous. **It does not delete courses, change enrollments, move groups, or alter the grouped course.**
+When IPSIS groups multiple sections under a **Section Association Course Offering**, the original standalone Course Offerings may remain active. Older associations use codes such as `002521-01-2602-I0001`. Since October 30, 2026, PeopleSoft also creates codes such as `ESPM-2602-GS2-C0011`. The app finds originals for either kind and deactivates them when their relationship to the association is unambiguous. **It does not delete courses, change enrollments, move groups, or alter the grouped course.**
 
 ```mermaid
 flowchart LR
-  A[IPSIS association course<br/>I0001] --> B[Group children]
-  B --> C[Original standalone courses]
-  C --> D[Safely set originals inactive]
-  A -. stays unchanged .-> D
+  A[Legacy association<br/>…-2602-I0001] --> C[Same safety checks]
+  B[PeopleSoft association<br/>ESPM-2602-GS2-C0011] --> C
+  C --> D[Group children identify original courses]
+  D --> E[Safely set originals inactive]
+  A -. stays unchanged .-> E
+  B -. stays unchanged .-> E
 ```
 
 ## 2. The five main blocks
@@ -19,7 +21,7 @@ flowchart LR
 | Block | Plain-English responsibility |
 | --- | --- |
 | **Scheduler** | Wakes the worker up automatically. |
-| **Discovery** | Finds `I0001` association courses, using smart academic-period searches. |
+| **Discovery** | Finds both legacy `I0001` and newer `ESPM-` association courses by academic period. |
 | **Resolver + safety checks** | Uses each association's Group codes to identify its original courses and verifies every match. |
 | **Correction engine** | If live changes are enabled, deactivates active originals and reads them again to confirm. |
 | **MongoDB + LTI monitor** | Remembers work and outcomes; displays execution history and downloadable reports to authenticated Brightspace users. |
@@ -33,7 +35,8 @@ An academic period is a semester code. The app uses **São Paulo time** to apply
 - `YY01` means January–June; `YY02` means July–December.
 - By default, the app searches the previous, current, and next periods. In **October 2026**, that is **2601 · 2602 · 2701**.
 - The next period is included because Brightspace offerings for a future semester may be created early, before that semester begins.
-- Every 15 minutes, the worker searches the configured periods. Once a day, **at or after 02:00**, it also searches all `I0001` periods to catch older, future, or otherwise missed associations. On first installation, this broad search establishes the initial baseline.
+- Every 15 minutes, the worker searches the configured periods using both code patterns. For period `2602`, it searches `2602-I0001` and `ESPM-2602-`. Once a day, **at or after 02:00**, it also searches all `I0001` and all `ESPM-` records to catch older, future, or otherwise missed associations. On first installation, these broad searches establish the initial baseline.
+- In the new pattern, `ESPM` is the fixed prefix, `2602` is the academic period, `GS2` is an example session, and `C0011` is an example sequence number. Sessions and sequence numbers can change; the app does not need a list of them.
 
 The optional setting `SECTION_ASSOCIATION_DISCOVERY_PERIODS` controls the regular searches:
 
@@ -47,7 +50,7 @@ In Render, remove the setting, leave its value empty, or choose `auto` for the d
 flowchart TD
   A[Every 15 minutes] --> B[Search configured periods]
   A --> C{Full scan due?}
-  C -- First run or daily after 02:00 --> D[Search all I0001 periods]
+  C -- First run or daily after 02:00 --> D[Search all legacy and ESPM periods]
   C -- No --> E[Use period results]
   D --> E
   B --> E
@@ -62,7 +65,7 @@ flowchart TD
 
 The app only acts when **all** of these conditions hold:
 
-1. The association is a **Course Offering** with the exact code shape `123456-01-2026-I0001`.
+1. The association is a **Course Offering** with either the legacy code shape `123456-01-2602-I0001` or the new shape `ESPM-2602-GS2-C0011` (valid period and nonempty remaining code).
 2. It has at least one **direct Group child**; every child code ends in `-` plus **five digits**.
 3. Removing each Group's final five-digit suffix identifies **exactly one distinct original Course Offering**. Duplicate, missing, or ambiguous matches block that association.
 4. **Every target is validated before any course is changed.** Already-inactive targets are left alone.
@@ -82,6 +85,21 @@ The app only acts when **all** of these conditions hold:
 A scheduled cron execution processes **at most 50 associations** across its normal and recovery work. One association can point to several original courses. Newly discovered associations usually wait **10 minutes** before processing; historical baseline associations do not.
 
 Academic periods use `YY01` for January–June and `YY02` for July–December in `America/Sao_Paulo`. `SECTION_ASSOCIATION_DISCOVERY_PERIODS` is optional: leave it unset or empty for automatic previous/current/next discovery, use a comma-separated period list to select specific periods, or set it to `all` for every fast cycle. No manual rollover is needed.
+
+Here is how the searches feed into the existing correction process:
+
+```mermaid
+flowchart LR
+  A[Chosen period, for example 2602] --> B[Search 2602-I0001]
+  A --> C[Search ESPM-2602-]
+  B --> D[Combine and deduplicate by Brightspace ID]
+  C --> D
+  D --> E[Check Course Offering and Group children]
+  E --> F[Existing resolver validates every original course]
+  F --> G[Dry-run, or deactivate and verify in live mode]
+```
+
+The broad searches use the same two code families for the initial baseline and daily historical discovery. Missing checks also stay within a family: a successful legacy search can confirm a legacy record is absent, but cannot confirm an `ESPM-` record is absent. Both require the exact Brightspace Org Unit ID to be absent after the 30-minute observation delay. A failed or partial query never confirms absence. Existing Mongo history remains compatible without a migration.
 
 ## 6. What can an administrator see?
 
