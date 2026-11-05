@@ -21,6 +21,16 @@ function buildMaintenanceExecutionSummary(execution, { status, results = [], exe
       summary[field] = results.reduce((total, result) => total + result[resultField], 0);
     }
   }
+  for (const field of ['childChecksAttempted', 'childChecksSucceeded', 'childChangesDetected',
+    'statusChecksAttempted', 'statusChecksSucceeded', 'statusChangesDetected', 'monitoringErrors', 'mappingRefreshesRequired']) {
+    if (results.some(result => Number.isSafeInteger(result?.[field]) && result[field] >= 0)) {
+      summary[field] = results.reduce((total, result) => total + (Number.isSafeInteger(result?.[field]) ? result[field] : 0), 0);
+    }
+  }
+  const childLag = [...results].reverse().find(result => Number.isSafeInteger(result?.childMonitoringLag));
+  const statusLag = [...results].reverse().find(result => Number.isSafeInteger(result?.statusMonitoringLag));
+  if (childLag) summary.childMonitoringLag = childLag.childMonitoringLag;
+  if (statusLag) summary.statusMonitoringLag = statusLag.statusMonitoringLag;
   if (executionErrors > 0) summary.errors = (summary.errors || 0) + executionErrors;
   const validPeriod = period => /^\d{2}0[12]$/.test(period || '');
   const periodsResult = [...results].reverse().find(result => {
@@ -44,6 +54,13 @@ function buildMaintenanceExecutionSummary(execution, { status, results = [], exe
     }
   }
   if (Object.keys(discoveryActivities).length) summary.discoveryActivities = discoveryActivities;
+  const monitoringResult = [...results].reverse().find(result => Array.isArray(result?.monitoringPeriods));
+  if (monitoringResult) summary.monitoringPeriods = [...monitoringResult.monitoringPeriods];
+  const monitoringActivities = {};
+  for (const result of results) for (const [activity, performed] of Object.entries(result?.monitoringActivities || {})) {
+    if (performed === true) monitoringActivities[activity] = true;
+  }
+  if (Object.keys(monitoringActivities).length) summary.monitoringActivities = monitoringActivities;
   const coverageResult = [...results].reverse().find(result => Number.isSafeInteger(result?.remainingHistoricalBacklog) && result.remainingHistoricalBacklog >= 0);
   if (coverageResult) summary.coverage = { type: 'bounded-cycle', remainingHistoricalBacklog: coverageResult.remainingHistoricalBacklog };
   return summary;

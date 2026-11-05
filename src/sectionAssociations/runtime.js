@@ -33,15 +33,19 @@ function createSectionAssociationRuntime({ env = process.env, http, logger = con
   const recoveryIntervalHours = positiveInteger(env.SECTION_ASSOCIATION_FIX_RECOVERY_INTERVAL_HOURS, 4);
   const maxReconciliationsPerRun = positiveInteger(env.SECTION_ASSOCIATION_FIX_MAX_RECONCILIATIONS_PER_RUN, 50);
   const completedReverifyHours = positiveInteger(env.SECTION_ASSOCIATION_FIX_COMPLETED_REVERIFY_HOURS, 24);
+  const childMonitoringBatchSize = positiveInteger(env.SECTION_ASSOCIATION_FIX_CHILD_MONITOR_BATCH_SIZE, 125);
+  const statusVerificationBatchSize = positiveInteger(env.SECTION_ASSOCIATION_FIX_STATUS_VERIFY_BATCH_SIZE, 100);
   const discoveryConfiguration = discoveryPeriodsConfiguration(env);
   const reconciler = createReconciler({ client, store, dryRun, logger });
   const service = createSectionAssociationService({ client, store, reconciler, stabilityMinutes,
-    recoveryIntervalHours, maxReconciliationsPerRun, completedReverifyHours, discoveryConfiguration, logger });
+    recoveryIntervalHours, maxReconciliationsPerRun, completedReverifyHours, discoveryConfiguration,
+    childMonitoringBatchSize, statusVerificationBatchSize, logger });
   const apiHealthService = createApiHealthService({ get, http: apiHttp, oauth, baseUrl: env.BS_URL,
     configuredVersion: env.D2L_API_LP_VERSION, store, logger });
   return { oauth, apiGate, client, store, reconciler, service, namespace, dryRun,
     apiHealthService,
-    fastIntervalMinutes, recoveryIntervalHours, maxReconciliationsPerRun, completedReverifyHours, discoveryConfiguration,
+    fastIntervalMinutes, recoveryIntervalHours, maxReconciliationsPerRun, completedReverifyHours,
+    childMonitoringBatchSize, statusVerificationBatchSize, discoveryConfiguration,
     async close() { await Promise.allSettled([store.close(), apiGate.close()]); } };
 }
 

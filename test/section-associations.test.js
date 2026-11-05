@@ -495,19 +495,20 @@ test('first successful discovery records baseline history and sends it through t
   store.recordDiscoveries = async rows => { events.push('incremental-persisted'); return recordDiscoveries(rows); };
   store.releaseBaseline = async () => {};
   let reconciles = 0;
+  const baselineTime = Date.parse('2026-10-19T02:00:00Z');
   const service = createSectionAssociationService({ client: { async associationCandidates(code) {
     events.push(`query:${code}`); return [association];
   } }, store,
-    reconciler: { async reconcileAssociation() { reconciles++; return { status: 'completed' }; } }, logger: { info() {} }, now: () => 10000000 });
+    reconciler: { async reconcileAssociation() { reconciles++; return { status: 'completed' }; } }, logger: { info() {} }, now: () => baselineTime });
   await service.fastTick();
   assert.equal(store.rows.length, 1);
   assert.deepEqual(events.slice(0, 3), ['query:I0001', 'query:ESPM-', 'baseline-persisted']);
-  assert.match(events[3], /^query:\d{4}-I0001$/);
+  assert.equal(events.includes('query:2602-I0001'), false);
   assert.equal(reconciles, 1);
 });
 
 test('pending associations wait ten minutes and completed associations are skipped', async () => {
-  let time = 100000000;
+  let time = Date.parse('2026-10-18T15:00:00Z');
   const store = serviceMemoryStore(() => time);
   const seen = [];
   const logger = captureLogger();
@@ -530,7 +531,7 @@ test('pending associations wait ten minutes and completed associations are skipp
 });
 
 test('recovery cycle logs discovery and outcome counters', async () => {
-  const time = 100000000;
+  const time = Date.parse('2026-10-18T15:00:00Z');
   const store = serviceMemoryStore(() => time);
   await store.recordDiscovery('33664', association.Code);
   store.records.get('33664').lastCheckedAt = new Date(time - 10 * 60000);

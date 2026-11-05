@@ -1,6 +1,6 @@
 'use strict';
 
-const { isAssociation } = require('./rules');
+const { isAssociation, originalOfferingCode } = require('./rules');
 const { logEvent, safeErrorFields } = require('./log');
 
 const ACADEMIC_TIME_ZONE = 'America/Sao_Paulo';
@@ -33,7 +33,35 @@ function discoveryScope(configuration = { mode: 'auto' }, value = Date.now()) {
 
 function isReverificationWindow(value = Date.now()) {
   const { hour } = localParts(value);
-  return hour >= 3 && hour < 6;
+  return hour >= 0 && hour < 6;
+}
+
+function isRegularOperationsWindow(value = Date.now()) {
+  const { hour } = localParts(value);
+  return hour >= 7 && hour < 23;
+}
+
+function isHistoricalDiscoveryWindow(value = Date.now()) {
+  const { hour } = localParts(value);
+  return hour === 23;
+}
+
+function localHourKey(value = Date.now()) {
+  const { year, month, day, hour } = localParts(value);
+  return new Date(Date.UTC(year, month - 1, day, hour) - localOffsetMs(value));
+}
+
+function localDayStart(value = Date.now()) {
+  const { year, month, day } = localParts(value);
+  return new Date(Date.UTC(year, month - 1, day) - localOffsetMs(value));
+}
+
+function localOffsetMs(value) {
+  const date = new Date(value);
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: ACADEMIC_TIME_ZONE, year: 'numeric', month: '2-digit',
+    day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).formatToParts(date);
+  const local = Object.fromEntries(parts.filter(part => part.type !== 'literal').map(part => [part.type, Number(part.value)]));
+  return Date.UTC(local.year, local.month - 1, local.day, local.hour, local.minute, local.second) - Math.floor(date.getTime() / 1000) * 1000;
 }
 
 function localDateKey(value = Date.now()) {
@@ -42,15 +70,14 @@ function localDateKey(value = Date.now()) {
 }
 
 function fullDiscoveryDue(lastCompletedAt, value = Date.now()) {
-  const { hour } = localParts(value);
-  if (!lastCompletedAt) return true;
-  if (hour < 2) return false;
-  return localDateKey(lastCompletedAt) !== localDateKey(value) || localParts(lastCompletedAt).hour < 2;
+  if (!isHistoricalDiscoveryWindow(value)) return false;
+  return !lastCompletedAt || localDateKey(lastCompletedAt) !== localDateKey(value);
 }
 
 function createSectionAssociationService({ client, store, reconciler, stabilityMinutes = 10,
   maxReconciliationsPerRun = 50, recoveryIntervalHours = 4, completedReverifyHours = 24,
-  discoveryConfiguration = { mode: 'auto', periods: [] }, now = Date.now, logger = console }) {
+  discoveryConfiguration = { mode: 'auto', periods: [] }, childMonitoringBatchSize = 125,
+  statusVerificationBatchSize = 100, now = Date.now, logger = console }) {
   let busy = false;
   const stabilityLogged = new Set();
   const attemptedByExecution = new WeakMap();
@@ -109,13 +136,17 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     const baselineRequired = !baselineStatus || baselineStatus.state !== 'ready';
     const lastFull = typeof store.lastFullDiscoveryAt === 'function' ? await store.lastFullDiscoveryAt() : new Date(currentTime);
     const scope = discoveryScope(discoveryConfiguration, currentTime);
-    const runFullDiscovery = baselineRequired || fullDiscoveryDue(lastFull, currentTime);
+    const broadWindow = isHistoricalDiscoveryWindow(currentTime);
+    const regularWindow = isRegularOperationsWindow(currentTime);
+    const runFullDiscovery = broadWindow && (baselineRequired || fullDiscoveryDue(lastFull, currentTime));
+    if (!regularWindow && !runFullDiscovery && scope.mode !== 'all') return true;
+    if (scope.mode === 'all' && !regularWindow && !runFullDiscovery) return true;
     setPhase('discovery');
     let full = [];
     const fullByFormat = {};
     let fullDiscoveryAt;
     let fullDiscoveryError;
-    if (scope.mode === 'all' || runFullDiscovery) {
+    if (runFullDiscovery) {
       try {
         fullByFormat.legacy = await discover('I0001');
         fullByFormat.peoplesoft = await discover('ESPM-');
@@ -145,7 +176,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
         onConfirmed: (item, coverage) => logEvent(logger, 'warn', 'association marked missing', {
           associationId: item.associationOrgUnitId, code: item.associationCode, reason: 'discovery-absence' }) });
     };
-    if (!baseline || baseline.state !== 'ready') {
+    if ((!baseline || baseline.state !== 'ready') && runFullDiscovery) {
       const counts = await bootstrap(full, discoveryOptions([full]));
       if (!counts) {
         baseline = await store.baselineStatus();
@@ -158,7 +189,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
         stats.alreadyKnown += counts.alreadyKnown;
         baseline = { state: 'ready' };
       }
-    } else if ((runFullDiscovery || scope.mode === 'all') && !fullDiscoveryError) {
+    } else if (baseline?.state === 'ready' && runFullDiscovery && !fullDiscoveryError) {
       const counts = await store.recordDiscoveries(full.map(item => ({ id: item.Identifier ?? item.OrgUnitId, code: item.Code })), discoveryOptions([full]));
       stats.new += counts.newlyRecorded;
       stats.alreadyKnown += counts.alreadyKnown;
@@ -168,12 +199,12 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
         await confirmMissing({ broad: true, format, discoveredIds: fullByFormat[format].discoveredIds || [], discoveryAt: fullDiscoveryAt });
       }
     }
-    if ((runFullDiscovery || scope.mode === 'all') && !fullDiscoveryError && typeof store.markFullDiscoveryCompleted === 'function') {
+    if (runFullDiscovery && !fullDiscoveryError && typeof store.markFullDiscoveryCompleted === 'function') {
       await store.markFullDiscoveryCompleted();
     }
     setPhase('discovery');
     const periodResults = [];
-    if (scope.mode !== 'all') {
+    if (scope.mode !== 'all' && regularWindow) {
       // Keep Brightspace discovery bounded and retain separate absence evidence for each code family.
       for (const period of scope.periods) {
         const legacy = await discover(`${period}-I0001`);
@@ -182,8 +213,8 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
       }
     }
     const periodDiscoveryAt = periodResults.length ? new Date(now()) : null;
-    stats.discoveryPeriods = scope;
-    if (scope.mode !== 'all') stats.discoveryActivities.periods = true;
+    if (periodResults.length || (scope.mode === 'all' && runFullDiscovery)) stats.discoveryPeriods = scope;
+    if (scope.mode !== 'all' && periodResults.length) stats.discoveryActivities.periods = true;
     const flatPeriodResults = periodResults.flatMap(result => [result.legacy, result.peoplesoft]);
     const associations = [...new Map([...full, ...flatPeriodResults.flat()]
       .map(item => [String(item.Identifier ?? item.OrgUnitId), item])).values()];
@@ -209,6 +240,12 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
           }
         }
       }
+    } else if (flatPeriodResults.length) {
+      const records = [...new Map(flatPeriodResults.flat().map(item => [String(item.Identifier ?? item.OrgUnitId),
+        { id: item.Identifier ?? item.OrgUnitId, code: item.Code }])).values()];
+      const counts = await store.recordDiscoveries(records, discoveryOptions(flatPeriodResults));
+      stats.new += counts.newlyRecorded;
+      stats.alreadyKnown += counts.alreadyKnown;
     }
     logDiscovery(stats);
     return true;
@@ -233,11 +270,132 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     }
   }
 
+  function monitoringPeriods(time) {
+    const scope = discoveryScope(discoveryConfiguration, time);
+    const rolling = academicPeriods(time).periods;
+    return scope.mode === 'explicit' ? scope.periods.filter(period => rolling.includes(period)) : rolling;
+  }
+
+  function normalizedChildren(rows) {
+    return rows.map(row => ({ id: String(row.Identifier ?? row.OrgUnitId ?? ''), code: String(row.Code || '') }))
+      .sort((a, b) => a.id.localeCompare(b.id) || a.code.localeCompare(b.code));
+  }
+
+  function trustedMapping(item) {
+    if (item.verifiedMappingVersion !== 1 || !Array.isArray(item.verifiedChildren) || !Array.isArray(item.verifiedTargets) ||
+        !Array.isArray(item.verifiedMappings) || item.verifiedChildren.length < 1 ||
+        item.verifiedChildren.length !== item.verifiedTargets.length || item.verifiedChildren.length !== item.verifiedMappings.length) return false;
+    if ([...item.verifiedChildren, ...item.verifiedTargets, ...item.verifiedMappings].some(row => !row || typeof row !== 'object')) return false;
+    const sectionIds = new Set(item.verifiedMappings.map(mapping => String(mapping.sectionId)));
+    const targetIds = new Set(item.verifiedMappings.map(mapping => String(mapping.targetId)));
+    if (sectionIds.size !== item.verifiedChildren.length || targetIds.size !== item.verifiedTargets.length) return false;
+    if (item.verifiedChildren.some(child => !/^\d+$/.test(String(child.id)) || !child.code) ||
+        item.verifiedTargets.some(target => !/^\d+$/.test(String(target.id)) || !target.code)) return false;
+    return item.verifiedMappings.every(mapping => {
+      const child = item.verifiedChildren.find(row => String(row.id) === String(mapping.sectionId) && row.code === mapping.sectionCode);
+      const target = item.verifiedTargets.find(row => String(row.id) === String(mapping.targetId) && row.code === mapping.targetCode);
+      if (!child || !target) return false;
+      try { return originalOfferingCode(child.code) === target.code; } catch { return false; }
+    });
+  }
+
+  async function monitorChildren(stats, execution, remaining) {
+    if (!isRegularOperationsWindow(now()) || typeof store.listMonitoringWork !== 'function') return;
+    const time = now();
+    const items = await store.listMonitoringWork({ kind: 'children', periods: monitoringPeriods(time),
+      limit: childMonitoringBatchSize, windowKey: localHourKey(time), attemptCutoff: new Date(time - 60 * 60000) });
+    stats.monitoringPeriods = monitoringPeriods(time);
+    stats.monitoringActivities.children = true;
+    const attemptField = 'lastChildInspectionAttemptAt';
+    const changed = [];
+    let mappingsNeedRefresh = 0;
+    let childChangesDetected = 0;
+    for (const item of items) {
+      const id = String(item.associationOrgUnitId);
+      await store.record(id, { [attemptField]: new Date(now()) });
+      if (!trustedMapping(item)) {
+        changed.push(item);
+        mappingsNeedRefresh++;
+        continue;
+      }
+      let currentRows;
+      try {
+        stats.childChecksAttempted++;
+        currentRows = await client.children(id);
+      } catch (error) {
+        stats.monitoringErrors++;
+        logEvent(logger, 'warn', 'child monitoring failed', safeErrorFields(error, { associationId: id, phase: 'children-read' }));
+        continue;
+      }
+      const current = normalizedChildren(currentRows);
+      const previous = normalizedChildren(item.verifiedChildren || []);
+      if (currentRows.some(row => row?.Type?.Code !== 'Group') || JSON.stringify(current) !== JSON.stringify(previous)) {
+        changed.push(item); childChangesDetected++;
+      } else await store.record(id, { lastSuccessfulChildInspectionAt: new Date(now()) });
+      stats.childChecksSucceeded++;
+    }
+    stats.childChangesDetected += childChangesDetected;
+    stats.mappingRefreshesRequired += mappingsNeedRefresh;
+    if (changed.length) await processWork(changed.slice(0, remaining), stats, execution);
+    stats.childMonitoringLag = await store.countDueMonitoring?.({ kind: 'children', periods: monitoringPeriods(time), before: localHourKey(time) }) ?? null;
+  }
+
+  async function verifyCachedTargets(stats, execution, reconciliationLimit) {
+    const time = now();
+    if (!isReverificationWindow(time) || typeof store.listMonitoringWork !== 'function') return;
+    const items = await store.listMonitoringWork({ kind: 'status', periods: monitoringPeriods(time),
+      limit: statusVerificationBatchSize, windowKey: localDayStart(time), attemptCutoff: new Date(time - 60 * 60000) });
+    stats.monitoringPeriods = monitoringPeriods(time);
+    stats.monitoringActivities.status = true;
+    const attemptField = 'lastStatusVerificationAttemptAt';
+    const reconcile = [];
+    let mappingsNeedRefresh = 0;
+    let statusChangesDetected = 0;
+    for (const item of items) {
+      const id = String(item.associationOrgUnitId);
+      await store.record(id, { [attemptField]: new Date(now()) });
+      const mappings = Array.isArray(item.verifiedTargets) ? item.verifiedTargets : [];
+      if (!trustedMapping(item)) { reconcile.push(item); mappingsNeedRefresh++; continue; }
+      let requiresReconcile = false;
+      try {
+        stats.statusChecksAttempted++;
+        for (const mapping of mappings) {
+          if (!/^\d+$/.test(String(mapping.id || '')) || typeof mapping.code !== 'string' || !mapping.code) { requiresReconcile = true; break; }
+          const course = await client.course(mapping.id);
+          const actualId = String(course?.Identifier ?? course?.OrgUnitId ?? '');
+          if (actualId !== String(mapping.id) || course?.Type?.Code !== 'Course Offering' || course?.Code !== mapping.code || course?.IsActive !== false) {
+            requiresReconcile = true; break;
+          }
+        }
+      } catch (error) {
+        if (error?.status === 404) {
+          reconcile.push(item);
+          statusChangesDetected++;
+          continue;
+        }
+        stats.monitoringErrors++;
+        logEvent(logger, 'warn', 'cached status verification failed', safeErrorFields(error, { associationId: id, phase: 'target-read' }));
+        continue;
+      }
+      stats.statusChecksSucceeded++;
+      if (requiresReconcile) { reconcile.push(item); statusChangesDetected++; }
+      else await store.record(id, { lastSuccessfulStatusVerificationAt: new Date(now()) });
+    }
+    const remaining = Math.max(0, reconciliationLimit - stats.processedThisRun);
+    stats.mappingRefreshesRequired += mappingsNeedRefresh;
+    if (reconcile.length && remaining) await processWork(reconcile.slice(0, remaining), stats, execution);
+    stats.statusChangesDetected += statusChangesDetected;
+    stats.statusMonitoringLag = await store.countDueMonitoring?.({ kind: 'status', periods: monitoringPeriods(time), before: localDayStart(time) }) ?? null;
+  }
+
   function newStats(discovered = 0) {
     return { candidates: discovered, discovered, new: 0, alreadyKnown: 0, pending: 0, historicalPending: 0,
       blocked: 0, completed: 0, dueForReverification: 0, processedThisRun: 0, remainingHistoricalBacklog: null,
       associationsChecked: 0, associationsAlreadyCompliant: 0, correctionsApplied: 0, errors: 0,
-      writesAttempted: 0, writesVerified: 0, alreadyInactive: 0, discoveryActivities: {} };
+      writesAttempted: 0, writesVerified: 0, alreadyInactive: 0, childChecksAttempted: 0, childChecksSucceeded: 0,
+      childChangesDetected: 0, childMonitoringLag: null, statusChecksAttempted: 0, statusChecksSucceeded: 0,
+      statusChangesDetected: 0, statusMonitoringLag: null, monitoringErrors: 0, mappingRefreshesRequired: 0,
+      monitoringPeriods: null, monitoringActivities: {}, discoveryActivities: {} };
   }
 
   async function runCycle({ recovery = false, discoveryAlreadyCompleted = false,
@@ -265,8 +423,6 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
       const stabilityCutoff = new Date(time - stabilityMinutes * 60000);
       stats.historicalPending = await store.countHistoricalBacklog();
       if (recovery) {
-        const reverifyBefore = new Date(time - completedReverifyMs);
-        stats.dueForReverification = isReverificationWindow(time) ? await store.countDueCompleted(reverifyBefore) : 0;
         const items = await store.listRecoveryWork({ limit: maxReconciliations,
           stabilityCutoff, blockedBefore: new Date(time - recoveryIntervalMs) });
         await processWork(items, stats, execution);
@@ -279,9 +435,14 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
           logStabilityWait(item.associationOrgUnitId);
         }
         const items = await store.listFastWork({ limit: maxReconciliations, stabilityCutoff,
-          includeCompletedReverification: isReverificationWindow(time),
-          reverifyBefore: new Date(time - completedReverifyMs) });
+          includeCompletedReverification: false, reverifyBefore: new Date(time - completedReverifyMs) });
         await processWork(items, stats, execution);
+      }
+      if (!recovery) {
+        phase = 'monitoring';
+        if (isRegularOperationsWindow(time)) await monitorChildren(stats, execution,
+          Math.max(0, maxReconciliations - stats.processedThisRun));
+        else if (isReverificationWindow(time)) await verifyCachedTargets(stats, execution, maxReconciliations);
       }
       stats.remainingHistoricalBacklog = await store.countHistoricalBacklog();
       succeeded = true;
@@ -307,4 +468,5 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
   return { discover, fastTick, recoveryTick };
 }
 
-module.exports = { createSectionAssociationService, academicPeriods, discoveryScope, isReverificationWindow, fullDiscoveryDue };
+module.exports = { createSectionAssociationService, academicPeriods, discoveryScope, isReverificationWindow,
+  isRegularOperationsWindow, isHistoricalDiscoveryWindow, fullDiscoveryDue };

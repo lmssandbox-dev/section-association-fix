@@ -10,6 +10,10 @@ function matches(record, filter) {
       if (!expected.some(part => matches(record, part))) return false;
       continue;
     }
+    if (key === '$and') {
+      if (!expected.every(part => matches(record, part))) return false;
+      continue;
+    }
     const actual = record[key];
     if (expected && typeof expected === 'object' && !(expected instanceof Date)) {
       if ('$ne' in expected && actual === expected.$ne) return false;
@@ -19,6 +23,7 @@ function matches(record, filter) {
       if ('$gte' in expected && !(actual instanceof Date && actual >= expected.$gte)) return false;
       if ('$lt' in expected && !(actual instanceof Date && actual < expected.$lt)) return false;
       if ('$gt' in expected && !(actual instanceof Date && actual > expected.$gt)) return false;
+      if ('$regex' in expected && (typeof actual !== 'string' || !expected.$regex.test(actual))) return false;
     } else if (actual !== expected) return false;
   }
   return true;
@@ -154,6 +159,19 @@ test('blocked associations enter recovery only after their retry interval', asyn
   const retry = await store.listRecoveryWork({ ...args, blockedBefore: date(1) });
   assert.deepEqual(retry.map(row => row.associationOrgUnitId), ['91']);
   assert.equal(retry[0].workType, 'blocked');
+});
+
+test('monitoring selectors rotate by successful check time and defer recent failures', async()=>{
+  const records=[
+    item(1,{status:'completed',reconciliationVersion:1,associationCode:'002521-01-2602-I0001',lastSuccessfulChildInspectionAt:date(50),lastChildInspectionAttemptAt:date(20)}),
+    item(2,{status:'completed',reconciliationVersion:1,associationCode:'ESPM-2602-GS2-C0011',lastSuccessfulChildInspectionAt:date(150),lastChildInspectionAttemptAt:date(150)}),
+    item(3,{status:'completed',reconciliationVersion:1,associationCode:'002521-01-2602-I0002',lastSuccessfulChildInspectionAt:date(250)}),
+    item(4,{status:'completed',reconciliationVersion:1,associationCode:'ESPM-2602-GS2-C0012',lastStatusVerificationAttemptAt:date(150),lastChildInspectionAttemptAt:date(150)})
+  ];
+  const {store}=makeStore(records);
+  const selected=await store.listMonitoringWork({kind:'children',periods:['2602'],limit:10,windowKey:date(200),attemptCutoff:date(100)});
+  assert.deepEqual(selected.map(row=>row.associationOrgUnitId),['1']);
+  assert.equal(await store.countDueMonitoring({kind:'children',periods:['2602'],before:date(200)}),3);
 });
 
 test('successful full discovery timestamp is persisted across store instances', async () => {

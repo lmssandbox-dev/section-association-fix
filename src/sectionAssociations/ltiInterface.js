@@ -56,9 +56,9 @@ function safe(value){return String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<
 function discoveryActivityNames(run){const activities=run.discoveryActivities||{},names=[];if(activities.periods===true||activities.currentPrevious===true)names.push('Periods');if(activities.historical===true)names.push('Historical');if(activities.reverification===true)names.push('Re-verification');return names}
 function discoveryScope(run){const names=discoveryActivityNames(run),periods=run.discoveryPeriods,mode=periods?.mode;let labels=[];if(mode==='all')labels=['All periods'];else if(Array.isArray(periods?.periods)&&periods.periods.every(period=>/^\\d{2}0[12]$/.test(period)))labels=periods.periods;else if(/^\\d{4}$/.test(periods?.current||'')&&/^\\d{4}$/.test(periods?.previous||''))labels=[periods.current,periods.previous];if(labels.length){const otherActivities=names.filter(name=>name!=='Periods'&&!(mode==='all'&&name==='Historical'));return [...labels,...(otherActivities.length?['Mixed']:[])].join(' · ')}if(!names.length)return '—';return names.length>1?'Mixed':names[0]}
 function renderDiscoveryPeriods(scope){const node=document.getElementById('discoveryScope');if(!scope){node.textContent='—';return}if(scope.mode==='all'){node.textContent='All periods';return}const periods=Array.isArray(scope.periods)?scope.periods:[scope.previous,scope.current,scope.next].filter(Boolean);if(!periods.length||periods.some(period=>!/^\\d{2}0[12]$/.test(period||''))){node.textContent='—';return}node.textContent=periods.join(' · ')}
-function latestMessage(run){if(run.status==='completed'&&run.associationsChecked===0&&run.errors===0)return '';const explanation=[run.error,run.failureReason,run.lastError].find(value=>typeof value==='string'&&value.trim());if(run.status!=='completed'&&explanation)return explanation.trim().replace(/\\s+/g,' ').slice(0,180);return 'Checked: '+count(run.associationsChecked)+' · Corrections: '+count(run.correctionsApplied)+' · Errors: '+count(run.errors)}
+function latestMessage(run){if(run.status==='completed'&&run.associationsChecked===0&&run.errors===0&&(!run.monitoringErrors||run.monitoringErrors===0))return '';const explanation=[run.error,run.failureReason,run.lastError].find(value=>typeof value==='string'&&value.trim());if(run.status!=='completed'&&explanation)return explanation.trim().replace(/\\s+/g,' ').slice(0,180);const monitorErrors=Number.isSafeInteger(run.monitoringErrors)&&run.monitoringErrors>0?' · Monitoring read errors: '+count(run.monitoringErrors):'';return 'Checked: '+count(run.associationsChecked)+' · Corrections: '+count(run.correctionsApplied)+' · Errors: '+count(run.errors)+monitorErrors}
 function executionHtml(run){
-  const label=safe(statusText(run.status)),quiet=run.status==='completed'&&run.associationsChecked===0&&run.errors===0;
+  const label=safe(statusText(run.status)),quiet=run.status==='completed'&&run.associationsChecked===0&&run.errors===0&&(!run.monitoringErrors||run.monitoringErrors===0);
   const durationValue=compactDuration(run.startedAt,run.completedAt),parts=[];
   if(quiet){parts.push('No work required');if(durationValue)parts.push(durationValue)}
   else{
@@ -67,6 +67,9 @@ function executionHtml(run){
     const explanation=[run.error,run.failureReason,run.lastError].find(value=>typeof value==='string'&&value.trim());
     if(run.status!=='completed'&&explanation)parts.push(explanation.trim().replace(/ +/g,' ').slice(0,180));
   }
+  if(Number.isSafeInteger(run.childChecksAttempted)&&run.childChecksAttempted>0)parts.push('Child checks: '+count(run.childChecksSucceeded)+'/'+count(run.childChecksAttempted));
+  if(Number.isSafeInteger(run.statusChecksAttempted)&&run.statusChecksAttempted>0)parts.push('Status checks: '+count(run.statusChecksSucceeded)+'/'+count(run.statusChecksAttempted));
+  if(Number.isSafeInteger(run.monitoringErrors)&&run.monitoringErrors>0)parts.push('Monitoring read errors: '+count(run.monitoringErrors));
   const info=parts.map(safe).join(' · ');
   const reports=run.detailedAuditAvailable===true?'<div class="report-entry"><details class="reports-menu"><summary aria-label="Reports for this execution">Reports</summary><div class="reports-options" role="group" aria-label="Execution reports"><button type="button" data-audit="corrections" data-execution="'+safe(run.executionId||'')+'">Corrections CSV</button><button type="button" data-audit="exceptions" data-execution="'+safe(run.executionId||'')+'">Exceptions CSV</button></div></details><span class="report-feedback" role="status" aria-live="polite"></span></div>':'<span class="audit-unavailable">Detailed reports unavailable.</span>';
   return '<details class="execution'+(quiet?' quiet-work':'')+'"><summary class="history-row execution-summary"><span class="date">'+safe(formatShortDate(run.startedAt))+'</span><span class="scope">'+safe(discoveryScope(run))+'</span><span class="outcome-cell"><span class="outcome '+outcomeClass(run.status)+'" aria-label="Outcome: '+label+'">'+label+'</span></span><span class="numeric" data-label="Checked">'+safe(count(run.associationsChecked))+'</span><span class="numeric" data-label="Corrections">'+safe(count(run.correctionsApplied))+'</span><span class="numeric" data-label="Errors">'+safe(count(run.errors))+'</span></summary><div class="detail-strip"><span class="execution-info">'+info+'</span>'+reports+'</div></details>'
@@ -154,7 +157,14 @@ const CSV_COLUMNS = [
   ['Coverage', run => run.coverage?.type],
   ['Discovery period identifiers', run => {const periods=run.discoveryPeriods;if(periods?.mode==='all')return 'All periods';if(Array.isArray(periods?.periods))return periods.periods.join(' + ');return periods ? `${periods.current || ''} + ${periods.previous || ''}` : ''}],
   ['Discovery activities', run => Object.entries(run.discoveryActivities || {}).filter(([, performed]) => performed === true)
-    .map(([activity]) => ({ periods: 'configured periods', currentPrevious: 'current + previous', historical: 'historical', reverification: 're-verification' }[activity] || activity)).join('; ')]
+    .map(([activity]) => ({ periods: 'configured periods', currentPrevious: 'current + previous', historical: 'historical', reverification: 're-verification' }[activity] || activity)).join('; ')],
+  ['Child checks attempted', run => run.childChecksAttempted], ['Child checks succeeded', run => run.childChecksSucceeded],
+  ['Child changes detected', run => run.childChangesDetected], ['Child monitoring lag', run => run.childMonitoringLag],
+  ['Cached status checks attempted', run => run.statusChecksAttempted], ['Cached status checks succeeded', run => run.statusChecksSucceeded],
+  ['Cached status changes detected', run => run.statusChangesDetected], ['Cached status monitoring lag', run => run.statusMonitoringLag],
+  ['Monitoring read errors', run => run.monitoringErrors], ['Mapping refreshes required', run => run.mappingRefreshesRequired],
+  ['Monitoring periods', run => run.monitoringPeriods?.join(' + ')],
+  ['Monitoring activities', run => Object.keys(run.monitoringActivities || {}).join('; ')]
 ];
 
 function csvCell(value) {

@@ -329,6 +329,31 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
     return associations.countDocuments({ namespace, status: 'completed', reconciliationVersion: 1,
       lastVerifiedAt: { $lte: reverifyBefore } });
   }
+  async function listMonitoringWork({ kind, periods, limit, windowKey, attemptCutoff }) {
+    const { associations } = await collections();
+    if (!['children', 'status'].includes(kind) || !Array.isArray(periods) || !periods.length || limit <= 0) return [];
+    const periodPattern = new RegExp(`(?:${periods.join('|')})`);
+    const query = { namespace, status: 'completed', reconciliationVersion: 1,
+      associationCode: { $regex: periodPattern } };
+    const timestamp = kind === 'children' ? 'lastSuccessfulChildInspectionAt' : 'lastSuccessfulStatusVerificationAt';
+    const attemptTimestamp = kind === 'children' ? 'lastChildInspectionAttemptAt' : 'lastStatusVerificationAttemptAt';
+    // A window marker prevents a fast record from cycling ahead of unchecked records.
+    query.$or = [{ [timestamp]: { $exists: false } }, { [timestamp]: { $lt: windowKey } }];
+    if (attemptCutoff) {
+      query.$and = [{ $or: [{ [timestamp]: { $exists: false } }, { [timestamp]: { $lt: windowKey } }] },
+        { $or: [{ [attemptTimestamp]: { $exists: false } }, { [attemptTimestamp]: { $lte: attemptCutoff } }] }];
+      delete query.$or;
+    }
+    return associations.find(query).sort({ [timestamp]: 1, firstSeenAt: 1, associationOrgUnitId: 1 }).limit(limit).toArray();
+  }
+  async function countDueMonitoring({ kind, periods, before }) {
+    const { associations } = await collections();
+    if (!['children', 'status'].includes(kind) || !Array.isArray(periods) || !periods.length) return 0;
+    const timestamp = kind === 'children' ? 'lastSuccessfulChildInspectionAt' : 'lastSuccessfulStatusVerificationAt';
+    return associations.countDocuments({ namespace, status: 'completed', reconciliationVersion: 1,
+      associationCode: { $regex: new RegExp(`(?:${periods.join('|')})`) },
+      $or: [{ [timestamp]: { $exists: false } }, { [timestamp]: { $lt: before } }] });
+  }
   async function countRecoveryWork({ stabilityCutoff, blockedBefore }) {
     const { associations } = await collections();
     const queries = [
@@ -522,7 +547,7 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
   async function close() { if (!mongoClient) await client.close(); }
   return { get, record, baselineStatus, beginBaseline, finishBaseline, releaseBaseline, recordDiscovery, recordDiscoveries,
     recordPotentialMissing, confirmMissing,
-    listFastWork, listWaitingNew, listRecoveryWork, countHistoricalBacklog, countDueCompleted, countRecoveryWork,
+    listFastWork, listWaitingNew, listRecoveryWork, countHistoricalBacklog, countDueCompleted, listMonitoringWork, countDueMonitoring, countRecoveryWork,
     lastFullDiscoveryAt, markFullDiscoveryCompleted,
     acquireCronLease, renewCronLease, releaseCronLease, cronLeaseStatus, recoveryDue, markRecoveryCompleted,
     saveMaintenanceExecution, latestMaintenanceExecution, recentMaintenanceExecutions, allMaintenanceExecutions,

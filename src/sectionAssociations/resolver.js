@@ -7,17 +7,20 @@ async function resolveTargets({ association, client, onValidated }) {
   const children = await client.children(associationId);
   if (children.length < 1) throw validationError('no-children', 'Association must have at least one direct child.');
   const codes = [];
+  const childRows = [];
   for (const child of children) {
     if (child?.Type?.Code !== 'Group') throw validationError('wrong-org-unit-type', 'Every direct child must be a Group.');
-    let code;
-    try { codes.push(originalOfferingCode(child.Code)); }
+    const sectionId = String(child.Identifier ?? child.OrgUnitId ?? '');
+    if (!/^\d+$/.test(sectionId)) throw validationError('unresolved-target', 'Every direct child must have a valid D2L ID.');
+    try { codes.push(originalOfferingCode(child.Code)); childRows.push({ sectionId, sectionCode: child.Code }); }
     catch (error) { throw validationError('invalid-child-code', error.message, error); }
   }
   if (new Set(codes).size !== codes.length) throw validationError('ambiguous-target', 'Association resolves multiple groups to the same original Course Offering code.');
 
   const targets = [];
   const targetIds = new Set();
-  for (const code of codes) {
+  for (let index = 0; index < codes.length; index++) {
+    const code = codes[index];
     let matches;
     try { matches = await client.exactCode(code); }
     catch (error) { error.stage ||= 'exact-code-lookup'; error.targetCode = code; throw error; }
@@ -28,7 +31,7 @@ async function resolveTargets({ association, client, onValidated }) {
     if (id === associationId) throw validationError('unresolved-target', 'An original offering cannot be the association offering itself.');
     if (targetIds.has(id)) throw validationError('ambiguous-target', 'Multiple derived codes resolve to the same original Course Offering.');
     targetIds.add(id);
-    targets.push({ id, code, name: match.Name });
+    targets.push({ id, code, name: match.Name, ...childRows[index] });
   }
   onValidated?.({ childCount: children.length, targetCount: targets.length });
   return targets;

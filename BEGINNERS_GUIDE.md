@@ -28,40 +28,63 @@ flowchart LR
 
 Brightspace is the **source of truth** for course status. MongoDB is the app's work notebook. The worker uses a dedicated Brightspace service account; it does not require someone to open the LTI interface.
 
-## 3. How does it find association courses efficiently?
+## 3. Daily operating schedule
+
+The single Render cron remains active 24 hours a day and starts one bounded run every 15 minutes. The worker uses `America/Sao_Paulo`; each window includes its start time and excludes its end time.
+
+| São Paulo time | What happens |
+| --- | --- |
+| 00:00–06:00 | Check saved original Course Offering IDs and confirm they are still inactive. Untrusted, missing, or active results go through full fresh reconciliation. |
+| 06:00–07:00 | No discovery or lightweight monitoring; pending and blocked recovery stays eligible. |
+| 07:00–23:00 | Search configured academic periods, process new work first, then inspect saved associations' direct Group children in rotating batches. |
+| 23:00–00:00 | Run the two broad historical searches (`I0001` and `ESPM-`) once after success; retry failures on later cron runs within this hour. |
+| Every 4 hours, 24/7 | Recover pending and retryable blocked associations using the existing safety rules. |
+
+### Why there are three checks
+
+Regular discovery finds new association courses. Daytime child monitoring detects sections later added to or removed from an association. Nighttime cached-ID verification checks whether the original standalone courses remain inactive. A successful full reconciliation saves the verified direct Group children and each corresponding original Course Offering ID and Org Code in the existing MongoDB association record. Old records without these saved relationships go through full reconciliation first.
+
+Cached IDs only identify records to inspect: they never authorize a change. If an original is active or an ID/Org Code does not match, the worker rereads the association, its current children, and exact original-course matches before it can make a change. Removed sections are detected and reconciled; the worker never reactivates a course just because a section was removed.
+
+Child inspection allows up to 125 association checks per cron run; cached status verification allows up to 100. Both limits can be lowered with `SECTION_ASSOCIATION_FIX_CHILD_MONITOR_BATCH_SIZE` and `SECTION_ASSOCIATION_FIX_STATUS_VERIFY_BATCH_SIZE`. All Brightspace reads still use the shared rate limiter. If more records are waiting than fit, oldest-successful-check records are selected first and later cron runs continue the backlog. Recent failed checks back off for an hour so other records can progress. The execution history and CSV report lightweight check counts and remaining monitoring lag separately from full reconciliation counts.
+
+## 4. How does it find association courses efficiently?
 
 An academic period is a semester code. The app uses **São Paulo time** to apply the institution's code convention:
 
 - `YY01` means January–June; `YY02` means July–December.
 - By default, the app searches the previous, current, and next periods. In **October 2026**, that is **2601 · 2602 · 2701**.
 - The next period is included because Brightspace offerings for a future semester may be created early, before that semester begins.
-- Every 15 minutes, the worker searches the configured periods using both code patterns. For period `2602`, it searches `2602-I0001` and `ESPM-2602-`. Once a day, **at or after 02:00**, it also searches all `I0001` and all `ESPM-` records to catch older, future, or otherwise missed associations. On first installation, these broad searches establish the initial baseline.
+- From 07:00 to 23:00, the worker searches the configured periods using both code patterns. For period `2602`, it searches `2602-I0001` and `ESPM-2602-`. From 23:00 to midnight, it searches all `I0001` and all `ESPM-` records once daily after success to catch older, future, or otherwise missed associations. On first installation, these broad searches establish the initial baseline.
 - In the new pattern, `ESPM` is the fixed prefix, `2602` is the academic period, `GS2` is an example session, and `C0011` is an example sequence number. Sessions and sequence numbers can change; the app does not need a list of them.
 
 The optional setting `SECTION_ASSOCIATION_DISCOVERY_PERIODS` controls the regular searches:
 
 - Leave it unset or empty, or set it to `auto`, to search previous/current/next.
 - Set a list such as `2601,2602,2701` to search exactly those periods, or `2701` to search just one.
-- Set it to `all` to search every period on every 15-minute cycle.
+- Set it to `all` to use the daily broad searches for all-period discovery; ongoing monitoring still uses previous/current/next.
 
-In Render, remove the setting, leave its value empty, or choose `auto` for the default; choose `all` for every period. The daily broad search is separate from regular period searches, except in `all` mode where the same broad query serves both. Period settings only search for offerings that exist in Brightspace; they cannot fix an IPSIS import that failed to create its offering.
+In Render, remove the setting, leave its value empty, or choose `auto` for the default; choose `all` for broad all-period discovery. Period settings only search for offerings that exist in Brightspace; they cannot fix an IPSIS import that failed to create its offering.
 
 ```mermaid
 flowchart TD
-  A[Every 15 minutes] --> B[Search configured periods]
-  A --> C{Full scan due?}
-  C -- First run or daily after 02:00 --> D[Search all legacy and ESPM periods]
-  C -- No --> E[Use period results]
-  D --> E
-  B --> E
-  E --> F[Save discovered associations in MongoDB]
-  F --> G[Select work and apply safety checks]
-  G --> H[Correct and verify, or keep pending / blocked]
+  A[15 minute cron, 24/7] --> B{Local time?}
+  B -- 07:00–23:00 --> C[Search configured periods and inspect children]
+  B -- 23:00–00:00 --> D[Retry daily broad search until success]
+  B -- 00:00–06:00 --> E[Verify cached original IDs]
+  B -- Other hours --> F[Skip discovery and lightweight checks]
+  C --> G[Save discovered associations in MongoDB]
+  D --> G
+  E --> H[Send uncertain cases to full reconciliation]
+  G --> I[Select work and apply safety checks]
+  H --> I
+  I --> J[Correct and verify, or keep pending / blocked]
+  F --> J
 ```
 
 **Why this matters:** frequent checks are lighter, but the daily complete search prevents older associations from being forgotten. A failed full search remains due for retry.
 
-## 4. What makes a correction safe?
+## 5. What makes a correction safe?
 
 The app only acts when **all** of these conditions hold:
 
@@ -73,18 +96,18 @@ The app only acts when **all** of these conditions hold:
 
 **Dry-run is on by default:** the app checks and reports what it *would* change, but makes **no course changes**. There is no automatic rollback.
 
-## 5. What runs when?
+## 6. What runs when?
 
 | Timing (São Paulo) | What happens |
 | --- | --- |
-| **Every 15 minutes** | Find associations in the configured scope; automatic mode searches previous/current/next, while `all` searches every period. Process eligible work. |
-| **Daily, at or after 02:00** | Full historical/future-period discovery for automatic and explicit scopes; `all` mode uses its regular broad query for this too. |
-| **Every 4 hours** | Recovery of pending and retryable blocked work. |
-| **03:00–06:00** | Recheck completed associations whose last successful verification is at least 24 hours old. |
+| **07:00–23:00, every 15 minutes** | Period discovery and rotating direct-child inspections. |
+| **23:00–00:00, every 15 minutes until success** | Broad historical/future-period discovery. |
+| **00:00–06:00, every 15 minutes** | Rotating cached-ID status verification. |
+| **Every 4 hours, 24 hours a day** | Recovery of pending and retryable blocked work. |
 
 A scheduled cron execution processes **at most 50 associations** across its normal and recovery work. One association can point to several original courses. Newly discovered associations usually wait **10 minutes** before processing; historical baseline associations do not.
 
-Academic periods use `YY01` for January–June and `YY02` for July–December in `America/Sao_Paulo`. `SECTION_ASSOCIATION_DISCOVERY_PERIODS` is optional: leave it unset or empty for automatic previous/current/next discovery, use a comma-separated period list to select specific periods, or set it to `all` for every fast cycle. No manual rollover is needed.
+Academic periods use `YY01` for January–June and `YY02` for July–December in `America/Sao_Paulo`. `SECTION_ASSOCIATION_DISCOVERY_PERIODS` is optional: leave it unset or empty for automatic previous/current/next discovery, use a comma-separated period list to select specific discovery periods, or set it to `all` for daily broad discovery. Ongoing monitoring is limited to previous/current/next even if discovery is set to older or additional terms. No manual rollover is needed.
 
 Here is how the searches feed into the existing correction process:
 
@@ -101,7 +124,7 @@ flowchart LR
 
 The broad searches use the same two code families for the initial baseline and daily historical discovery. Missing checks also stay within a family: a successful legacy search can confirm a legacy record is absent, but cannot confirm an `ESPM-` record is absent. Both require the exact Brightspace Org Unit ID to be absent after the 30-minute observation delay. A failed or partial query never confirms absence. Existing Mongo history remains compatible without a migration.
 
-## 6. What can an administrator see?
+## 7. What can an administrator see?
 
 The authenticated, **read-only** LTI monitor shows service status and the latest 50 executions. It offers **Export History CSV**, and for audited executions, **Corrections CSV** (verified changes) and **Exceptions CSV** (problems). Older executions may not have detailed reports. The **API Health Check** button opens a small view showing whether the tenant supports the app's configured Brightspace API version and whether D2L has documented lifecycle risks. **Run Check** refreshes that evidence; the endpoint list stays tucked away under **Endpoint Details**. A check runs at most once a day automatically, and users can start one manually with a short cooldown. Evidence becomes marked Unknown after 36 hours or a failed check, while the last successful result stays saved. This diagnostic never changes courses. The monitor does **not** provide a button for changing courses.
 
