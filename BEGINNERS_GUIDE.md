@@ -1,211 +1,197 @@
-# Brightspace Section Association Fix: A Beginner’s Guide
+# Section Association Fix
+## A simple guide to what the app does
 
-This guide explains what the application does, how it decides which courses are safe to inactivate, and what an operator can see when it runs. It assumes you know the basics of Brightspace courses and sections, but not how software is built.
+**In one sentence:** The app finds the original Brightspace courses that have been combined into a shared course and safely makes those originals inactive, so learners and instructors use the right course.
 
-## 1. The problem it solves
+You don't need to know programming to use this guide. You only need a basic understanding of courses and sections in Brightspace.
 
-An institution can use IPSIS to combine several class sections into one shared Brightspace course. Brightspace calls the combined course a **Section Association Course Offering**. Each section in that combined course may point back to an original, standalone Course Offering.
+---
 
-For example, three original offerings might be combined so instructors and learners use one shared course:
+## 1. Why do we need this app?
+
+Sometimes an institution combines several class sections into **one shared course** through IPSIS. Brightspace calls this a *Section Association*.
+
+For example:
+
+**Before** — three separate courses are active:
+
+- Marketing — Section 01
+- Marketing — Section 02
+- Marketing — Section 03
+
+**After** — the sections belong to one shared Marketing course. But the three original courses might still be active.
+
+**The app's job:** identify those original courses and make them inactive **after checking that it is safe**.
+
+The shared course stays active. Nothing is deleted. The app does not change enrollments or move sections.
+
+---
+
+## 2. What are the main parts?
+
+| Part | What it means in everyday language |
+| --- | --- |
+| **Brightspace** | Where the real courses and sections live. |
+| **The app** | Finds associations, checks the original courses, and decides whether to make them inactive. |
+| **Automatic scheduler** | Wakes up every 15 minutes to see which tasks should run. |
+| **MongoDB** | The app's notebook: what it found, checked, changed, or couldn't finish. |
+| **Monitoring page (LTI)** | A read-only dashboard showing whether the app is working and what happened in previous runs. |
+
+**The big picture**
 
 ```text
-Before association                     After association
-BIO 210, Section 01  ─────────────┐
-BIO 210, Section 02  ─────────────┼──► Shared BIO 210 course
-BIO 210, Section 03  ─────────────┘
-Original offerings may still be active
+Brightspace courses and sections
+             |
+             v
+      Section Association Fix
+       |                 |
+       v                 v
+ Checks and safe      Records history
+ course updates       in MongoDB
+       |
+       v
+  Brightspace
+
+A scheduler starts the work; the LTI page shows the results.
 ```
 
-The original offerings can remain active after the association is created. That can leave duplicate or outdated courses available. This application finds the original offerings represented by the associated sections and, when live processing is enabled, marks those originals inactive. It leaves the shared course, its sections, enrollments, and mappings alone. It does not delete courses.
+The app works in the background even if nobody opens the monitoring page.
 
-## 2. The application at a glance
+---
 
-```mermaid
-flowchart LR
-  B[Brightspace<br/>courses and sections] <--> A[Section Association Fix<br/>finds, checks, and records work]
-  A <--> M[(MongoDB<br/>work history and verified notes)]
-  S[15-minute scheduler] --> A
-  U[Authenticated LTI monitor] --> A
-  A --> U
+## 3. How does it handle a new association?
+
+Here is the process in five steps:
+
+**1. Find it.** The app notices a newly created shared course that matches the supported Section Association formats.
+
+**2. Give it time.** A new association normally waits **at least 10 minutes**, so Brightspace can finish setting it up.
+
+**3. Check the sections.** The app identifies every original course represented by the association's sections.
+
+**4. Check everything before changing anything.** If a course is missing, ambiguous, or does not match the expected structure, the app stops that association and records the problem. It does not make a partial set of changes.
+
+**5. Act and confirm.** If all checks pass and live processing is enabled, the app makes active originals inactive, then checks the result. Already-inactive courses are left alone.
+
+```text
+New shared course found
+          |
+          v
+Wait at least 10 minutes
+          |
+          v
+Check sections and original courses
+          |
+     Are checks OK?
+       /      \
+      No      Yes
+      |        |
+ Record issue  Make originals inactive*
+      |        |
+ Try again     Confirm and record result
+ when eligible
+
+* Only in live mode. In dry-run mode, the app reports
+  what it would do but does not change Brightspace.
 ```
 
-| Part | What it does |
+**Important:** The app starts in **dry-run mode by default**. In this mode, it can find and check courses, but **it does not inactivate anything**. Live mode must be enabled for actual course changes.
+
+---
+
+## 4. What does the app do throughout the day?
+
+The scheduler starts the app **every 15 minutes**, including overnight. That does **not** mean every course is checked every 15 minutes. Different kinds of work happen at different times, and courses are checked in batches.
+
+All times below are **São Paulo local time**.
+
+| When | Main activity | Why it matters |
+| --- | --- | --- |
+| **07:00–23:00** | **Find new associations and check known associations for section changes** | Detects new shared courses and added, removed, or changed sections. |
+| **23:00–00:00** | **Search older academic periods** | Finds older associations that regular searches might miss. This broad search completes once per day; failed attempts may be retried during the window. |
+| **00:00–06:00** | **Check saved original-course IDs** | Confirms whether previously identified original courses still exist and are inactive. Unexpected results trigger fresh safety checks before any possible update. |
+| **06:00–07:00** | **No scheduled discovery or lightweight monitoring** | Recovery work can still take place. |
+| **All day** | **Process eligible pending work and recover from problems** | Keeps unfinished work moving. Recovery is normally due about every four hours. |
+
+### A typical day, at a glance
+
+```text
+00:00       06:00 07:00                23:00 00:00
+|-----------|-----|--------------------|-----|
+ Saved-ID    Gap     New + known         Older
+ checks              association checks  periods
+
+Pending work and recovery may be handled at any hour.
+The scheduler starts a run every 15 minutes.
+```
+
+The daytime search normally covers the **previous, current, and next academic periods**, unless configured differently. The nightly historical search is broader.
+
+The app processes a limited number of associations per run to control workload. If there is more work than fits in one run, the rest can be picked up later. **There is no guaranteed 15-minute response time for every course.**
+
+---
+
+## 5. What if something changes later?
+
+**A new section is added to a shared course.** During daytime monitoring, the app can notice the difference. It rechecks the association and the original courses before making any new inactivation.
+
+**A section is removed.** The app rechecks the relationship, but it **does not reactivate** an original course automatically.
+
+**An original course is already inactive.** Nothing needs changing. The app records that it was already in the expected state.
+
+**Brightspace temporarily returns an error.** The app records the issue and can try again later. It does not assume a failed lookup means a course has been deleted.
+
+**An association seems to have disappeared.** The app does not decide it is missing after just one failed lookup. It waits at least **30 minutes** and requires a newer successful search that also cannot find that exact association. The record stays in the app's history.
+
+**An old association is discovered.** The daily historical search helps bring it into the workflow. Historical baseline records do not need the 10-minute waiting period used for new associations.
+
+---
+
+## 6. What keeps the process safe?
+
+The app is intentionally cautious:
+
+- **Check first, change second.** Every original course must be identified correctly before the app changes any of them.
+- **Only original courses are inactivated.** The shared course is not inactivated, and no course is deleted.
+- **No automatic reactivation.** The app never turns an inactive original back on.
+- **Confirm the result.** After an update, the app reads the course again to verify its status.
+- **Don't trust old notes alone.** MongoDB helps the app remember what happened, but the app must check current Brightspace information before changing a course.
+- **Dry-run is the default.** No Brightspace courses are updated until live processing is enabled.
+
+**What the app cannot do:** It cannot create a Section Association, fix an IPSIS import that never created a course in Brightspace, or correct section/enrollment mappings.
+
+---
+
+## 7. How can I see what happened?
+
+The LTI monitoring page is available to authorized users and is **read-only**. It does not have a button to inactivate courses.
+
+| Area | What to look for |
 | --- | --- |
-| **Brightspace** | Holds the current courses, association relationships, and active or inactive state. It is the source of truth. |
-| **Section Association Fix** | Finds associations, checks their sections and original courses, and handles safe inactivation. |
-| **Scheduler** | Starts bounded worker runs on a regular cadence. The local time determines which kinds of checks are eligible in each run. |
-| **MongoDB** | Keeps a work ledger: which associations were seen, what was checked, verified relationships, and execution history. Saved notes help select work, but do not prove current Brightspace state. |
-| **LTI monitor** | Gives authenticated Brightspace users a read-only view of service status, run history, health information, and available reports. It is optional and is not needed for the background worker to run. |
+| **Service Status** | Is the worker running or idle? What academic periods are configured? What happened most recently? |
+| **Execution History** | What happened in each run? How many associations were checked, already correct, changed, or affected by problems? |
+| **API Health Check** | Are the Brightspace API versions and available health information showing any concerns? This check does not change courses. |
+| **Corrections report** | Which course inactivations were successfully verified? |
+| **Exceptions report** | Which associations had problems, and why? |
 
-The worker connects to Brightspace with its service account. The monitor does not provide a button to inactivate courses.
+**A completed run** means that particular run finished. It does **not** mean every association in Brightspace has been checked.
 
-## 3. How one association is processed
+**A failed run** means that run did not finish normally. **A skipped run** often means another worker was already doing the job.
 
-```mermaid
-flowchart TD
-  A[Find an association in Brightspace] --> B{New association?}
-  B -- Yes --> C[Wait at least 10 minutes for it to settle]
-  B -- No --> D[Select it for pending work or recheck]
-  C --> E[Read the association and its direct Group sections]
-  D --> E
-  E --> F[Check every section and derive its original course code]
-  F --> G[Find and validate every matching original Course Offering]
-  G --> H{All matches clear and valid?}
-  H -- No --> I[Record a problem; block or retry later]
-  H -- Yes --> J{Original already inactive?}
-  J -- Yes --> K[Leave it unchanged]
-  J -- No, dry-run --> L[Report what would change; make no Brightspace write]
-  J -- No, live mode --> M[Set original to inactive]
-  M --> N[Read it again to confirm inactive]
-  K --> O[Record verified outcome]
-  L --> P[Keep active targets pending for later live processing]
-  N --> O
-```
+If something looks wrong, start with **Execution History** and then open the **Exceptions report**, if available. Some older executions do not have detailed reports.
 
-In plain terms, the application follows the section links back to the original courses. It checks **all** of those courses before changing any of them. A missing match, duplicate match, unexpected course type, or invalid section code stops that association from being changed. If an original is already inactive, that is a successful no-change result. In live mode, the worker reads back a changed course to confirm the result; it does not blindly repeat an update whose outcome is uncertain.
+---
 
-## 4. The recurring activities
+## 8. The essentials to remember
 
-These activities have different purposes. Finding an association, checking a saved association, and changing an original course are not the same thing.
+- **Purpose:** keep old standalone courses from remaining active after their sections are combined into a shared course.
+- **Starting frequency:** every **15 minutes**, but each type of work has its own hours and capacity limits.
+- **Daytime (07:00–23:00):** find associations and watch for section changes.
+- **Late night (23:00–00:00):** search historical periods.
+- **Overnight (00:00–06:00):** check previously identified original courses.
+- **Always eligible:** processing due pending work and recovery from problems.
+- **New associations:** normally wait at least **10 minutes** before being processed.
+- **Safety first:** the app checks the current association before making changes, and it never deletes courses.
+- **Default setting:** **dry-run** — checks only, no actual course inactivation.
 
-### Discover associations
-
-Discovery searches Brightspace for offerings whose Org Codes match the supported association formats. It searches selected academic periods during the day and performs broader searches for older or otherwise missed offerings at night. A found association is recorded in MongoDB so the worker can process it and remember its history.
-
-Discovery does not create an association. It can only find an offering that IPSIS successfully created in Brightspace.
-
-### Monitor the sections of known associations
-
-During daytime monitoring, the worker checks the direct Group sections of previously reconciled associations against the last successfully verified section list. If a section was added, removed, or changed, the association is sent through the full processing checks again. A section being removed never causes an original course to be reactivated.
-
-### Reconcile pending and recoverable work
-
-Pending work includes newly discovered associations that have finished their waiting period. Blocked or failed work can be selected for recovery when due. In the production cron setup, recovery is checked on each scheduler invocation but normally runs about every four hours; an unfinished recovery remains due for a later invocation. Recovery uses the same validation and write safeguards as any other processing. A run has a shared limit of 50 full reconciliations, so remaining work waits for a later run.
-
-### Search broadly for historical associations
-
-Once daily, the worker searches both supported code families across periods, rather than querying the entire history on every run. The first successful broad pass also establishes the initial baseline in MongoDB. Being part of that baseline does not permanently exclude an association from later processing.
-
-### Verify saved original-course IDs
-
-Overnight, the worker checks saved original-course IDs to see whether those same Brightspace offerings still exist and remain inactive. These saved IDs are a shortcut for checking status only. If a course is active, missing, or inconsistent with the saved information, the worker must reread the current association and validate its current sections and exact original-course matches before a change is allowed.
-
-### How monitoring leads to safe reprocessing
-
-```mermaid
-flowchart LR
-  A[Last fully verified section list] --> C{Compare with current Brightspace sections}
-  B[Current direct Group sections] --> C
-  C -- Same sections --> D[Record successful check; no full reprocessing needed]
-  C -- Added, removed, or changed --> E[Queue full reconciliation]
-  E --> F[Read current association and validate all current originals]
-  F --> G{Fresh checks pass?}
-  G -- No --> H[Record the issue; retry or leave blocked]
-  G -- Yes --> I[Use normal safe inactivation and verification rules]
-```
-
-The stored list helps the worker notice change. It never gives permission to change a course by itself.
-
-## 5. A day in the worker’s schedule
-
-The production setup starts one cron invocation every 15 minutes, 24 hours a day. Each invocation checks the current time in **São Paulo** and runs the work that is eligible then. This does not mean every association is checked every 15 minutes: monitoring checks are spread across bounded batches, and some activities run only in particular windows.
-
-```mermaid
-flowchart LR
-  T0[00:00] -->|Cached-ID status checks| T6[06:00]
-  T6 -->|Recovery may run; no lightweight checks| T7[07:00]
-  T7 -->|Period discovery + section monitoring| T23[23:00]
-  T23 -->|Daily broad historical discovery, retry until success| T24[00:00]
-  R[Pending and eligible blocked recovery<br/>remains eligible all day] -.-> T0
-```
-
-| São Paulo local time | Work eligible in this window |
-| --- | --- |
-| **00:00–06:00** | Rotating status checks of saved original-course IDs. Suspicious results require full fresh reconciliation. |
-| **06:00–07:00** | No discovery or lightweight monitoring. Pending and eligible blocked recovery may still run. |
-| **07:00–23:00** | Period-based discovery and rotating checks of direct Group sections. |
-| **23:00–00:00** | Broad historical discovery. It runs once successfully per day; if it fails or is incomplete, later 15-minute invocations retry during this window. |
-| **All day** | Pending and eligible blocked recovery remains eligible. In cron mode, the recovery pass is normally due every four hours, checked at an invocation. |
-
-Newly found associations normally wait **10 minutes** before processing, giving Brightspace time to finish creating their details. Historical baseline records do not wait. The regular discovery scope defaults to the previous, current, and next academic periods; an operator may configure a different scope. Broad historical discovery is a separate daily search and should not be confused with those regular period searches.
-
-Section monitoring checks up to 125 associations per invocation by default. Cached-ID status checks handle up to 100. These are limits for each run, not promises that each record is checked at a fixed interval. Work beyond a run’s limit remains for later runs. Full reconciliation and recovery share a limit of 50 associations per invocation.
-
-## 6. What happens in common situations?
-
-### A new Section Association is created
-
-The next eligible period search can find it. The worker records it, lets the 10-minute stability delay pass, then checks its sections and all matching original offerings. The association can be processed after it passes those checks.
-
-### A section is added to an existing association
-
-Daytime monitoring can detect the change by comparing the current section list with the saved verified list. The association goes through full checks again, including the new original course. Only after every match is validated can live processing inactivate an active original.
-
-### An original course is already inactive
-
-The worker leaves it unchanged and records that it was already compliant. It does not send a redundant change.
-
-### A Brightspace request fails temporarily
-
-The failed check is recorded and the worker retries eligible work later under its retry and recovery rules. A failed or partial discovery search cannot be used as proof that an association is absent. The latest known successful snapshots are preserved when a check fails.
-
-### An association disappears or is deleted
-
-A single “not found” response is only an initial observation. The worker keeps the record pending. It marks the association **missing** only after at least 30 minutes and a newer successful search for the same code family and academic period (or a successful broad search for that family) also omits the exact Brightspace ID. A legacy-code search cannot confirm a PeopleSoft-format record is missing, or the other way around. No Recycle Bin lookup is used. Missing records remain in history but leave the normal pending and recovery queues. If the same ID is later discovered again, it returns to pending; a different ID with the same Org Code is a separate record.
-
-### An older academic period needs attention
-
-Historical associations are eligible for reconciliation and do not have the new-association waiting delay. The daily broad search helps find older offerings without repeating an all-history search every 15 minutes. Discovery still depends on the offering existing in Brightspace.
-
-## 7. Safety rules and limits
-
-- **Dry-run is the default.** It performs checks and reports what would be changed, but sends no course updates. Active originals stay pending for a later live run.
-- **Every target is checked before the first change.** If any original-course match is missing, duplicated, or invalid, the association is not partially processed.
-- **Only one course property is changed.** In live mode, the application changes an original Course Offering from active to inactive. It does not delete, rename, or reactivate courses, and it does not change the associated course or enrollments.
-- **A change is read back and verified.** If the result of an update is uncertain, the worker checks state rather than blindly sending the update again.
-- **Saved MongoDB information is not authority to write.** Brightspace is the source of truth. A stored ID or section snapshot can select a record or flag a possible change, but current structure and exact matches must pass the normal validation before any write.
-- **It cannot repair a failed IPSIS import.** The application does not create associations or courses. If IPSIS never created an offering in Brightspace, there is nothing for discovery to find.
-
-## 8. Understanding the monitoring interface
-
-The optional LTI page is authenticated and read-only. Its sections answer different operator questions:
-
-### Service Status
-
-Shows whether the service can report its state, whether the worker is currently running or idle, the configured discovery periods, and the latest recorded execution. A running worker is not necessarily making a course change; it may be discovering, checking, or doing no work.
-
-### Execution History
-
-Shows past executions, newest first, with the outcome and counts such as associations checked, already compliant, corrections applied, and errors. You can browse 50 at a time and filter by inclusive start dates. Expanding a run shows its brief summary. **Export History CSV** includes all retained executions, regardless of the current page or filters.
-
-An execution marked **completed** means that run finished; it does not mean every association in Brightspace has been processed. **Failed** means the execution did not finish normally. **Skipped** generally means another worker held the shared work lease, so this invocation did not overlap it.
-
-### API Health Check
-
-Shows whether the configured Brightspace API version appears supported by the tenant and current version lifecycle information. It is a separate diagnostic and does not change courses or affect reconciliation. Results can be **Unknown** when evidence is stale or a check fails. Contract Verification is kept separate: a healthy version assessment is not proof that every request and response has been tested against Brightspace.
-
-The check can run automatically and an authenticated operator can request a manual check. A manual request may be subject to a short cooldown or find another assessment already running. The page keeps the last successful evidence, but current health becomes Unknown after a failed attempt or when evidence is stale.
-
-### Corrections and Exceptions reports
-
-For executions with detailed audit information, the Reports menu offers:
-
-- **Corrections CSV:** actual course changes that were read back and verified.
-- **Exceptions CSV:** validation blocks, failed reads or updates, failed verification, unexpected processing errors, and confirmed-missing lifecycle entries.
-
-Older executions may not have detailed reports; the interface labels those reports unavailable rather than implying that there were no changes or problems. Reports are generated from the saved execution record and do not make new Brightspace requests. Use the Exceptions report for operation-specific failure detail; the brief expanded history summary may not contain it.
-
-## 9. Quick reference
-
-- **Purpose:** find the original standalone offerings behind IPSIS Section Associations and safely inactivate eligible originals.
-- **Scheduler:** one production cron invocation every 15 minutes, all day; each type of work follows its São Paulo time window.
-- **07:00–23:00:** configured-period discovery and direct-section monitoring.
-- **23:00–00:00:** broad historical discovery, with retries in the window until success.
-- **00:00–06:00:** cached original-ID status checks.
-- **All day:** pending and eligible blocked recovery; cron recovery is normally due every four hours.
-- **New associations:** wait at least 10 minutes; historical baseline records do not.
-- **Safeguard:** current association structure and every original target must validate before any write; cached information alone never authorizes a change.
-- **Default mode:** dry-run, with zero Brightspace course updates.
-- **Limit:** the application cannot create associations or fix failed IPSIS imports.
-
-If a run reports a problem, check the execution summary and, when available, that run’s Exceptions CSV. For an older association that is not appearing, remember that broad discovery runs once daily, while an offering that IPSIS never created cannot be discovered.
+**Bottom line:** The app helps keep Brightspace course access organized after Section Associations are created. It finds the original courses, checks them carefully, inactivates them only when allowed and safe, and keeps a record of what happened.
