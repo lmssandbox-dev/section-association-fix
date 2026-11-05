@@ -34,7 +34,7 @@ function createSectionAssociationRuntime({ env = process.env, http, logger = con
   const maxReconciliationsPerRun = positiveInteger(env.SECTION_ASSOCIATION_FIX_MAX_RECONCILIATIONS_PER_RUN, 50);
   const completedReverifyHours = positiveInteger(env.SECTION_ASSOCIATION_FIX_COMPLETED_REVERIFY_HOURS, 24);
   const childMonitoringBatchSize = positiveInteger(env.SECTION_ASSOCIATION_FIX_CHILD_MONITOR_BATCH_SIZE, 125);
-  const statusVerificationBatchSize = positiveInteger(env.SECTION_ASSOCIATION_FIX_STATUS_VERIFY_BATCH_SIZE, 100);
+  const statusVerificationBatchSize = positiveInteger(env.SECTION_ASSOCIATION_FIX_STATUS_VERIFY_BATCH_SIZE, 150);
   const discoveryConfiguration = discoveryPeriodsConfiguration(env);
   const reconciler = createReconciler({ client, store, dryRun, logger });
   const service = createSectionAssociationService({ client, store, reconciler, stabilityMinutes,

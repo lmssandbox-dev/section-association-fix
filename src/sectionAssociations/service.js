@@ -7,7 +7,7 @@ const ACADEMIC_TIME_ZONE = 'America/Sao_Paulo';
 
 function localParts(value) {
   const parts = new Intl.DateTimeFormat('en-US', { timeZone: ACADEMIC_TIME_ZONE, year: 'numeric',
-    month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(value));
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(value));
   return Object.fromEntries(parts.filter(part => part.type !== 'literal').map(part => [part.type, Number(part.value)]));
 }
 
@@ -32,8 +32,8 @@ function discoveryScope(configuration = { mode: 'auto' }, value = Date.now()) {
 }
 
 function isReverificationWindow(value = Date.now()) {
-  const { hour } = localParts(value);
-  return hour >= 0 && hour < 6;
+  const { hour, minute } = localParts(value);
+  return hour >= 1 && hour < 7 && (minute === 0 || minute === 30);
 }
 
 function isRegularOperationsWindow(value = Date.now()) {
@@ -43,7 +43,7 @@ function isRegularOperationsWindow(value = Date.now()) {
 
 function isHistoricalDiscoveryWindow(value = Date.now()) {
   const { hour } = localParts(value);
-  return hour === 23;
+  return hour === 23 || hour === 0;
 }
 
 function localHourKey(value = Date.now()) {
@@ -64,20 +64,21 @@ function localOffsetMs(value) {
   return Date.UTC(local.year, local.month - 1, local.day, local.hour, local.minute, local.second) - Math.floor(date.getTime() / 1000) * 1000;
 }
 
-function localDateKey(value = Date.now()) {
-  const { year, month, day } = localParts(value);
-  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+function historicalWindowKey(value = Date.now()) {
+  const { year, month, day, hour } = localParts(value);
+  const localDate = new Date(Date.UTC(year, month - 1, day - (hour === 0 ? 1 : 0)));
+  return `${localDate.getUTCFullYear()}-${String(localDate.getUTCMonth() + 1).padStart(2, '0')}-${String(localDate.getUTCDate()).padStart(2, '0')}`;
 }
 
 function fullDiscoveryDue(lastCompletedAt, value = Date.now()) {
   if (!isHistoricalDiscoveryWindow(value)) return false;
-  return !lastCompletedAt || localDateKey(lastCompletedAt) !== localDateKey(value);
+  return !lastCompletedAt || historicalWindowKey(lastCompletedAt) !== historicalWindowKey(value);
 }
 
 function createSectionAssociationService({ client, store, reconciler, stabilityMinutes = 10,
   maxReconciliationsPerRun = 50, recoveryIntervalHours = 4, completedReverifyHours = 24,
   discoveryConfiguration = { mode: 'auto', periods: [] }, childMonitoringBatchSize = 125,
-  statusVerificationBatchSize = 100, now = Date.now, logger = console }) {
+  statusVerificationBatchSize = 150, now = Date.now, logger = console }) {
   let busy = false;
   const stabilityLogged = new Set();
   const attemptedByExecution = new WeakMap();
@@ -469,4 +470,4 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
 }
 
 module.exports = { createSectionAssociationService, academicPeriods, discoveryScope, isReverificationWindow,
-  isRegularOperationsWindow, isHistoricalDiscoveryWindow, fullDiscoveryDue };
+  isRegularOperationsWindow, isHistoricalDiscoveryWindow, historicalWindowKey, fullDiscoveryDue };

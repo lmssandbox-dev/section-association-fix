@@ -108,18 +108,20 @@ All times below are **São Paulo local time**.
 | When | Main activity | Why it matters |
 | --- | --- | --- |
 | **07:00–23:00** | **Find new associations and check known associations for section changes** | Detects new shared courses and added, removed, or changed sections. |
-| **23:00–00:00** | **Search older academic periods** | Finds older associations that regular searches might miss. This broad search completes once per day; failed attempts may be retried during the window. |
-| **00:00–06:00** | **Check saved original-course IDs** | Confirms whether previously identified original courses still exist and are inactive. Unexpected results trigger fresh safety checks before any possible update. |
-| **06:00–07:00** | **No scheduled discovery or lightweight monitoring** | Recovery work can still take place. |
+| **23:00–01:00** | **Search older academic periods** | The broad search runs once in this nightly window. The window crosses midnight: after a successful search before midnight, its saved window date prevents a duplicate search after midnight. Failed attempts can retry on later 15-minute cron runs until 01:00. |
+| **01:00–07:00** | **Check saved original-course IDs** | Checks run every 30 minutes at :00 and :30 (01:00 through 06:30). Unexpected results trigger fresh safety checks before any possible update. |
+| **All other overnight cron ticks** | **Pending and recovery work** | The 15-minute scheduler still processes eligible pending work and recovery between lightweight monitoring slots. |
 | **All day** | **Process eligible pending work and recover from problems** | Keeps unfinished work moving. Recovery is normally due about every four hours. |
 
 ### A typical day, at a glance
 
 ```text
-00:00       06:00 07:00                23:00 00:00
-|-----------|-----|--------------------|-----|
- Saved-ID    Gap     New + known         Older
- checks              association checks  periods
+23:00          01:00                   07:00                23:00
+|--------------|-----------------------|--------------------|
+ Broad historical  Cached-ID checks at     New + known association
+ scan window       :00 and :30 only        discovery + child checks
+
+The Render Cron Job starts every 15 minutes throughout the day. Cached-ID verification uses only every other cron slot, so it runs every 30 minutes; skipped slots still allow pending and recovery work. Its default batch ceiling is 150 associations per eligible run and can be adjusted with `SECTION_ASSOCIATION_FIX_STATUS_VERIFY_BATCH_SIZE`. Twelve eligible runs give a theoretical ceiling of 1,800 associations per night at the default batch size. This is a maximum calculation, not a promise that every association will be checked: rate limits, errors, queued work, and available API capacity affect actual throughput.
 
 Pending work and recovery may be handled at any hour.
 The scheduler starts a run every 15 minutes.
@@ -187,8 +189,10 @@ If something looks wrong, start with **Execution History** and then open the **E
 - **Purpose:** keep old standalone courses from remaining active after their sections are combined into a shared course.
 - **Starting frequency:** every **15 minutes**, but each type of work has its own hours and capacity limits.
 - **Daytime (07:00–23:00):** find associations and watch for section changes.
-- **Late night (23:00–00:00):** search historical periods.
-- **Overnight (00:00–06:00):** check previously identified original courses.
+- **Late night (23:00–01:00):** search historical periods once per nightly window. Crossing midnight does not start a second broad search because completion is tied to the window that began at 23:00.
+- **Overnight (01:00–07:00):** check previously identified original courses every 30 minutes, at :00 and :30.
+- **Scheduler cadence:** Render starts the worker every 15 minutes; cached-ID checks run on alternate slots, while pending/recovery work remains eligible on all slots and outside monitoring windows.
+- **Nightly check capacity:** up to 150 cached associations per eligible run by default, configurable with `SECTION_ASSOCIATION_FIX_STATUS_VERIFY_BATCH_SIZE`. Capacity is a ceiling and cannot guarantee that all queued associations are checked each night.
 - **Always eligible:** processing due pending work and recovery from problems.
 - **New associations:** normally wait at least **10 minutes** before being processed.
 - **Safety first:** the app checks the current association before making changes, and it never deletes courses.

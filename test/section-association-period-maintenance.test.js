@@ -16,21 +16,35 @@ test('academic periods use Sao Paulo local date, semester convention, and year r
   assert.deepEqual(discoveryScope({mode:'all',periods:[]},Date.now()),{mode:'all',periods:[]});
 });
 
-test('operating windows use half-open Sao Paulo boundaries, including midnight and calendar rollover', () => {
-  assert.equal(isReverificationWindow(Date.parse('2026-10-18T02:59:00Z')), false); // 23:59 previous local day
-  assert.equal(isReverificationWindow(Date.parse('2026-10-18T03:00:00Z')), true); // 00:00
-  assert.equal(isReverificationWindow(Date.parse('2026-10-18T08:59:00Z')), true); // 05:59
-  assert.equal(isReverificationWindow(Date.parse('2026-10-18T09:00:00Z')), false); // 06:00
+test('operating windows use Sao Paulo boundaries and the nightly window crosses midnight once', () => {
+  assert.equal(isReverificationWindow(Date.parse('2026-10-18T03:59:00Z')), false); // 00:59
+  assert.equal(isReverificationWindow(Date.parse('2026-10-18T04:00:00Z')), true); // 01:00
+  assert.equal(isReverificationWindow(Date.parse('2026-10-18T04:15:00Z')), false); // 01:15
+  assert.equal(isReverificationWindow(Date.parse('2026-10-18T04:30:00Z')), true); // 01:30
+  assert.equal(isReverificationWindow(Date.parse('2026-10-18T09:30:00Z')), true); // 06:30
+  assert.equal(isReverificationWindow(Date.parse('2026-10-18T10:00:00Z')), false); // 07:00
   assert.equal(isRegularOperationsWindow(Date.parse('2026-10-18T09:59:00Z')), false); // 06:59
   assert.equal(isRegularOperationsWindow(Date.parse('2026-10-18T10:00:00Z')), true); // 07:00
   assert.equal(isRegularOperationsWindow(Date.parse('2026-10-19T01:59:00Z')), true); // 22:59
   assert.equal(isRegularOperationsWindow(Date.parse('2026-10-19T02:00:00Z')), false); // 23:00
   assert.equal(isHistoricalDiscoveryWindow(Date.parse('2026-10-19T02:00:00Z')), true); // 23:00
-  assert.equal(isHistoricalDiscoveryWindow(Date.parse('2026-10-19T03:00:00Z')), false); // midnight
-  assert.equal(fullDiscoveryDue(new Date('2026-10-18T02:00:00Z'), Date.parse('2026-10-19T01:45:00Z')), false);
-  assert.equal(fullDiscoveryDue(new Date('2026-10-18T02:00:00Z'), Date.parse('2026-10-19T02:00:00Z')), true);
+  assert.equal(isHistoricalDiscoveryWindow(Date.parse('2026-10-19T02:45:00Z')), true); // 23:45
+  assert.equal(isHistoricalDiscoveryWindow(Date.parse('2026-10-19T03:00:00Z')), true); // 00:00
+  assert.equal(isHistoricalDiscoveryWindow(Date.parse('2026-10-19T03:45:00Z')), true); // 00:45
+  assert.equal(isHistoricalDiscoveryWindow(Date.parse('2026-10-19T04:00:00Z')), false); // 01:00
+  assert.equal(fullDiscoveryDue(new Date('2026-10-19T02:00:00Z'), Date.parse('2026-10-19T03:45:00Z')), false);
+  assert.equal(fullDiscoveryDue(new Date('2026-10-19T03:15:00Z'), Date.parse('2026-10-19T03:45:00Z')), false);
+  assert.equal(fullDiscoveryDue(new Date('2026-10-19T03:15:00Z'), Date.parse('2026-10-20T02:00:00Z')), true);
   assert.equal(fullDiscoveryDue(null, Date.parse('2026-10-19T01:59:00Z')), false);
   assert.equal(fullDiscoveryDue(null, Date.parse('2026-10-19T02:00:00Z')), true);
+  for (let hour = 1; hour <= 6; hour++) {
+    for (const minute of [0, 15, 30, 45]) {
+      const instant = Date.parse(`2026-10-18T${String(hour + 3).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00Z`);
+      assert.equal(isReverificationWindow(instant), minute === 0 || minute === 30, `${hour}:${minute}`);
+    }
+  }
+  assert.equal(isReverificationWindow(Date.parse('2026-10-18T03:00:00Z')), false); // before 01:00
+  assert.equal(isReverificationWindow(Date.parse('2026-10-18T10:00:00Z')), false); // at 07:00
 });
 
 test('Brightspace discovery accepts both broad and period-specific code-family queries and paginates each', async () => {
@@ -70,7 +84,7 @@ function makeService({ time, failFull = false, duplicateAcrossQueries = false, d
   return { service, calls, store, persisted, get fullAt() { return fullAt; } };
 }
 
-test('broad discovery runs in the 23:00 window and period discovery resumes the next morning', async () => {
+test('broad discovery runs once across 23:00–01:00 and period discovery resumes the next morning', async () => {
   const time = Date.parse('2026-10-19T02:15:00Z'); // 23:15 local
   const h = makeService({ time });
   const first = await h.service.fastTick();
@@ -88,11 +102,40 @@ test('broad discovery runs in the 23:00 window and period discovery resumes the 
   assert.deepEqual(h.calls.filter(([kind]) => kind === 'query').map(([, code]) => code), ['2601-I0001', 'ESPM-2601-', '2602-I0001', 'ESPM-2602-', '2701-I0001', 'ESPM-2701-']);
 });
 
-test('failed full discovery leaves its schedule unmarked for a retry in the remaining window', async () => {
-  const h = makeService({ time: Date.parse('2026-10-19T02:15:00Z'), failFull: true });
-  assert.equal((await h.service.fastTick()).status, 'completed');
-  assert.equal(h.fullAt, null);
-  assert.deepEqual(h.calls.filter(([kind]) => kind === 'query').map(([, code]) => code), ['I0001']);
+test('failed full discovery retries after midnight within the same nightly window', async () => {
+  let time = Date.parse('2026-10-19T02:45:00Z'); // 23:45
+  let fullAt = null, failLegacy = true;
+  const queries = [];
+  const store = { async baselineStatus() { return { state: 'ready' }; }, async lastFullDiscoveryAt() { return fullAt; },
+    async markFullDiscoveryCompleted() { fullAt = new Date(time); }, async recordDiscoveries() { return { newlyRecorded: 0, alreadyKnown: 0 }; },
+    async countHistoricalBacklog() { return 0; }, async listWaitingNew() { return []; }, async listFastWork() { return []; } };
+  const client = { async associationCandidates(code) { queries.push(code); if (code === 'I0001' && failLegacy) throw new Error('temporary scan failure'); return []; } };
+  const service = createSectionAssociationService({ client, store, reconciler: {}, now: () => time,
+    logger: { info() {}, warn() {}, error() {} } });
+  assert.equal((await service.fastTick()).status, 'completed');
+  assert.equal(fullAt, null);
+  time = Date.parse('2026-10-20T03:15:00Z'); // 00:15 in the same nightly window
+  failLegacy = false;
+  assert.equal((await service.fastTick()).status, 'completed');
+  assert.ok(fullAt instanceof Date);
+  assert.deepEqual(queries, ['I0001', 'I0001', 'ESPM-']);
+});
+
+test('successful broad discovery at 23:00 does not repeat after midnight in the same nightly window', async () => {
+  let time = Date.parse('2026-10-19T02:00:00Z'); // 23:00
+  let fullAt = null;
+  const queries = [];
+  const store = { async baselineStatus() { return { state: 'ready' }; }, async lastFullDiscoveryAt() { return fullAt; },
+    async markFullDiscoveryCompleted() { fullAt = new Date(time); }, async recordDiscoveries() { return { newlyRecorded: 0, alreadyKnown: 0 }; },
+    async countHistoricalBacklog() { return 0; }, async listWaitingNew() { return []; }, async listFastWork() { return []; } };
+  const client = { async associationCandidates(code) { queries.push(code); return []; } };
+  const service = createSectionAssociationService({ client, store, reconciler: {}, now: () => time,
+    logger: { info() {}, warn() {}, error() {} } });
+  await service.fastTick();
+  assert.deepEqual(queries, ['I0001', 'ESPM-']);
+  time = Date.parse('2026-10-19T03:15:00Z'); // 00:15 same logical window
+  await service.fastTick();
+  assert.deepEqual(queries, ['I0001', 'ESPM-']);
 });
 
 test('historical discovery does not run period queries outside their daytime window', async () => {
@@ -233,12 +276,12 @@ test('daytime child monitoring ignores response order and routes changed snapsho
   assert.equal(calls,1);
 });
 
-test('night cached-ID verification records inactive results and sends active results to reconciliation', async()=>{
-  const time=Date.parse('2026-10-18T03:15:00Z'); let active=false, reconciles=0; const writes=[];
+test('night cached-ID verification is skipped at quarter-hour slots and runs at half-hour slots', async()=>{
+  let time=Date.parse('2026-10-18T04:15:00Z'); let active=false, reconciles=0, statusQueries=0, statusLimit; const writes=[];
   const store={async baselineStatus(){return {state:'ready'}},async lastFullDiscoveryAt(){return new Date(time)},
     async recordDiscoveries(){return {newlyRecorded:0,alreadyKnown:0}},async countHistoricalBacklog(){return 0},
     async listWaitingNew(){return []},async listFastWork(){return []},
-    async listMonitoringWork({kind}){return kind==='status'?[{associationOrgUnitId:'7',associationCode:'002521-01-2602-I0001',
+    async listMonitoringWork({kind,limit}){if(kind==='status'){statusQueries++;statusLimit=limit;}return kind==='status'?[{associationOrgUnitId:'7',associationCode:'002521-01-2602-I0001',
       verifiedMappingVersion:1,verifiedChildren:[{id:'12',code:'002521-01-2602-GS2-EL1S-00001'}],
       verifiedTargets:[{id:'90',code:'002521-01-2602-GS2-EL1S'}],verifiedMappings:[{sectionId:'12',sectionCode:'002521-01-2602-GS2-EL1S-00001',targetId:'90',targetCode:'002521-01-2602-GS2-EL1S'}]}]:[]},
     async record(id,fields){writes.push(fields)},async countDueMonitoring(){return 0}};
@@ -246,9 +289,29 @@ test('night cached-ID verification records inactive results and sends active res
   const reconciler={async reconcileAssociation(){reconciles++;return {status:'completed',targets:[{status:'already-inactive'}]}}};
   const service=createSectionAssociationService({client,store,reconciler,now:()=>time,logger:{info(){},warn(){},error(){}}});
   await service.fastTick();
+  assert.equal(statusQueries,0);
+  time=Date.parse('2026-10-18T04:30:00Z');
+  await service.fastTick();
+  assert.equal(statusQueries,1);
+  assert.equal(statusLimit,150);
   assert.equal(reconciles,0);
   assert.ok(writes.some(row=>row.lastSuccessfulStatusVerificationAt instanceof Date));
-  active=true; await service.fastTick(); assert.equal(reconciles,1);
+  active=true; time=Date.parse('2026-10-18T05:00:00Z'); await service.fastTick(); assert.equal(reconciles,1);
+});
+
+test('pending work remains eligible at quarter-hour slots when cached-ID verification is skipped', async () => {
+  const time = Date.parse('2026-10-18T04:15:00Z'); // 01:15 local
+  let pendingProcessed = 0, statusQueries = 0;
+  const store = { async baselineStatus() { return { state: 'ready' }; }, async lastFullDiscoveryAt() { return new Date(time); },
+    async recordDiscoveries() { return { newlyRecorded: 0, alreadyKnown: 0 }; }, async countHistoricalBacklog() { return 0; },
+    async listWaitingNew() { return []; }, async listFastWork() { return [{ associationOrgUnitId: '9', associationCode: 'pending' }]; },
+    async listMonitoringWork() { statusQueries++; return []; } };
+  const reconciler = { async reconcileAssociation() { pendingProcessed++; return { status: 'completed' }; } };
+  const service = createSectionAssociationService({ client: { async associationCandidates() { return []; } }, store, reconciler,
+    now: () => time, logger: { info() {}, warn() {}, error() {} } });
+  await service.fastTick();
+  assert.equal(pendingProcessed, 1);
+  assert.equal(statusQueries, 0);
 });
 
 test('missing confirmation uses completed period results and exact IDs without extra API requests', async () => {
