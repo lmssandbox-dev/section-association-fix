@@ -173,16 +173,16 @@ const execution = { executionId: 'run-1', source: 'manual', startedAt: '2026-10-
 
 async function runPage(fetchImpl) {
   const script = pageForLaunch('signed-lti-token').match(/<script>([\s\S]*?)<\/script>/)[1];
-  const ids = ['availability','worker','discoveryScope','latest','latestDate','outcome','latestMessage','emptyLatest','historyEmpty','history','updated','notice','refresh','runNow','runNowFeedback','export','exportFeedback','dateFilters','fromDate','toDate','clearFilters','filterError','previousPage','nextPage','pageNumber','apiHealthOpen','apiHealthView','apiHealthHeading','apiHealthBack','healthConfigured','healthLatest','healthOverall','healthChecked','healthFreshness','healthCounts','healthRun','healthFeedback','healthEndpointRows','dashboardView','dashboardActions'];
+  const ids = ['availability','worker','discoveryScope','latest','latestDate','outcome','latestMessage','emptyLatest','historyEmpty','history','updated','notice','refresh','runNow','runNowFeedback','runNowFeedbackDismiss','export','exportFeedback','dateFilters','fromDate','toDate','clearFilters','filterError','previousPage','nextPage','pageNumber','apiHealthOpen','apiHealthView','apiHealthHeading','apiHealthBack','healthConfigured','healthLatest','healthOverall','healthChecked','healthFreshness','healthCounts','healthRun','healthFeedback','healthEndpointRows','dashboardView','dashboardActions'];
   let finish; const finished = new Promise(resolve => { finish = resolve; });const timers=[];
   const summary={focused:false,focus(){this.focused=true}},reportMenu={open:true,querySelector(){return summary}},reportFeedback={textContent:'',className:''},reportEntry={querySelector(){return reportFeedback}};
   const links=[];
-  const elements = Object.fromEntries(ids.map(id => [id, { value: '', hidden: ['latest','emptyLatest','historyEmpty','apiHealthView'].includes(id), className: '', innerHTML: '', listeners: {},focus(){this.focused=true},
+  const elements = Object.fromEntries(ids.map(id => [id, { value: '', hidden: ['latest','emptyLatest','historyEmpty','apiHealthView','runNowFeedbackDismiss'].includes(id), className: '', innerHTML: '', listeners: {},focus(){this.focused=true},
     addEventListener(event, handler) { this.listeners[event] = handler; }, setAttribute(name,value) { this[name]=value; },
     set textContent(value) { this.value = value; if (id === 'notice' && value !== 'Refreshing…') finish(); }, get textContent() { return this.value; } }]));
   const documentListeners={};
   vm.runInNewContext(script, { document: { getElementById: id => elements[id], addEventListener(event,handler){documentListeners[event]=handler}, querySelectorAll(){return reportMenu.open?[reportMenu]:[]}, querySelector(){return reportMenu.open?reportMenu:null}, createElement() { const link={click(){link.clicked=true}}; links.push(link); return link; } }, fetch: fetchImpl, window:{confirm(){return false}},
-    Intl, Date, URLSearchParams, setTimeout(fn){timers.push(fn);return timers.length}, clearTimeout(){}, setInterval(fn){timers.push(fn);return timers.length}, clearInterval(){}, URL: { createObjectURL() { return 'blob:url'; }, revokeObjectURL() {} } });
+    Intl, Date, URLSearchParams, setTimeout(fn,ms){fn.delay=ms;timers.push(fn);return timers.length}, clearTimeout(){}, setInterval(fn,ms){fn.delay=ms;timers.push(fn);return timers.length}, clearInterval(){}, URL: { createObjectURL() { return 'blob:url'; }, revokeObjectURL() {} } });
   await finished; elements.links=links;elements.reportMenu=reportMenu;elements.reportSummary=summary;elements.reportFeedback=reportFeedback;elements.reportEntry=reportEntry;elements.documentListeners=documentListeners;elements.timers=timers; return elements;
 }
 
@@ -250,6 +250,42 @@ test('Refresh supports empty history and can be repeated', async () => {
   const elements = await runPage(async () => { calls++; return { ok: true, async json() { return { availability: 'Available', worker: 'idle', latestExecution: null, executions: [] }; } }; });
   assert.equal(elements.emptyLatest.hidden, false); assert.equal(elements.historyEmpty.hidden, false);
   await elements.refresh.listeners.click(); assert.equal(calls, 2);
+});
+
+test('a completion already present on page load stays hidden on refresh',async()=>{
+  const stale={requestId:'manual-old',status:'completed'};
+  const elements=await runPage(async()=>({ok:true,async json(){return{availability:'Available',worker:'idle',latestExecution:null,executions:[],manualExecution:stale}}}));
+  assert.equal(elements.runNowFeedback.textContent,'');
+  await elements.refresh.listeners.click();
+  assert.equal(elements.runNowFeedback.textContent,'');
+  assert.equal(elements.timers.some(timer=>timer.delay===5000),false);
+});
+
+test('a newly completed request shows once for five seconds and is not restored by polling',async()=>{
+  let state={requestId:'manual-new',status:'running'};
+  const elements=await runPage(async()=>({ok:true,async json(){return{availability:'Available',worker:state.status==='running'?'running':'idle',latestExecution:null,executions:[],manualExecution:state}}}));
+  assert.equal(elements.runNowFeedback.textContent,'Manual run is running.');
+  state={...state,status:'completed'};
+  await elements.refresh.listeners.click();
+  assert.equal(elements.runNowFeedback.textContent,'Manual run completed.');
+  const completionTimer=elements.timers.find(timer=>timer.delay===5000);assert.ok(completionTimer);
+  await elements.refresh.listeners.click();
+  assert.equal(elements.runNowFeedback.textContent,'Manual run completed.');
+  completionTimer();assert.equal(elements.runNowFeedback.textContent,'');
+  await elements.refresh.listeners.click();assert.equal(elements.runNowFeedback.textContent,'');
+});
+
+test('failure feedback remains until dismissed and a different request replaces it',async()=>{
+  let state={requestId:'manual-failed',status:'failed'};
+  const elements=await runPage(async()=>({ok:true,async json(){return{availability:'Available',worker:'idle',latestExecution:null,executions:[],manualExecution:state}}}));
+  assert.equal(elements.runNowFeedback.textContent,'Manual run failed. See Execution History and its Exceptions report.');
+  assert.equal(elements.runNowFeedbackDismiss.hidden,false);
+  elements.runNowFeedbackDismiss.listeners.click();
+  await elements.refresh.listeners.click();assert.equal(elements.runNowFeedback.textContent,'');
+  state={requestId:'manual-next',status:'requested'};
+  await elements.refresh.listeners.click();assert.equal(elements.runNowFeedback.textContent,'Manual run requested. Waiting for the shared worker lease.');
+  state={requestId:'manual-next',status:'failed'};
+  await elements.refresh.listeners.click();assert.equal(elements.runNowFeedback.textContent,'Manual run failed. See Execution History and its Exceptions report.');
 });
 
 test('date filters reset pagination and Refresh preserves active filters and page', async () => {
