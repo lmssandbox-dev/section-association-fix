@@ -78,12 +78,14 @@ function fullDiscoveryDue(lastCompletedAt, value = Date.now()) {
 function createSectionAssociationService({ client, store, reconciler, stabilityMinutes = 10,
   maxReconciliationsPerRun = 50, recoveryIntervalHours = 4, completedReverifyHours = 24,
   discoveryConfiguration = { mode: 'auto', periods: [] }, childMonitoringBatchSize = 125,
-  statusVerificationBatchSize = 150, now = Date.now, logger = console }) {
+  statusVerificationBatchSize = 150, debugAssociationId = '', now = Date.now, logger = console }) {
   let busy = false;
   const stabilityLogged = new Set();
   const attemptedByExecution = new WeakMap();
   const recoveryIntervalMs = recoveryIntervalHours * 60 * 60 * 1000;
   const completedReverifyMs = completedReverifyHours * 60 * 60 * 1000;
+  const targetedDebugId = /^\d{1,20}$/.test(String(debugAssociationId || '').trim())
+    ? String(debugAssociationId).trim() : '';
 
   async function discover(orgUnitCode) {
     const candidates = await client.associationCandidates(orgUnitCode);
@@ -254,6 +256,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
   }
 
   async function processWork(items, stats, execution) {
+    const outcomes = new Map();
     let attempted;
     if (execution && typeof execution === 'object') {
       attempted = attemptedByExecution.get(execution);
@@ -267,9 +270,11 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
       if (item.workType === 'reverify') stats.discoveryActivities.reverification = true;
       const result = await reconciler.reconcileAssociation(id, { associationCode: item.associationCode, force: true,
         execution, recordAudit: store.recordAudit });
+      outcomes.set(id, result);
       stats.processedThisRun++;
       countStatus(stats, result);
     }
+    return outcomes;
   }
 
   function monitoringPeriods(time) {
@@ -280,6 +285,13 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
 
   function normalizedChildren(rows) {
     return rows.map(row => ({ id: String(row.Identifier ?? row.OrgUnitId ?? ''), code: String(row.Code || '') }))
+      .sort((a, b) => a.id.localeCompare(b.id) || a.code.localeCompare(b.code));
+  }
+
+  function diagnosticSavedChildren(rows) {
+    if (!Array.isArray(rows)) return [];
+    return rows.map(row => ({ id: String(row?.id ?? row?.Identifier ?? row?.OrgUnitId ?? ''),
+      code: String(row?.code ?? row?.Code ?? '') }))
       .sort((a, b) => a.id.localeCompare(b.id) || a.code.localeCompare(b.code));
   }
 
@@ -301,6 +313,32 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     });
   }
 
+  function trustedMappingFailure(item) {
+    if (item.verifiedMappingVersion !== 1) return 'unsupported-mapping-version';
+    if (!Array.isArray(item.verifiedChildren)) return 'missing-verified-children';
+    if (!Array.isArray(item.verifiedTargets)) return 'missing-verified-targets';
+    if (!Array.isArray(item.verifiedMappings)) return 'missing-verified-mappings';
+    if (item.verifiedChildren.length < 1) return 'empty-children';
+    if (item.verifiedChildren.length !== item.verifiedTargets.length ||
+        item.verifiedChildren.length !== item.verifiedMappings.length) return 'row-count-mismatch';
+    if ([...item.verifiedChildren, ...item.verifiedTargets, ...item.verifiedMappings].some(row => !row || typeof row !== 'object')) return 'invalid-row';
+    const sectionIds = new Set(item.verifiedMappings.map(mapping => String(mapping.sectionId)));
+    const targetIds = new Set(item.verifiedMappings.map(mapping => String(mapping.targetId)));
+    if (sectionIds.size !== item.verifiedChildren.length) return 'duplicate-section-id';
+    if (targetIds.size !== item.verifiedTargets.length) return 'duplicate-target-id';
+    if (item.verifiedChildren.some(child => !/^\d+$/.test(String(child.id)) || !child.code)) return 'invalid-child';
+    if (item.verifiedTargets.some(target => !/^\d+$/.test(String(target.id)) || !target.code)) return 'invalid-target';
+    for (const mapping of item.verifiedMappings) {
+      const child = item.verifiedChildren.find(row => String(row.id) === String(mapping.sectionId) && row.code === mapping.sectionCode);
+      const target = item.verifiedTargets.find(row => String(row.id) === String(mapping.targetId) && row.code === mapping.targetCode);
+      if (!child) return 'mapping-child-mismatch';
+      if (!target) return 'mapping-target-mismatch';
+      try { if (originalOfferingCode(child.code) !== target.code) return 'derived-target-mismatch'; }
+      catch { return 'invalid-child-code'; }
+    }
+    return 'unknown-mapping-validation-failure';
+  }
+
   async function monitorChildren(stats, execution, remaining) {
     if (!isRegularOperationsWindow(now()) || typeof store.listMonitoringWork !== 'function') return;
     const time = now();
@@ -310,13 +348,28 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     stats.monitoringActivities.children = true;
     const attemptField = 'lastChildInspectionAttemptAt';
     const changed = [];
+    const targetedDiagnostics = new Map();
     let mappingsNeedRefresh = 0;
     let mappingRefreshesRequired = 0;
     let childChangesDetected = 0;
     for (const item of items) {
       const id = String(item.associationOrgUnitId);
       await store.record(id, { [attemptField]: new Date(now()) });
-      if (!trustedMapping(item)) {
+      const isTargeted = id === targetedDebugId;
+      const mappingIsTrusted = trustedMapping(item);
+      const mappingFailure = isTargeted && !mappingIsTrusted ? trustedMappingFailure(item) : null;
+      const diagnostic = isTargeted ? { associationId: id, mappingTrusted: mappingIsTrusted,
+        mappingFailure: mappingFailure || 'none', savedChildren: diagnosticSavedChildren(item.verifiedChildren),
+        currentChildren: [], currentChildTypes: [], childReadSucceeded: null, savedCurrentChildrenMatch: null,
+        normalizedListsMatch: null, unexpectedChildType: null,
+        reconciliationRequested: false, reconciliationReason: 'none', reconciliationDisposition: 'not-requested',
+        successfulInspectionTimestampUpdated: false } : null;
+      if (diagnostic) targetedDiagnostics.set(id, diagnostic);
+      if (!mappingIsTrusted) {
+        if (diagnostic) {
+          diagnostic.reconciliationRequested = true;
+          diagnostic.reconciliationReason = 'invalid-mapping';
+        }
         changed.push(item);
         mappingsNeedRefresh++;
         continue;
@@ -328,20 +381,58 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
       } catch (error) {
         stats.monitoringErrors++;
         logEvent(logger, 'warn', 'child monitoring failed', safeErrorFields(error, { associationId: id, phase: 'children-read' }));
+        if (diagnostic) {
+          diagnostic.childReadSucceeded = false;
+          diagnostic.reconciliationReason = 'child-read-failed';
+          logEvent(logger, 'info', 'child monitoring diagnostic', diagnostic);
+          targetedDiagnostics.delete(id);
+        }
         continue;
       }
       const current = normalizedChildren(currentRows);
       const previous = normalizedChildren(item.verifiedChildren || []);
-      if (currentRows.some(row => row?.Type?.Code !== 'Group') || JSON.stringify(current) !== JSON.stringify(previous)) {
+      const unexpectedChildType = currentRows.some(row => row?.Type?.Code !== 'Group');
+      const normalizedListsMatch = JSON.stringify(current) === JSON.stringify(previous);
+      const listChanged = !normalizedListsMatch;
+      if (diagnostic) {
+        diagnostic.childReadSucceeded = true;
+        diagnostic.currentChildren = currentRows.map(row => ({
+          id: String(row?.Identifier ?? row?.OrgUnitId ?? ''), code: String(row?.Code || ''),
+          type: typeof row?.Type?.Code === 'string' ? row.Type.Code : null
+        })).sort((a, b) => a.id.localeCompare(b.id) || a.code.localeCompare(b.code));
+        diagnostic.currentChildTypes = diagnostic.currentChildren.map(row => row.type);
+        diagnostic.savedCurrentChildrenMatch = JSON.stringify(diagnostic.savedChildren) === JSON.stringify(current);
+        diagnostic.normalizedListsMatch = normalizedListsMatch;
+        diagnostic.unexpectedChildType = unexpectedChildType;
+      }
+      if (unexpectedChildType || listChanged) {
+        if (diagnostic) {
+          diagnostic.reconciliationRequested = true;
+          diagnostic.reconciliationReason = unexpectedChildType && listChanged ? 'unexpected-type-and-child-list-difference'
+            : unexpectedChildType ? 'unexpected-child-type' : 'child-list-difference';
+        }
         changed.push(item); childChangesDetected++; mappingRefreshesRequired++;
-      } else await store.record(id, { lastSuccessfulChildInspectionAt: new Date(now()) });
+      } else {
+        await store.record(id, { lastSuccessfulChildInspectionAt: new Date(now()) });
+        if (diagnostic) diagnostic.successfulInspectionTimestampUpdated = true;
+      }
       stats.childChecksSucceeded++;
     }
     stats.childChangesDetected += childChangesDetected;
     mappingRefreshesRequired += mappingsNeedRefresh;
     stats.childMappingRefreshesRequired += mappingRefreshesRequired;
     stats.mappingRefreshesRequired += mappingRefreshesRequired;
-    if (changed.length) await processWork(changed.slice(0, remaining), stats, execution);
+    const scheduled = changed.slice(0, remaining);
+    const processedResults = scheduled.length ? await processWork(scheduled, stats, execution) : new Map();
+    for (let index = 0; index < changed.length; index++) {
+      const id = String(changed[index].associationOrgUnitId);
+      const diagnostic = targetedDiagnostics.get(id);
+      if (!diagnostic) continue;
+      diagnostic.reconciliationDisposition = index < remaining ? 'scheduled' : 'deferred-capacity';
+      const result = processedResults.get(id);
+      diagnostic.successfulInspectionTimestampUpdated = result?.status === 'completed';
+    }
+    for (const diagnostic of targetedDiagnostics.values()) logEvent(logger, 'info', 'child monitoring diagnostic', diagnostic);
     stats.childMonitoringLag = await store.countDueMonitoring?.({ kind: 'children', periods: monitoringPeriods(time), before: localHourKey(time) }) ?? null;
   }
 

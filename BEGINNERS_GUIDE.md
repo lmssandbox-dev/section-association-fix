@@ -135,6 +135,8 @@ The worker does three different kinds of work:
 
 - **Full reconciliation** is the careful, complete check. The app reads the shared course, its groups, and each matching original course. It uses this when an association is new, a saved relationship needs to be refreshed, or a check finds a change. A fully completed dry run can remember the relationship when it confirms every original course is already inactive; it still makes no course changes.
 - **Daytime child monitoring** is a lighter check from 07:00 to 23:00. It compares the shared course's current groups with the last saved list. If the list is unchanged, no full reconciliation is needed. If it changed or no trusted list exists, the app schedules a full check.
+
+For troubleshooting one association, an operator can temporarily set `SECTION_ASSOCIATION_DEBUG_ID` to its numeric ID in Render. The worker then logs the saved and current child IDs/codes and why it did or did not request a full check, only when that association is selected for daytime monitoring. Remove the setting after troubleshooting; it is normally unset.
 - **Nighttime status verification** runs every half hour from 01:00 to 06:30. It checks the saved original-course IDs to see whether the originals are still inactive. If one is active, missing, or inconsistent, the app performs a fresh full check before any possible change. A saved ID by itself never permits a course update.
 
 ---

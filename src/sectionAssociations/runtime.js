@@ -39,7 +39,8 @@ function createSectionAssociationRuntime({ env = process.env, http, logger = con
   const reconciler = createReconciler({ client, store, dryRun, logger });
   const service = createSectionAssociationService({ client, store, reconciler, stabilityMinutes,
     recoveryIntervalHours, maxReconciliationsPerRun, completedReverifyHours, discoveryConfiguration,
-    childMonitoringBatchSize, statusVerificationBatchSize, logger });
+    childMonitoringBatchSize, statusVerificationBatchSize,
+    debugAssociationId: env.SECTION_ASSOCIATION_DEBUG_ID, logger });
   const apiHealthService = createApiHealthService({ get, http: apiHttp, oauth, baseUrl: env.BS_URL,
     configuredVersion: env.D2L_API_LP_VERSION, store, logger });
   return { oauth, apiGate, client, store, reconciler, service, namespace, dryRun,

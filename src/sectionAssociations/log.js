@@ -5,7 +5,7 @@ const EVENTS = new Set([
   'scheduler started', 'fast cycle started', 'fast cycle completed', 'fast cycle failed', 'fast cycle finished', 'fast cycle skipped',
   'recovery cycle started', 'recovery cycle completed', 'recovery cycle failed', 'recovery cycle finished', 'recovery cycle skipped',
   'discovery completed', 'baseline recorded', 'reconcile started', 'association missing observed',
-  'association marked missing', 'association restored',
+  'association marked missing', 'association restored', 'child monitoring diagnostic',
   'validation passed', 'pending', 'dry-run', 'update starting',
   'update verified', 'target already compliant', 'blocked', 'uncertain outcome',
   'reconcile failed'
@@ -16,7 +16,11 @@ const FIELDS = new Set([
   'fastIntervalMinutes', 'recoveryIntervalHours',
   'associationId', 'targetId', 'code', 'children', 'targets', 'action',
   'isActive', 'reason', 'skipped', 'phase', 'code', 'protocolCode', 'httpStatus', 'endpoint', 'elapsedMs', 'status', 'fatal', 'due',
-  'owner', 'expiresAt', 'acquiredAt', 'leaseKey', 'expired', 'stage'
+  'owner', 'expiresAt', 'acquiredAt', 'leaseKey', 'expired', 'stage',
+  'mappingTrusted', 'mappingFailure', 'savedChildren', 'currentChildren', 'currentChildTypes',
+  'savedCurrentChildrenMatch', 'normalizedListsMatch', 'unexpectedChildType', 'childReadSucceeded',
+  'reconciliationRequested', 'reconciliationReason',
+  'reconciliationDisposition', 'successfulInspectionTimestampUpdated'
 ]);
 
 const PHASES = new Set(['discovery', 'database', 'oauth/api-read', 'oauth', 'reconciliation', 'scheduler']);
@@ -25,6 +29,16 @@ const PROTOCOL_CODES = new Set(['invalid_request', 'invalid_client', 'invalid_gr
 const STAGES = new Set(['association-read', 'children-read', 'exact-code-lookup', 'target-read', 'target-update', 'verification-read']);
 
 function safeValue(key, value, event) {
+  if (event === 'child monitoring diagnostic') {
+    if (key === 'associationId') return /^\d{1,20}$/.test(String(value)) ? String(value) : null;
+    if (['mappingTrusted', 'savedCurrentChildrenMatch', 'normalizedListsMatch', 'unexpectedChildType', 'childReadSucceeded', 'reconciliationRequested',
+      'successfulInspectionTimestampUpdated'].includes(key)) return typeof value === 'boolean' ? String(value) : 'unknown';
+    if (key === 'mappingFailure') return /^(?:none|unsupported-mapping-version|missing-verified-children|missing-verified-targets|missing-verified-mappings|empty-children|row-count-mismatch|invalid-row|duplicate-section-id|duplicate-target-id|invalid-child|invalid-target|mapping-child-mismatch|mapping-target-mismatch|derived-target-mismatch|invalid-child-code)$/.test(String(value)) ? String(value) : 'unknown';
+    if (key === 'reconciliationReason') return /^(?:none|invalid-mapping|child-read-failed|unexpected-child-type|child-list-difference|unexpected-type-and-child-list-difference)$/.test(String(value)) ? String(value) : 'unknown';
+    if (key === 'reconciliationDisposition') return ['not-requested', 'scheduled', 'deferred-capacity'].includes(value) ? value : 'unknown';
+    if (key === 'savedChildren' || key === 'currentChildren') return safeDiagnosticChildren(value, key === 'currentChildren');
+    if (key === 'currentChildTypes') return safeDiagnosticTypes(value);
+  }
   if (['candidates', 'discovered', 'new', 'alreadyKnown', 'pending', 'historicalPending', 'completed', 'blocked',
     'dueForReverification', 'processedThisRun', 'remainingHistoricalBacklog', 'writesAttempted', 'writesVerified', 'alreadyInactive',
     'children', 'targets', 'skipped', 'fastIntervalMinutes', 'recoveryIntervalHours'].includes(key)) {
@@ -59,6 +73,20 @@ function safeValue(key, value, event) {
   if (key === 'action') return ['would-inactivate', 'already-inactive', 'read-back-required'].includes(value) ? value : null;
   if (key === 'isActive') return value === false ? 'false' : null;
   return null;
+}
+
+function safeDiagnosticChildren(rows, includeType) {
+  if (!Array.isArray(rows)) return '[]';
+  return JSON.stringify(rows.map(row => ({
+    id: /^\d{1,20}$/.test(String(row?.id ?? '')) ? String(row.id) : '[redacted]',
+    code: /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(String(row?.code ?? '')) ? String(row.code) : '[redacted]',
+    ...(includeType ? { type: typeof row?.type === 'string' && /^[A-Za-z][A-Za-z0-9 _.-]{0,40}$/.test(row.type) ? row.type : null } : {})
+  })));
+}
+
+function safeDiagnosticTypes(types) {
+  if (!Array.isArray(types)) return '[]';
+  return JSON.stringify(types.map(type => typeof type === 'string' && /^[A-Za-z][A-Za-z0-9 _.-]{0,40}$/.test(type) ? type : null));
 }
 
 function safeErrorFields(error, { phase, elapsedMs, endpoint } = {}) {
