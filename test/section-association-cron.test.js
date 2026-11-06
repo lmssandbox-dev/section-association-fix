@@ -82,3 +82,37 @@ test('cron health assessment failure does not fail or change reconciliation proc
   assert.deepEqual(result,{status:'completed',exitCode:0});assert.equal(checks,1);
   assert.deepEqual(h.calls,['acquire','fast','due','release']);
 });
+
+test('manual execution records manual history and transitions only after acquiring the shared lease', async()=>{
+  const events=[];let held=false;let summary;
+  const store={async acquireCronLease(){if(held)return null;held=true;events.push('lease');return'token'},
+    async markManualExecutionRunning(id){events.push(['running',id]);return true},async renewCronLease(){},
+    async releaseCronLease(){held=false},async saveMaintenanceExecution(value){summary=value},
+    async finishManualExecution(id,status){events.push([status,id])},async recoveryDue(){return false}};
+  const result=await runSectionAssociationCron({service:{async fastTick({execution}){events.push(execution.source);return{status:'completed',associationsChecked:2,associationsAlreadyCompliant:2,correctionsApplied:0,errors:0}},async recoveryTick(){}},
+    store,recoveryIntervalHours:4,source:'manual',manualRequestId:'request-1',logger:{info(){},warn(){},error(){}},
+    setIntervalFn(){return 1},clearIntervalFn(){}});
+  assert.equal(result.status,'completed');assert.deepEqual(events.filter(Array.isArray),[['running','request-1'],['completed','request-1']]);
+  assert.equal(summary.source,'manual');assert.equal(summary.status,'completed');
+});
+
+test('automatic cron recovers an interrupted manual request with manual history attribution',async()=>{
+  const events=[];let running;
+  const store={async getManualExecutionRequest(){return{requestId:'request-recovered',status:'running'}},
+    async acquireCronLease(){return'lease'},async markManualExecutionRunning(id){running=id;return true},
+    async renewCronLease(){},async releaseCronLease(){},async recoveryDue(){return false},
+    async saveMaintenanceExecution(summary){events.push(summary.source)},async finishManualExecution(id,status){events.push(status)}};
+  const result=await runSectionAssociationCron({service:{async fastTick(){return{status:'completed',associationsChecked:0,associationsAlreadyCompliant:0,correctionsApplied:0,errors:0}},async recoveryTick(){}},
+    store,recoveryIntervalHours:4,logger:{info(){},warn(){},error(){}},setIntervalFn(){return 1},clearIntervalFn(){}});
+  assert.equal(result.status,'completed');assert.equal(running,'request-recovered');assert.deepEqual(events,['manual','completed']);
+});
+
+test('manual request stays requested when the automatic worker already owns the shared lease',async()=>{
+  let runningCalls=0,finishCalls=0;
+  const store={async acquireCronLease(){return null},async cronLeaseStatus(){return{owner:'cron',expiresAt:new Date(1)}} ,
+    async markManualExecutionRunning(){runningCalls++;return true},async finishManualExecution(){finishCalls++},
+    async getManualExecutionRequest(){return{requestId:'waiting',status:'requested'}}};
+  const result=await runSectionAssociationCron({service:{async fastTick(){throw new Error('must not run')}},store,recoveryIntervalHours:4,
+    manualRequestId:'waiting',source:'manual',logger:{info(){},warn(){},error(){}},setIntervalFn(){return 1},clearIntervalFn(){}});
+  assert.equal(result.status,'skipped');assert.equal(runningCalls,0);assert.equal(finishCalls,0);
+});

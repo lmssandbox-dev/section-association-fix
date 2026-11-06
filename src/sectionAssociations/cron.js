@@ -6,14 +6,25 @@ const { startMaintenanceExecution, buildMaintenanceExecutionSummary, persistMain
 async function runSectionAssociationCron({ service, store, recoveryIntervalHours, logger = console,
   now = Date.now, setIntervalFn = setInterval, clearIntervalFn = clearInterval,
   leaseMs = 10 * 60 * 1000, heartbeatMs = 60 * 1000, maxReconciliationsPerRun = 50,
-  source = 'automatic', apiHealthService }) {
+  source = 'automatic', apiHealthService, manualRequestId }) {
+  let manualRequest = manualRequestId ? { requestId: manualRequestId } : null;
+  if (source === 'automatic' && typeof store.getManualExecutionRequest === 'function') {
+    try {
+      const pending = await store.getManualExecutionRequest();
+      if (['requested', 'running'].includes(pending?.status)) manualRequest = pending;
+    } catch { /* Automatic work remains available if request lookup is unavailable. */ }
+  }
+  const executionSource = manualRequest ? 'manual' : source;
   const startedAt = now();
-  const execution = startMaintenanceExecution(source, now);
+  const execution = startMaintenanceExecution(executionSource, now);
+  if (manualRequest?.requester) execution.requestedBy = manualRequest.requester;
   logEvent(logger, 'info', 'cron started');
   let token;
   let heartbeat;
   let heartbeatFailure = false;
   let heartbeatRunning = false;
+  let recoveredFromSummary = false;
+  let manualClaimed = false;
   let phase = 'database';
   let executionStatus = 'failed';
   let executionErrors = 0;
@@ -31,6 +42,20 @@ async function runSectionAssociationCron({ service, store, recoveryIntervalHours
     let lease = {};
     try { lease = safeLeaseFields(await store.cronLeaseStatus()); } catch { /* Lease acquisition remains valid if diagnostics fail. */ }
     logEvent(logger, 'info', 'lease acquired', { owner: 'cron', expiresAt: lease.expiresAt || 'unknown' });
+    if (manualRequest?.status === 'running' && manualRequest.executionId && typeof store.maintenanceExecution === 'function') {
+      const persisted = await store.maintenanceExecution(manualRequest.executionId);
+      if (persisted && ['completed', 'failed'].includes(persisted.status)) {
+        executionStatus = persisted.status;
+        recoveredFromSummary = true;
+        return { status: persisted.status, exitCode: persisted.status === 'completed' ? 0 : 1 };
+      }
+    }
+    if (manualRequest && typeof store.markManualExecutionRunning === 'function' &&
+        !await store.markManualExecutionRunning(manualRequest.requestId, new Date(now()), execution.executionId)) {
+      executionStatus = 'skipped';
+      return { status: 'skipped', exitCode: 0 };
+    }
+    if (manualRequest) manualClaimed = true;
     heartbeat = setIntervalFn(() => {
       if (heartbeatRunning) return;
       heartbeatRunning = true;
@@ -82,8 +107,14 @@ async function runSectionAssociationCron({ service, store, recoveryIntervalHours
         logEvent(logger, 'error', 'lease release failed', { owner: 'cron', code });
       }
     }
-    await persistMaintenanceExecution(store, buildMaintenanceExecutionSummary(execution,
-      { status: executionStatus, results, executionErrors, now }), logger);
+    let summarySaved = recoveredFromSummary;
+    if (!recoveredFromSummary && (!manualRequest || (token && manualClaimed))) summarySaved = await persistMaintenanceExecution(store,
+      buildMaintenanceExecutionSummary(execution, { status: executionStatus, results, executionErrors, now }), logger);
+    if (manualRequest && typeof store.finishManualExecution === 'function' && ['completed', 'failed'].includes(executionStatus)) {
+      try { await store.finishManualExecution(manualRequest.requestId, summarySaved ? executionStatus : 'failed',
+        summarySaved ? undefined : 'EXECUTION_SUMMARY_SAVE_FAILED'); }
+      catch { logEvent(logger, 'warn', 'manual request status persistence failed', { requestId: manualRequest.requestId }); }
+    }
     if (apiHealthService?.runIfDue) await Promise.resolve().then(() => apiHealthService.runIfDue()).catch(() => null);
   }
 }

@@ -62,6 +62,23 @@ test('API Health Check view is reachable in the existing page with expandable en
   assert.match(page,/overflow-x:auto/);assert.match(page,/@media\(max-width:620px\)/);
 });
 
+test('Run Now requires a same-origin request, deployment match, and validated administrator role', async()=>{
+  const routes={};let calls=0;
+  const provider={app:{get(path,handler){routes['GET '+path]=handler},post(path,handler){routes['POST '+path]=handler}},onConnect(){}};
+  const manualExecutionController={async request(requester){calls++;return{accepted:true,requestId:'request-1',status:'requested',requester}}};
+  registerSectionAssociationLtiInterface(provider,{deploymentId:'deployment-1',manualExecutionController});
+  const path='/api/section-association/run-now';
+  const post=req=>routes['POST '+path](req,response());
+  const base={protocol:'https',headers:{origin:'https://app.example',host:'app.example','x-requested-with':'XMLHttpRequest','sec-fetch-site':'same-origin'}};
+  let denied=response();denied.locals.token={deploymentId:'deployment-1'};
+  await routes['POST '+path](base,denied);assert.equal(denied.statusCode,403);assert.equal(calls,0);
+  denied=response();denied.locals.token={deploymentId:'deployment-1',roles:['http://purl.imsglobal.org/vocab/lis/v2/membership#Instructor']};
+  await routes['POST '+path](base,denied);assert.equal(denied.statusCode,403);assert.equal(calls,0);
+  const allowed=response();allowed.locals.token={deploymentId:'deployment-1',user:'opaque-subject',platformContext:{roles:['http://purl.imsglobal.org/vocab/lis/v2/membership#Administrator']},userInfo:{name:'Admin'}};
+  await routes['POST '+path](base,allowed);assert.equal(allowed.statusCode,202);assert.equal(calls,1);
+  assert.equal(allowed.body.request.requester.name,'Admin');assert.match(allowed.body.request.requester.subjectHash,/^[a-f0-9]{64}$/);
+});
+
 test('API Health Check button navigates in-page and uses cached GET results', async()=>{
   const requests=[];
   const elements=await runPage(async(url,options)=>{requests.push({url,options});return{ok:true,async json(){return url==='/api/section-association/api-health'?{currentStatus:'Unknown',stale:true,counts:{Unknown:6},endpoints:[]}:{availability:'Available',worker:'idle',latestExecution:null,executions:[]}}}});
@@ -96,7 +113,8 @@ test('launch page is a compact responsive monitor with authenticated refresh and
   const { onConnect } = setup(); const res = response(); res.locals.ltik = 'signed-lti-token';
   onConnect({ deploymentId: 'deployment-1' }, {}, res);
   assert.equal(res.contentType, 'html');
-  for (const text of ['Service status', 'Current worker state', 'Discovery periods', 'Last execution', 'Execution history', 'Periods / Scope', 'Export History CSV']) assert.ok(res.body.includes(text));
+  for (const text of ['Service status', 'Current worker state', 'Discovery periods', 'Last execution', 'Execution history', 'Periods / Scope', 'Run Now', 'Export History CSV']) assert.ok(res.body.includes(text));
+  assert.ok(res.body.indexOf('id="runNow"')<res.body.indexOf('id="refresh"'));
   assert.doesNotMatch(res.body, /<span class="label">Source<\/span>|latestMetrics|zeroWork/);
   assert.match(res.body, /id="discoveryScope" class="discovery-period-value"/);
   assert.match(res.body, /\.state:before/);assert.match(res.body, /\.discovery-period-value\{font-weight:600;overflow-wrap:anywhere\}/);
@@ -155,7 +173,7 @@ const execution = { executionId: 'run-1', source: 'manual', startedAt: '2026-10-
 
 async function runPage(fetchImpl) {
   const script = pageForLaunch('signed-lti-token').match(/<script>([\s\S]*?)<\/script>/)[1];
-  const ids = ['availability','worker','discoveryScope','latest','latestDate','outcome','latestMessage','emptyLatest','historyEmpty','history','updated','notice','refresh','export','exportFeedback','dateFilters','fromDate','toDate','clearFilters','filterError','previousPage','nextPage','pageNumber','apiHealthOpen','apiHealthView','apiHealthHeading','apiHealthBack','healthConfigured','healthLatest','healthOverall','healthChecked','healthFreshness','healthCounts','healthRun','healthFeedback','healthEndpointRows','dashboardView','dashboardActions'];
+  const ids = ['availability','worker','discoveryScope','latest','latestDate','outcome','latestMessage','emptyLatest','historyEmpty','history','updated','notice','refresh','runNow','runNowFeedback','export','exportFeedback','dateFilters','fromDate','toDate','clearFilters','filterError','previousPage','nextPage','pageNumber','apiHealthOpen','apiHealthView','apiHealthHeading','apiHealthBack','healthConfigured','healthLatest','healthOverall','healthChecked','healthFreshness','healthCounts','healthRun','healthFeedback','healthEndpointRows','dashboardView','dashboardActions'];
   let finish; const finished = new Promise(resolve => { finish = resolve; });const timers=[];
   const summary={focused:false,focus(){this.focused=true}},reportMenu={open:true,querySelector(){return summary}},reportFeedback={textContent:'',className:''},reportEntry={querySelector(){return reportFeedback}};
   const links=[];
@@ -163,8 +181,8 @@ async function runPage(fetchImpl) {
     addEventListener(event, handler) { this.listeners[event] = handler; }, setAttribute(name,value) { this[name]=value; },
     set textContent(value) { this.value = value; if (id === 'notice' && value !== 'Refreshing…') finish(); }, get textContent() { return this.value; } }]));
   const documentListeners={};
-  vm.runInNewContext(script, { document: { getElementById: id => elements[id], addEventListener(event,handler){documentListeners[event]=handler}, querySelectorAll(){return reportMenu.open?[reportMenu]:[]}, querySelector(){return reportMenu.open?reportMenu:null}, createElement() { const link={click(){link.clicked=true}}; links.push(link); return link; } }, fetch: fetchImpl,
-    Intl, Date, URLSearchParams, setTimeout(fn){timers.push(fn);return timers.length}, clearTimeout(){}, URL: { createObjectURL() { return 'blob:url'; }, revokeObjectURL() {} } });
+  vm.runInNewContext(script, { document: { getElementById: id => elements[id], addEventListener(event,handler){documentListeners[event]=handler}, querySelectorAll(){return reportMenu.open?[reportMenu]:[]}, querySelector(){return reportMenu.open?reportMenu:null}, createElement() { const link={click(){link.clicked=true}}; links.push(link); return link; } }, fetch: fetchImpl, window:{confirm(){return false}},
+    Intl, Date, URLSearchParams, setTimeout(fn){timers.push(fn);return timers.length}, clearTimeout(){}, setInterval(fn){timers.push(fn);return timers.length}, clearInterval(){}, URL: { createObjectURL() { return 'blob:url'; }, revokeObjectURL() {} } });
   await finished; elements.links=links;elements.reportMenu=reportMenu;elements.reportSummary=summary;elements.reportFeedback=reportFeedback;elements.reportEntry=reportEntry;elements.documentListeners=documentListeners;elements.timers=timers; return elements;
 }
 

@@ -433,6 +433,59 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
     if (result.matchedCount !== 1) throw Object.assign(new Error('Section Association cron lease lost.'), { code: 'CRON_LEASE_LOST' });
   }
   const maintenanceExecutionId = `maintenance-execution:${namespace}`;
+  const manualRequestId = `manual-request:${namespace}`;
+  async function requestManualExecution(requester) {
+    const { meta } = await collections();
+    const requestId = randomUUID();
+    const requestedAt = new Date(now());
+    try {
+      const result = await meta.findOneAndUpdate({ _id: manualRequestId,
+        $or: [{ status: { $nin: ['requested', 'running'] } }, { status: { $exists: false } }] },
+      { $set: { namespace, requestId, status: 'requested', requestedAt, requester },
+        $unset: { startedAt: '', completedAt: '', failureCode: '' } },
+      { upsert: true, returnDocument: 'after' });
+      if (result.value?.requestId === requestId) return { accepted: true, ...publicManualRequest(result.value) };
+    } catch (error) { if (error.code !== 11000) throw error; }
+    const active = await getManualExecutionRequest();
+    return { accepted: false, alreadyRunning: active?.status === 'running', request: active };
+  }
+  function publicManualRequest(value) {
+    if (!value) return null;
+    const { _id, namespace: _namespace, requester: _requester, ...request } = value;
+    return request;
+  }
+  async function getManualExecutionRequest() {
+    const { meta } = await collections();
+    const value = await meta.findOne({ _id: manualRequestId });
+    if (!value) return null;
+    const { _id, namespace: _namespace, ...request } = value;
+    return request;
+  }
+  async function getManualExecutionStatus() {
+    const { meta } = await collections();
+    return publicManualRequest(await meta.findOne({ _id: manualRequestId }));
+  }
+  async function markManualExecutionRunning(requestId, startedAt = new Date(now()), executionId) {
+    const { meta } = await collections();
+    const result = await meta.updateOne({ _id: manualRequestId, requestId, status: { $in: ['requested', 'running'] } },
+      { $set: { status: 'running', startedAt, ...(executionId ? { executionId } : {}) } });
+    return result.matchedCount === 1;
+  }
+  async function finishManualExecution(requestId, status, failureCode) {
+    if (!['completed', 'failed'].includes(status)) throw new Error('Invalid manual execution status.');
+    const { meta } = await collections();
+    const fields = { status, completedAt: new Date(now()) };
+    if (status === 'failed') fields.failureCode = /^[A-Z][A-Z0-9_]{0,63}$/.test(String(failureCode || '')) ? failureCode : 'MANUAL_EXECUTION_FAILED';
+    await meta.updateOne({ _id: manualRequestId, requestId, status: { $in: ['requested', 'running'] } },
+      { $set: fields });
+  }
+  async function maintenanceExecution(executionId) {
+    const { meta } = await collections();
+    const result = await meta.findOne({ _id: `maintenance-history:${namespace}:${String(executionId)}` });
+    if (!result) return null;
+    const { _id, namespace: _namespace, history: _history, ...summary } = result;
+    return summary;
+  }
   async function saveMaintenanceExecution(summary) {
     const { meta } = await collections();
     const fields = ['executionId', 'source', 'startedAt', 'completedAt', 'status', 'associationsChecked',
@@ -551,6 +604,8 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
     lastFullDiscoveryAt, markFullDiscoveryCompleted,
     acquireCronLease, renewCronLease, releaseCronLease, cronLeaseStatus, recoveryDue, markRecoveryCompleted,
     saveMaintenanceExecution, latestMaintenanceExecution, recentMaintenanceExecutions, allMaintenanceExecutions,
+    requestManualExecution, getManualExecutionRequest, getManualExecutionStatus, markManualExecutionRunning, finishManualExecution,
+    maintenanceExecution,
     recordAudit, executionAudit, auditAvailability, getApiHealthState, acquireApiHealthLease, saveApiHealthResult, close };
 }
 

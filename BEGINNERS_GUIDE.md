@@ -35,7 +35,7 @@ The shared course stays active. Nothing is deleted. The app does not change enro
 | **The app** | Finds associations, checks the original courses, and decides whether to make them inactive. |
 | **Automatic scheduler** | Wakes up every 15 minutes to see which tasks should run. |
 | **MongoDB** | The app's notebook: what it found, checked, changed, or couldn't finish. |
-| **Monitoring page (LTI)** | A read-only dashboard showing whether the app is working and what happened in previous runs. |
+| **Monitoring page (LTI)** | A dashboard showing whether the app is working and what happened in previous runs; administrators can also start a safe manual run. |
 
 **The big picture**
 
@@ -166,7 +166,7 @@ The app is intentionally cautious:
 
 ## 7. How can I see what happened?
 
-The LTI monitoring page is available to authorized users and is **read-only**. It does not have a button to inactivate courses.
+The LTI monitoring page is available to authorized users. Administrators also have a **Run Now** button that asks the existing worker to check eligible associations immediately.
 
 | Area | What to look for |
 | --- | --- |
@@ -181,6 +181,16 @@ The LTI monitoring page is available to authorized users and is **read-only**. I
 **A failed run** means that run did not finish normally. **A skipped run** often means another worker was already doing the job.
 
 If something looks wrong, start with **Execution History** and then open the **Exceptions report**, if available. Some older executions do not have detailed reports.
+
+### Run Now
+
+**Run Now** asks the service to perform a manual maintenance run without waiting for the next automatic 15-minute start. You must confirm the action, and Brightspace must identify your LTI launch as an Administrator or SysAdmin. The run follows the same time-of-day rules as automatic work, so it will not start a daytime or historical scan outside its normal window. The usual dry-run setting, checks, and safety limits still apply.
+
+The button works with both Render setups. In cron mode, the LTI web service starts the run itself; it does not call Render or wait for the separate Cron Job. In internal mode, the always-on web service starts the same run and continues its regular schedule.
+
+If another execution is already using the shared worker, Run Now waits as a requested task. It never interrupts or overlaps that execution. Service Status shows when the worker is running, and the new manual run appears in Execution History with its outcome and reports. A request is not called running until the worker has the shared lease.
+
+If the web service restarts, MongoDB keeps the request. The web worker and the next scheduled worker can safely pick it up. The worker rechecks Brightspace before taking action, so an uncertain course update is not blindly repeated. Look in Execution History for **completed** or **failed** and open the Exceptions report when available.
 
 ---
 

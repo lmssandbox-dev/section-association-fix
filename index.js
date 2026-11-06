@@ -12,6 +12,7 @@ const { discoveryScope } = require('./src/sectionAssociations/service');
 const { validateRequiredEnvironment, ltiConfiguration, registerBrightspacePlatform,
   installPublicBootstrapEndpoints, sectionAssociationTriggerMode } = require('./src/sectionAssociations/config');
 const { registerSectionAssociationLtiInterface } = require('./src/sectionAssociations/ltiInterface');
+const { createManualExecutionController } = require('./src/sectionAssociations/manualExecution');
 
 const env = process.env;
 const port = Number(env.PORT || 3000);
@@ -35,6 +36,9 @@ if (!/^\d+$/.test(String(port)) || port < 1 || port > 65535) throw new Error('PO
 const runtime = createSectionAssociationRuntime({ env, http: axios });
 const { oauth, service, fastIntervalMinutes: fastMinutes, recoveryIntervalHours: recoveryHours, dryRun } = runtime;
 let sectionAssociationScheduler;
+const manualExecutionController = createManualExecutionController({ service: runtime.service, store: runtime.store,
+  recoveryIntervalHours: runtime.recoveryIntervalHours, maxReconciliationsPerRun: runtime.maxReconciliationsPerRun,
+  apiHealthService: runtime.apiHealthService });
 
 lti.setup(APP_LTI_SECRET, databaseConfig(DB_MONGODB_URL), {
   appRoute: '/', loginRoute: '/login', cookies: { secure: true, sameSite: 'None' }, devMode: false
@@ -44,16 +48,13 @@ registerSectionAssociationLtiInterface(lti, { deploymentId: env.BS_LTI_DEPLOYMEN
   getExecutionHistory: () => runtime.store.allMaintenanceExecutions(),
   getExecutionAudit: (executionId, kind) => runtime.store.executionAudit(executionId, kind),
   getAuditAvailability: executionId => runtime.store.auditAvailability(executionId),
+  manualExecutionController,
   async getStatus(historyQuery = {}) {
     let worker = 'unknown';
-    if (sectionAssociationScheduler) {
-      worker = sectionAssociationScheduler.status().state;
-    } else {
-      try {
-        const lease = await runtime.store.cronLeaseStatus();
-        worker = lease.expired ? 'idle' : 'running';
-      } catch { /* Keep worker state unknown if lease storage is temporarily unavailable. */ }
-    }
+    try {
+      const lease = await runtime.store.cronLeaseStatus();
+      worker = lease.expired ? 'idle' : 'running';
+    } catch { /* Keep worker state unknown if lease storage is temporarily unavailable. */ }
     const history = await runtime.store.recentMaintenanceExecutions(50, historyQuery);
     let discoveryPeriods = null;
     try { discoveryPeriods = discoveryScope(runtime.discoveryConfiguration); } catch { /* Use a neutral placeholder if time-zone resolution is unavailable. */ }
@@ -71,6 +72,7 @@ async function start() {
     sectionAssociationScheduler = startSectionAssociationTrigger({ mode: triggerMode, service, store: runtime.store,
       apiHealthService: runtime.apiHealthService,
       fastIntervalMinutes: fastMinutes, recoveryIntervalHours: recoveryHours });
+    manualExecutionController.startRecoveryPolling();
     if (ltiConfig.complete) {
       try { await registerBrightspacePlatform(lti, ltiConfig); }
       catch { console.error('Brightspace LTI platform registration failed; Section Association processing remains active.'); }

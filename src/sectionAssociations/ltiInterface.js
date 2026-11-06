@@ -1,6 +1,7 @@
 'use strict';
 
 const { once } = require('node:events');
+const { createHash } = require('node:crypto');
 const { deploymentGuard } = require('../shared/deploymentGuard');
 
 const PAGE = `<!doctype html>
@@ -32,7 +33,7 @@ section{padding:16px 18px;margin:14px 0}h2{font-size:1.05rem;font-weight:650;let
 .reports-menu>summary:after{content:"";width:7px;height:7px;border-right:1.75px solid currentColor;border-bottom:1.75px solid currentColor;transform:rotate(-45deg);transform-origin:center;color:var(--muted);transition:none}.reports-menu[open]>summary:after{transform:rotate(45deg)}
 .service-title{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.service-title h2{margin:0}.health-open{padding:4px 8px!important;font-size:.82rem!important}.health-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px 18px}.health-value{font-weight:600;overflow-wrap:anywhere}.health-counts{display:flex;gap:7px;flex-wrap:wrap;margin:10px 0}.health-count{border:1px solid var(--line);border-radius:3px;padding:3px 7px;font-size:.8rem}.health-count strong{margin-left:4px}.health-details{margin-top:12px;border-top:1px solid var(--line);padding-top:10px}.health-details summary{cursor:pointer;font-weight:600}.health-table-wrap{overflow-x:auto;margin-top:9px}.health-table{border-collapse:collapse;width:100%;min-width:1050px;font-size:.82rem}.health-table th,.health-table td{border-bottom:1px solid var(--line);padding:8px;text-align:left;vertical-align:top}.health-table th{color:var(--muted);font-weight:600}.health-table a{color:var(--accent)}.health-actions{display:flex;align-items:center;gap:10px;margin-top:12px}.health-feedback{font-size:.84rem;color:var(--muted)}.health-feedback.error{color:var(--bad)}.health-status{font-weight:650}.health-status.healthy{color:var(--ok)}.health-status.critical,.health-status.unknown,.health-status.at-risk{color:var(--bad)}.health-status.update-available{color:#795000}
 @media(max-width:620px){.service-title{align-items:flex-start;flex-wrap:wrap}.health-grid{grid-template-columns:1fr}.health-actions{align-items:flex-start;flex-direction:column}}
-</style></head><body><main><header><h1>Section Association Fix</h1><div id="dashboardActions" class="actions"><button id="refresh" type="button">Refresh</button><div class="export-action"><button id="export" class="secondary" type="button">Export History CSV</button><span id="exportFeedback" role="status" aria-live="polite"></span></div></div></header>
+</style></head><body><main><header><h1>Section Association Fix</h1><div id="dashboardActions" class="actions"><button id="runNow" __RUN_NOW_ACCESS__ type="button" aria-describedby="runNowFeedback"><span aria-hidden="true">▶</span> Run Now</button><button id="refresh" type="button">Refresh</button><div class="export-action"><button id="export" class="secondary" type="button">Export History CSV</button><span id="exportFeedback" role="status" aria-live="polite"></span></div></div></header><span id="runNowFeedback" class="feedback" role="status" aria-live="polite"></span>
 <div id="dashboardView"><section aria-labelledby="service-heading"><div class="service-title"><h2 id="service-heading">Service status</h2><button id="apiHealthOpen" class="secondary health-open" type="button">API Health Check</button></div><div class="status-list"><div><span class="label">Availability</span><span id="availability" class="state unknown" role="status">Loading</span></div><div><span class="label">Current worker state</span><span id="worker" class="state unknown" role="status">Loading</span></div><div><span class="label">Discovery periods</span><span id="discoveryScope" class="discovery-period-value">—</span></div></div>
 <div id="latest" class="latest" hidden><span class="label">Last execution</span><span id="latestDate" class="value">—</span><span id="outcome" class="outcome" role="status" aria-label="Execution outcome">—</span><span id="latestMessage" class="latest-message">—</span></div><p id="emptyLatest" class="empty" hidden>No maintenance execution recorded yet.</p></section>
 <section aria-labelledby="history-heading"><div class="history-header"><h2 id="history-heading">Execution history</h2><span id="updated" aria-live="polite">Not updated yet</span></div><form id="dateFilters" class="date-filters"><label>From <input id="fromDate" type="date"></label><label>To <input id="toDate" type="date"></label><button type="submit" class="secondary">Apply</button><button id="clearFilters" type="button" class="secondary">Clear</button><span id="filterError" role="status" aria-live="polite"></span></form><div role="table" aria-label="Maintenance executions" class="history-table"><div role="rowgroup"><div role="row" class="history-row history-head"><span role="columnheader">Date and time</span><span role="columnheader">Periods / Scope</span><span role="columnheader">Outcome</span><span role="columnheader" class="numeric">Checked</span><span role="columnheader" class="numeric">Corrections</span><span role="columnheader" class="numeric">Errors</span></div></div><p id="historyEmpty" class="empty" hidden>No executions recorded yet.</p><div id="history" role="rowgroup"></div></div><nav class="pagination" aria-label="Execution history pages"><button id="previousPage" class="secondary" type="button">Previous</button><span id="pageNumber" aria-live="polite">Page 1</span><button id="nextPage" class="secondary" type="button">Next</button></nav></section><p id="notice" role="status" aria-live="polite"></p>
@@ -48,7 +49,7 @@ const numberFormat=new Intl.NumberFormat(undefined,{maximumFractionDigits:0});
 function count(value){return Number.isSafeInteger(value)&&value>=0?numberFormat.format(value):'—'}
 function outcomeClass(value){return ['failed','skipped','pending'].includes(String(value).toLowerCase())?String(value).toLowerCase():String(value).toLowerCase()==='completed'?'completed':'unknown'}
 function showOutcome(id,value){const node=document.getElementById(id),label=statusText(value);node.textContent=label;node.className='outcome '+outcomeClass(value);node.setAttribute('aria-label','Outcome: '+label)}
-let exportFeedbackTimer;let currentPage=1;let hasMore=false;
+let exportFeedbackTimer;let currentPage=1;let hasMore=false;let manualPollTimer=null;let manualBusy=false;
 function exportMessage(value,type='',node=document.getElementById('exportFeedback')){node.textContent=value;node.className='feedback '+type;if(exportFeedbackTimer)clearTimeout(exportFeedbackTimer);if(type==='success')exportFeedbackTimer=setTimeout(()=>{node.textContent='';node.className='feedback'},1800)}
 function duration(start,end){const a=new Date(start).getTime(),b=new Date(end).getTime();if(!Number.isFinite(a)||!Number.isFinite(b)||b<a)return '—';const seconds=Math.floor((b-a)/1000);return seconds<60?seconds+' seconds':Math.floor(seconds/60)+' min'+(seconds%60?' '+seconds%60+' sec':'')}
 function compactDuration(start,end){const a=new Date(start).getTime(),b=new Date(end).getTime();if(!Number.isFinite(a)||!Number.isFinite(b)||b<a)return '';const seconds=Math.floor((b-a)/1000);return seconds<60?seconds+' sec':Math.floor(seconds/60)+' min'+(seconds%60?' '+seconds%60+' sec':'')}
@@ -89,6 +90,7 @@ async function refresh(){
       renderDiscoveryPeriods(null);return;
     }
     const data=await response.json();
+    renderManualRequest(data.manualExecution);
     renderState('availability',data.availability,true);renderState('worker',data.worker);
     renderDiscoveryPeriods(data.discoveryPeriods);
     const latest=data.latestExecution;
@@ -102,6 +104,27 @@ async function refresh(){
     set('notice','Could not reach the status service. Check your connection and retry.');
     renderState('availability','Unavailable',true);renderState('worker','Unavailable');renderDiscoveryPeriods(null);
   }
+}
+function renderManualRequest(request){
+  if(!request){if(!manualBusy)set('runNowFeedback','');return}
+  const messages={requested:'Manual run requested. Waiting for the shared worker lease.',running:'Manual run is running.',completed:'Manual run completed.',failed:'Manual run failed. See Execution History and its Exceptions report.'};
+  if(messages[request.status])set('runNowFeedback',messages[request.status]);
+  if(['requested','running'].includes(request.status)){
+    manualBusy=true;document.getElementById('runNow').disabled=true;
+    if(!manualPollTimer)manualPollTimer=setInterval(()=>{void refresh()},2500);
+  }
+  if(['completed','failed'].includes(request.status)){manualBusy=false;document.getElementById('runNow').disabled=false;if(manualPollTimer){clearInterval(manualPollTimer);manualPollTimer=null}}
+}
+async function runNow(){
+  if(manualBusy||!window.confirm('Run the Section Association Fix now?'))return;
+  manualBusy=true;document.getElementById('runNow').disabled=true;set('runNowFeedback','Submitting manual run…');
+  try{
+    const response=await fetch('/api/section-association/run-now',{method:'POST',credentials:'same-origin',headers:{Accept:'application/json','Content-Type':'application/json','X-Requested-With':'XMLHttpRequest',Authorization:'Bearer '+ltiToken},body:'{}'});
+    const payload=await response.json().catch(()=>({}));
+    if(response.status===409){set('runNowFeedback',payload.result?.status==='running'?'Another execution is already running.':'A manual run is already requested.');manualBusy=false;document.getElementById('runNow').disabled=false;await refresh();return}
+    if(!response.ok){set('runNowFeedback',response.status===403?'Administrator access is required.':'Manual run could not be requested. Retry shortly.');manualBusy=false;document.getElementById('runNow').disabled=false;return}
+    if(payload.request){renderManualRequest(payload.request);manualBusy=true;await refresh()}
+  }catch{set('runNowFeedback','Could not reach the service. Check the status before retrying.');manualBusy=false;document.getElementById('runNow').disabled=false}
 }
 function healthClass(value){return String(value||'Unknown').toLowerCase().replace(/\s+/g,'-')}
 function renderApiHealth(data){
@@ -136,12 +159,12 @@ document.getElementById('history').addEventListener('click',event=>{const button
 document.addEventListener('click',event=>{if(event.target.closest('.reports-menu'))return;document.querySelectorAll('.reports-menu[open]').forEach(menu=>menu.open=false)});
 document.addEventListener('keydown',event=>{if(event.key!=='Escape')return;const menu=document.querySelector('.reports-menu[open]');if(menu){menu.open=false;menu.querySelector('summary').focus();event.stopPropagation()}});
 if(document.getElementById('apiHealthOpen')){document.getElementById('apiHealthOpen').addEventListener('click',()=>{document.getElementById('dashboardView').hidden=true;document.getElementById('dashboardActions').hidden=true;document.getElementById('apiHealthView').hidden=false;document.getElementById('apiHealthHeading').focus?.();return loadApiHealth()});document.getElementById('apiHealthBack').addEventListener('click',()=>{document.getElementById('apiHealthView').hidden=true;document.getElementById('dashboardView').hidden=false;document.getElementById('dashboardActions').hidden=false;document.getElementById('apiHealthOpen').focus()});document.getElementById('healthRun').addEventListener('click',runApiHealth)}
-document.getElementById('dateFilters').addEventListener('submit',event=>{event.preventDefault();const from=document.getElementById('fromDate').value,to=document.getElementById('toDate').value;if(from&&to&&from>to){set('filterError','From date must be on or before To date.');return}set('filterError','');currentPage=1;return refresh()});document.getElementById('clearFilters').addEventListener('click',()=>{document.getElementById('fromDate').value='';document.getElementById('toDate').value='';set('filterError','');currentPage=1;return refresh()});document.getElementById('previousPage').addEventListener('click',()=>{if(currentPage>1){currentPage--;return refresh()}});document.getElementById('nextPage').addEventListener('click',()=>{if(hasMore){currentPage++;return refresh()}});document.getElementById('refresh').addEventListener('click',refresh);document.getElementById('export').addEventListener('click',exportCsv);refresh();
+document.getElementById('dateFilters').addEventListener('submit',event=>{event.preventDefault();const from=document.getElementById('fromDate').value,to=document.getElementById('toDate').value;if(from&&to&&from>to){set('filterError','From date must be on or before To date.');return}set('filterError','');currentPage=1;return refresh()});document.getElementById('clearFilters').addEventListener('click',()=>{document.getElementById('fromDate').value='';document.getElementById('toDate').value='';set('filterError','');currentPage=1;return refresh()});document.getElementById('previousPage').addEventListener('click',()=>{if(currentPage>1){currentPage--;return refresh()}});document.getElementById('nextPage').addEventListener('click',()=>{if(hasMore){currentPage++;return refresh()}});document.getElementById('refresh').addEventListener('click',refresh);document.getElementById('runNow').addEventListener('click',runNow);document.getElementById('export').addEventListener('click',exportCsv);refresh();
 </script></body></html>`;
 
-function pageForLaunch(ltik) {
+function pageForLaunch(ltik, allowRunNow = false) {
   const serializedToken = JSON.stringify(ltik).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
-  return PAGE.replace('__LTI_TOKEN__', serializedToken);
+  return PAGE.replace('__LTI_TOKEN__', serializedToken).replace('__RUN_NOW_ACCESS__', allowRunNow ? '' : 'hidden');
 }
 
 const CSV_COLUMNS = [
@@ -184,16 +207,36 @@ function auditCsvCell(value) {
   return `"${text.replace(/"/g, '""')}"`;
 }
 
-function registerSectionAssociationLtiInterface(provider, { deploymentId, getStatus, getExecutionHistory, getExecutionAudit, getAuditAvailability, apiHealthService }) {
+function registerSectionAssociationLtiInterface(provider, { deploymentId, getStatus, getExecutionHistory, getExecutionAudit, getAuditAvailability, apiHealthService, manualExecutionController }) {
   const authorize = deploymentGuard(deploymentId);
   provider.app.get('/api/section-association/status', async (req, res) => {
     if (!authorize(res.locals?.token, req, res)) return;
     try {
       const parsed = parseHistoryQuery(req.query || {});
       if (parsed.error) return res.status(400).json({ error: parsed.error });
-      res.set('Cache-Control', 'no-store').json(await getStatus(parsed));
+      const status = await getStatus(parsed);
+      status.latestExecution = hideRequester(status.latestExecution);
+      if (Array.isArray(status.executions)) status.executions = status.executions.map(hideRequester);
+      if (manualExecutionController) status.manualExecution = await manualExecutionController.getStatus();
+      res.set('Cache-Control', 'no-store').json(status);
     }
     catch { res.status(503).json({ availability: 'Unavailable', worker: 'Unavailable', latestExecution: null, executions: [] }); }
+  });
+  provider.app.post('/api/section-association/run-now', async (req, res) => {
+    if (!authorize(res.locals?.token, req, res)) return;
+    if (!sameOriginRequest(req)) return res.status(403).json({ error: 'Request integrity check failed.' });
+    if (!isAdministrator(res.locals?.token)) return res.status(403).json({ error: 'Administrator access is required.' });
+    if (!manualExecutionController) return res.status(503).json({ error: 'Manual execution is unavailable.' });
+    const token = res.locals?.token;
+    const subject = typeof token?.user === 'string' ? token.user : typeof token?.sub === 'string' ? token.sub : '';
+    const requester = { name: safeAuditName(token?.userInfo?.name),
+      subjectHash: subject ? createHash('sha256').update(subject).digest('hex') : null };
+    try {
+      const result = await manualExecutionController.request(requester);
+      if (!result.accepted) return res.set('Cache-Control', 'no-store').status(409)
+        .json({ result: { status: result.alreadyRunning ? 'running' : 'requested' }, request: result.request });
+      return res.set('Cache-Control', 'no-store').status(202).json({ result: { status: 'requested' }, request: result });
+    } catch { return res.status(503).json({ error: 'Manual execution could not be requested.' }); }
   });
   provider.app.get('/api/section-association/api-health', async (req, res) => {
     if (!authorize(res.locals?.token, req, res)) return;
@@ -250,7 +293,7 @@ function registerSectionAssociationLtiInterface(provider, { deploymentId, getSta
     if (!authorize(token, req, res)) return;
     const ltik = res.locals?.ltik;
     if (typeof ltik !== 'string' || !ltik) return res.status(401).send('LTI launch token unavailable. Relaunch this tool from Brightspace.');
-    res.set('Cache-Control', 'no-store').type('html').send(pageForLaunch(ltik));
+    res.set('Cache-Control', 'no-store').type('html').send(pageForLaunch(ltik, isAdministrator(token)));
   });
 }
 
@@ -262,6 +305,21 @@ function sameOriginRequest(req) {
   if (typeof origin !== 'string' || typeof host !== 'string' || requestedWith !== 'XMLHttpRequest') return false;
   try { const parsed = new URL(origin); return parsed.protocol === 'https:' && parsed.host === host && (!fetchSite || fetchSite === 'same-origin'); }
   catch { return false; }
+}
+
+function isAdministrator(token) {
+  const roles = token?.platformContext?.roles || token?.roles ||
+    token?.['https://purl.imsglobal.org/spec/lti/claim/roles'] || token?.userInfo?.roles;
+  if (!Array.isArray(roles)) return false;
+  return roles.some(role => typeof role === 'string' && /(?:^|[#/])(?:Administrator|SysAdmin)$/i.test(role));
+}
+function safeAuditName(value) {
+  return typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').trim().slice(0, 120) : '';
+}
+function hideRequester(execution) {
+  if (!execution || typeof execution !== 'object' || !Object.hasOwn(execution, 'requestedBy')) return execution;
+  const { requestedBy: _requestedBy, ...publicExecution } = execution;
+  return publicExecution;
 }
 
 function parseHistoryQuery(query) {
@@ -288,4 +346,4 @@ function saoPauloMidnight(dateText) {
   return new Date(instant);
 }
 
-module.exports = { registerSectionAssociationLtiInterface, pageForLaunch, CSV_COLUMNS, csvCell, AUDIT_COLUMNS, auditCsvCell, sameOriginRequest };
+module.exports = { registerSectionAssociationLtiInterface, pageForLaunch, CSV_COLUMNS, csvCell, AUDIT_COLUMNS, auditCsvCell, sameOriginRequest, isAdministrator };
