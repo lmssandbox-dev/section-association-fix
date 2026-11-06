@@ -82,10 +82,12 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
   let busy = false;
   const stabilityLogged = new Set();
   const attemptedByExecution = new WeakMap();
+  const sampledChildDiagnosticExecutions = new WeakSet();
   const recoveryIntervalMs = recoveryIntervalHours * 60 * 60 * 1000;
   const completedReverifyMs = completedReverifyHours * 60 * 60 * 1000;
-  const targetedDebugId = /^\d{1,20}$/.test(String(debugAssociationId || '').trim())
-    ? String(debugAssociationId).trim() : '';
+  const debugSetting = String(debugAssociationId || '').trim();
+  const sampleChildDiagnostic = debugSetting === 'sample';
+  const targetedDebugId = /^\d{1,20}$/.test(debugSetting) ? debugSetting : '';
 
   async function discover(orgUnitCode) {
     const candidates = await client.associationCandidates(orgUnitCode);
@@ -349,13 +351,19 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     const attemptField = 'lastChildInspectionAttemptAt';
     const changed = [];
     const targetedDiagnostics = new Map();
+    let sampleDiagnosticClaimed = Boolean(sampleChildDiagnostic && execution && typeof execution === 'object' &&
+      sampledChildDiagnosticExecutions.has(execution));
     let mappingsNeedRefresh = 0;
     let mappingRefreshesRequired = 0;
     let childChangesDetected = 0;
     for (const item of items) {
       const id = String(item.associationOrgUnitId);
       await store.record(id, { [attemptField]: new Date(now()) });
-      const isTargeted = id === targetedDebugId;
+      const isTargeted = targetedDebugId ? id === targetedDebugId : sampleChildDiagnostic && !sampleDiagnosticClaimed;
+      if (isTargeted && sampleChildDiagnostic) {
+        sampleDiagnosticClaimed = true;
+        if (execution && typeof execution === 'object') sampledChildDiagnosticExecutions.add(execution);
+      }
       const mappingIsTrusted = trustedMapping(item);
       const mappingFailure = isTargeted && !mappingIsTrusted ? trustedMappingFailure(item) : null;
       const diagnostic = isTargeted ? { associationId: id, mappingTrusted: mappingIsTrusted,

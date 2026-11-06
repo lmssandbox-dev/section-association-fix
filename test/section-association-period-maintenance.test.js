@@ -324,6 +324,30 @@ test('targeted child diagnostics are disabled by default and leave existing moni
   assert.equal(result.childChangesDetected, 1);
 });
 
+test('sample child diagnostics log only the first inspected association once per execution', async () => {
+  const h = childDiagnosticFixture({ ids: ['36183', '36184', '36185'], debugAssociationId: 'sample' });
+  const execution = {};
+  const first = await h.service.fastTick({ execution });
+  let diagnostics = h.lines.filter(line => line.includes('child monitoring diagnostic'));
+  assert.equal(diagnostics.length, 1);
+  assert.match(diagnostics[0], /associationId=36183/);
+  assert.match(diagnostics[0], /mappingTrusted=true/);
+  assert.match(diagnostics[0], /savedCurrentChildrenMatch=true/);
+  assert.match(diagnostics[0], /normalizedListsMatch=false/);
+  assert.match(diagnostics[0], /reconciliationReason=child-list-difference/);
+  assert.deepEqual(h.calls.children, ['36183', '36184', '36185']);
+  assert.deepEqual(h.calls.reconciliations, ['36183', '36184', '36185']);
+  assert.equal(first.childChangesDetected, 3);
+
+  await h.service.fastTick({ execution });
+  diagnostics = h.lines.filter(line => line.includes('child monitoring diagnostic'));
+  assert.equal(diagnostics.length, 1);
+  await h.service.fastTick({ execution: {} });
+  diagnostics = h.lines.filter(line => line.includes('child monitoring diagnostic'));
+  assert.equal(diagnostics.length, 2);
+  assert.match(diagnostics[1], /associationId=36183/);
+});
+
 test('targeted child diagnostics expose identical saved/current rows and the current normalization discrepancy', async () => {
   const h = childDiagnosticFixture({ ids: ['36183', '36184'], debugAssociationId: '36183' });
   const result = await h.service.fastTick();
