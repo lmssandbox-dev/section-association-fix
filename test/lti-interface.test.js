@@ -79,6 +79,12 @@ test('Run Now requires a same-origin request, deployment match, and validated ad
   assert.equal(allowed.body.request.requester.name,'Admin');assert.match(allowed.body.request.requester.subjectHash,/^[a-f0-9]{64}$/);
 });
 
+test('Run Now uses the styled accessible dialog instead of a browser confirmation',()=>{
+  const page=pageForLaunch('token',true);
+  for(const expected of ['<dialog id="runNowDialog"','Run Section Association Fix?','This will start a manual execution using the existing reconciliation rules and safety checks.','id="runNowDialogCancel"','id="runNowDialogConfirm"','autofocus','::backdrop'])assert.ok(page.includes(expected),expected);
+  assert.doesNotMatch(page,/window\.confirm/);
+});
+
 test('API Health Check button navigates in-page and uses cached GET results', async()=>{
   const requests=[];
   const elements=await runPage(async(url,options)=>{requests.push({url,options});return{ok:true,async json(){return url==='/api/section-association/api-health'?{currentStatus:'Unknown',stale:true,counts:{Unknown:6},endpoints:[]}:{availability:'Available',worker:'idle',latestExecution:null,executions:[]}}}});
@@ -173,15 +179,16 @@ const execution = { executionId: 'run-1', source: 'manual', startedAt: '2026-10-
 
 async function runPage(fetchImpl) {
   const script = pageForLaunch('signed-lti-token').match(/<script>([\s\S]*?)<\/script>/)[1];
-  const ids = ['availability','worker','discoveryScope','latest','latestDate','outcome','latestMessage','emptyLatest','historyEmpty','history','updated','notice','refresh','runNow','runNowFeedback','runNowFeedbackDismiss','export','exportFeedback','dateFilters','fromDate','toDate','clearFilters','filterError','previousPage','nextPage','pageNumber','apiHealthOpen','apiHealthView','apiHealthHeading','apiHealthBack','healthConfigured','healthLatest','healthOverall','healthChecked','healthFreshness','healthCounts','healthRun','healthFeedback','healthEndpointRows','dashboardView','dashboardActions'];
+  const ids = ['availability','worker','discoveryScope','latest','latestDate','outcome','latestMessage','emptyLatest','historyEmpty','history','updated','notice','refresh','runNow','runNowDialog','runNowDialogCancel','runNowDialogConfirm','runNowFeedback','runNowFeedbackDismiss','export','exportFeedback','dateFilters','fromDate','toDate','clearFilters','filterError','previousPage','nextPage','pageNumber','apiHealthOpen','apiHealthView','apiHealthHeading','apiHealthBack','healthConfigured','healthLatest','healthOverall','healthChecked','healthFreshness','healthCounts','healthRun','healthFeedback','healthEndpointRows','dashboardView','dashboardActions'];
   let finish; const finished = new Promise(resolve => { finish = resolve; });const timers=[];
   const summary={focused:false,focus(){this.focused=true}},reportMenu={open:true,querySelector(){return summary}},reportFeedback={textContent:'',className:''},reportEntry={querySelector(){return reportFeedback}};
   const links=[];
   const elements = Object.fromEntries(ids.map(id => [id, { value: '', hidden: ['latest','emptyLatest','historyEmpty','apiHealthView','runNowFeedbackDismiss'].includes(id), className: '', innerHTML: '', listeners: {},focus(){this.focused=true},
     addEventListener(event, handler) { this.listeners[event] = handler; }, setAttribute(name,value) { this[name]=value; },
     set textContent(value) { this.value = value; if (id === 'notice' && value !== 'Refreshing…') finish(); }, get textContent() { return this.value; } }]));
+  elements.runNowDialog.open=false;elements.runNowDialog.showModal=function(){this.open=true;elements.runNowDialogCancel.focus()};elements.runNowDialog.close=function(){if(this.open){this.open=false;this.listeners.close?.()}};
   const documentListeners={};
-  vm.runInNewContext(script, { document: { getElementById: id => elements[id], addEventListener(event,handler){documentListeners[event]=handler}, querySelectorAll(){return reportMenu.open?[reportMenu]:[]}, querySelector(){return reportMenu.open?reportMenu:null}, createElement() { const link={click(){link.clicked=true}}; links.push(link); return link; } }, fetch: fetchImpl, window:{confirm(){return false}},
+  vm.runInNewContext(script, { document: { getElementById: id => elements[id], addEventListener(event,handler){documentListeners[event]=handler}, querySelectorAll(){return reportMenu.open?[reportMenu]:[]}, querySelector(){return reportMenu.open?reportMenu:null}, createElement() { const link={click(){link.clicked=true}}; links.push(link); return link; } }, fetch: fetchImpl,
     Intl, Date, URLSearchParams, setTimeout(fn,ms){fn.delay=ms;timers.push(fn);return timers.length}, clearTimeout(){}, setInterval(fn,ms){fn.delay=ms;timers.push(fn);return timers.length}, clearInterval(){}, URL: { createObjectURL() { return 'blob:url'; }, revokeObjectURL() {} } });
   await finished; elements.links=links;elements.reportMenu=reportMenu;elements.reportSummary=summary;elements.reportFeedback=reportFeedback;elements.reportEntry=reportEntry;elements.documentListeners=documentListeners;elements.timers=timers; return elements;
 }
@@ -250,6 +257,31 @@ test('Refresh supports empty history and can be repeated', async () => {
   const elements = await runPage(async () => { calls++; return { ok: true, async json() { return { availability: 'Available', worker: 'idle', latestExecution: null, executions: [] }; } }; });
   assert.equal(elements.emptyLatest.hidden, false); assert.equal(elements.historyEmpty.hidden, false);
   await elements.refresh.listeners.click(); assert.equal(calls, 2);
+});
+
+test('Run Now dialog opens, then Cancel closes it without submitting and restores focus',async()=>{
+  const calls=[];const elements=await runPage(async(url,options={})=>{calls.push({url,options});return{ok:true,async json(){return{availability:'Available',worker:'idle',latestExecution:null,executions:[]}}}});
+  elements.runNow.listeners.click();assert.equal(elements.runNowDialog.open,true);assert.equal(elements.runNowDialogCancel.focused,true);
+  assert.equal(calls.some(call=>call.options.method==='POST'),false);
+  elements.runNowDialogCancel.listeners.click();assert.equal(elements.runNowDialog.open,false);assert.equal(elements.runNow.focused,true);
+  assert.equal(calls.some(call=>call.options.method==='POST'),false);
+});
+
+test('Escape cancels the Run Now dialog without submitting and restores focus',async()=>{
+  const calls=[];const elements=await runPage(async(url,options={})=>{calls.push({url,options});return{ok:true,async json(){return{availability:'Available',worker:'idle',latestExecution:null,executions:[]}}}});
+  elements.runNow.listeners.click();elements.runNowDialog.listeners.cancel({});
+  assert.equal(elements.runNowDialog.open,false);assert.equal(elements.runNow.focused,true);
+  assert.equal(calls.some(call=>call.options.method==='POST'),false);
+});
+
+test('confirm submits one manual request and prevents a duplicate submission',async()=>{
+  const calls=[];const elements=await runPage(async(url,options={})=>{calls.push({url,options});return options.method==='POST'?{ok:true,async json(){return{request:{requestId:'manual-dialog',status:'requested'}}}}:{ok:true,async json(){return{availability:'Available',worker:'running',latestExecution:null,executions:[],manualExecution:{requestId:'manual-dialog',status:'requested'}}}}});
+  elements.runNow.listeners.click();assert.equal(elements.runNowDialog.open,true);
+  await elements.runNowDialogConfirm.listeners.click();
+  assert.equal(elements.runNowDialog.open,false);assert.equal(elements.runNow.focused,true);
+  assert.equal(calls.filter(call=>call.options.method==='POST').length,1);assert.equal(elements.runNow.disabled,true);
+  await elements.runNowDialogConfirm.listeners.click();
+  assert.equal(calls.filter(call=>call.options.method==='POST').length,1);
 });
 
 test('a completion already present on page load stays hidden on refresh',async()=>{
