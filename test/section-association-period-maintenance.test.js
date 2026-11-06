@@ -314,14 +314,14 @@ function childDiagnosticFixture({ debugAssociationId, ids = ['36183'], savedById
   return { service, calls, lines };
 }
 
-test('targeted child diagnostics are disabled by default and leave existing monitoring behavior unchanged', async () => {
+test('targeted child diagnostics are disabled by default and unchanged children do not reconcile', async () => {
   const h = childDiagnosticFixture();
   const result = await h.service.fastTick();
   assert.equal(h.lines.some(line => line.includes('child monitoring diagnostic')), false);
   assert.deepEqual(h.calls.children, ['36183']);
-  assert.deepEqual(h.calls.reconciliations, ['36183']);
+  assert.deepEqual(h.calls.reconciliations, []);
   assert.equal(result.childChecksSucceeded, 1);
-  assert.equal(result.childChangesDetected, 1);
+  assert.equal(result.childChangesDetected, 0);
 });
 
 test('sample child diagnostics log only the first inspected association once per execution', async () => {
@@ -333,11 +333,12 @@ test('sample child diagnostics log only the first inspected association once per
   assert.match(diagnostics[0], /associationId=36183/);
   assert.match(diagnostics[0], /mappingTrusted=true/);
   assert.match(diagnostics[0], /savedCurrentChildrenMatch=true/);
-  assert.match(diagnostics[0], /normalizedListsMatch=false/);
-  assert.match(diagnostics[0], /reconciliationReason=child-list-difference/);
+  assert.match(diagnostics[0], /normalizedListsMatch=true/);
+  assert.match(diagnostics[0], /reconciliationRequested=false/);
+  assert.match(diagnostics[0], /reconciliationReason=none/);
   assert.deepEqual(h.calls.children, ['36183', '36184', '36185']);
-  assert.deepEqual(h.calls.reconciliations, ['36183', '36184', '36185']);
-  assert.equal(first.childChangesDetected, 3);
+  assert.deepEqual(h.calls.reconciliations, []);
+  assert.equal(first.childChangesDetected, 0);
 
   await h.service.fastTick({ execution });
   diagnostics = h.lines.filter(line => line.includes('child monitoring diagnostic'));
@@ -348,7 +349,7 @@ test('sample child diagnostics log only the first inspected association once per
   assert.match(diagnostics[1], /associationId=36183/);
 });
 
-test('targeted child diagnostics expose identical saved/current rows and the current normalization discrepancy', async () => {
+test('targeted child diagnostics report matching saved/current rows without reconciliation', async () => {
   const h = childDiagnosticFixture({ ids: ['36183', '36184'], debugAssociationId: '36183' });
   const result = await h.service.fastTick();
   const diagnostics = h.lines.filter(line => line.includes('child monitoring diagnostic'));
@@ -358,14 +359,37 @@ test('targeted child diagnostics expose identical saved/current rows and the cur
   assert.match(diagnostics[0], /savedChildren=\[\{"id":"36187","code":"012263-01-2601-POS-S51H-01125"\}\]/);
   assert.match(diagnostics[0], /currentChildren=\[\{"id":"36187","code":"012263-01-2601-POS-S51H-01125","type":"Group"\}\]/);
   assert.match(diagnostics[0], /savedCurrentChildrenMatch=true/);
-  assert.match(diagnostics[0], /normalizedListsMatch=false/);
+  assert.match(diagnostics[0], /normalizedListsMatch=true/);
   assert.match(diagnostics[0], /unexpectedChildType=false/);
-  assert.match(diagnostics[0], /reconciliationRequested=true/);
-  assert.match(diagnostics[0], /reconciliationReason=child-list-difference/);
+  assert.match(diagnostics[0], /reconciliationRequested=false/);
+  assert.match(diagnostics[0], /reconciliationReason=none/);
   assert.match(diagnostics[0], /successfulInspectionTimestampUpdated=true/);
-  assert.equal(result.childChangesDetected, 2);
+  assert.equal(result.childChangesDetected, 0);
   assert.equal(h.calls.children.length, 2);
-  assert.deepEqual(h.calls.reconciliations, ['36183', '36184']);
+  assert.deepEqual(h.calls.reconciliations, []);
+});
+
+test('association 37003 matches its three saved snapshot rows to API-shaped child rows', async () => {
+  const saved = [
+    { id: '37004', code: '012263-01-2601-POS-S51H-01125' },
+    { id: '37005', code: '012263-01-2601-POS-S52H-01139' },
+    { id: '37006', code: '012263-01-2601-POS-S53H-01140' }
+  ];
+  const h = childDiagnosticFixture({ ids: ['37003'], debugAssociationId: '37003', savedById: { '37003': saved },
+    currentById: { '37003': [...saved].reverse() } });
+  const result = await h.service.fastTick();
+  const line = h.lines.find(row => row.includes('child monitoring diagnostic'));
+  assert.match(line, /associationId=37003/);
+  assert.match(line, /mappingTrusted=true/);
+  assert.match(line, /savedCurrentChildrenMatch=true/);
+  assert.match(line, /normalizedListsMatch=true/);
+  assert.match(line, /unexpectedChildType=false/);
+  assert.match(line, /reconciliationRequested=false/);
+  assert.match(line, /successfulInspectionTimestampUpdated=true/);
+  assert.equal(result.childChecksSucceeded, 1);
+  assert.equal(result.childChangesDetected, 0);
+  assert.deepEqual(h.calls.children, ['37003']);
+  assert.deepEqual(h.calls.reconciliations, []);
 });
 
 test('targeted child diagnostics report changed rows and their reconciliation reason', async () => {
@@ -384,6 +408,31 @@ test('targeted child diagnostics report changed rows and their reconciliation re
   assert.deepEqual(h.calls.reconciliations, ['36183']);
 });
 
+test('child removals and Org Code changes still request full reconciliation', async t => {
+  const saved = [
+    { id: '36187', code: '012263-01-2601-POS-S51H-01125' },
+    { id: '36190', code: '012263-01-2601-POS-S52H-01139' }
+  ];
+  const cases = [
+    { name: 'removal', current: [saved[0]] },
+    { name: 'code change', current: [saved[0], { ...saved[1], code: '012263-01-2601-POS-S52H-01141' }] }
+  ];
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const h = childDiagnosticFixture({ debugAssociationId: '36183', savedById: { '36183': saved },
+        currentById: { '36183': scenario.current } });
+      const result = await h.service.fastTick();
+      const line = h.lines.find(row => row.includes('child monitoring diagnostic'));
+      assert.match(line, /savedCurrentChildrenMatch=false/);
+      assert.match(line, /normalizedListsMatch=false/);
+      assert.match(line, /reconciliationRequested=true/);
+      assert.match(line, /reconciliationReason=child-list-difference/);
+      assert.equal(result.childChangesDetected, 1);
+      assert.deepEqual(h.calls.reconciliations, ['36183']);
+    });
+  }
+});
+
 test('targeted child diagnostics report unexpected child types independently of list equality', async () => {
   const h = childDiagnosticFixture({ debugAssociationId: '36183', currentById: {
     '36183': [{ id: '36187', code: '012263-01-2601-POS-S51H-01125', type: 'Course Offering' }]
@@ -392,7 +441,8 @@ test('targeted child diagnostics report unexpected child types independently of 
   const line = h.lines.find(row => row.includes('child monitoring diagnostic'));
   assert.match(line, /currentChildTypes=\["Course Offering"\]/);
   assert.match(line, /unexpectedChildType=true/);
-  assert.match(line, /reconciliationReason=unexpected-type-and-child-list-difference/);
+  assert.match(line, /normalizedListsMatch=true/);
+  assert.match(line, /reconciliationReason=unexpected-child-type/);
   assert.match(line, /savedCurrentChildrenMatch=true/);
   assert.deepEqual(h.calls.children, ['36183']);
   assert.deepEqual(h.calls.reconciliations, ['36183']);

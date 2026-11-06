@@ -286,7 +286,8 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
   }
 
   function normalizedChildren(rows) {
-    return rows.map(row => ({ id: String(row.Identifier ?? row.OrgUnitId ?? ''), code: String(row.Code || '') }))
+    return rows.map(row => ({ id: String(row.Identifier ?? row.OrgUnitId ?? row.id ?? ''),
+      code: String(row.Code ?? row.code ?? '') }))
       .sort((a, b) => a.id.localeCompare(b.id) || a.code.localeCompare(b.code));
   }
 
