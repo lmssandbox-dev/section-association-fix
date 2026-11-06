@@ -1,230 +1,161 @@
-# Section Association Fix
-## A simple guide to what the app does
+# Section Association Fix: Administrator's Guide
 
-**In one sentence:** The app finds the original Brightspace courses that have been combined into a shared course and safely makes those originals inactive, so learners and instructors use the right course.
+## What the app does
 
-You don't need to know programming to use this guide. You only need a basic understanding of courses and sections in Brightspace.
+Brightspace IPSIS can combine several sections into one shared **Section Association Course Offering**. The original standalone Course Offerings may still be active afterward. This app finds those shared offerings, checks which original offerings belong to them, and safely makes those originals inactive when it is allowed to do so.
 
----
+The app never deletes courses, activates an offering, changes the shared association, moves sections, or changes enrollments. It starts in **dry-run mode**, which checks and records what it would do but sends no course updates.
 
-## 1. Why do we need this app?
+### Two different kinds of finding
 
-Sometimes an institution combines several class sections into **one shared course** through IPSIS. Brightspace calls this a *Section Association*.
-
-For example:
-
-**Before** — three separate courses are active:
-
-- Marketing — Section 01
-- Marketing — Section 02
-- Marketing — Section 03
-
-**After** — the sections belong to one shared Marketing course. But the three original courses might still be active.
-
-**The app's job:** identify those original courses and make them inactive **after checking that it is safe**.
-
-The shared course stays active. Nothing is deleted. The app does not change enrollments or move sections.
-
----
-
-## 2. What are the main parts?
-
-| Part | What it means in everyday language |
-| --- | --- |
-| **Brightspace** | Where the real courses and sections live. |
-| **The app** | Finds associations, checks the original courses, and decides whether to make them inactive. |
-| **Automatic scheduler** | Wakes up every 15 minutes to see which tasks should run. |
-| **MongoDB** | The app's notebook: what it found, checked, changed, or couldn't finish. |
-| **Monitoring page (LTI)** | A dashboard showing whether the app is working and what happened in previous runs; administrators can also start a safe manual run. |
-
-**The big picture**
-
-```text
-Brightspace courses and sections
-             |
-             v
-      Section Association Fix
-       |                 |
-       v                 v
- Checks and safe      Records history
- course updates       in MongoDB
-       |
-       v
-  Brightspace
-
-A scheduler starts the work; the LTI page shows the results.
-```
-
-The app works in the background even if nobody opens the monitoring page.
-
----
-
-## 3. How does it handle a new association?
-
-Here is the process in five steps:
-
-**1. Find it.** The app notices a newly created shared course that matches the supported Section Association formats.
-
-**2. Give it time.** A new association normally waits **at least 10 minutes**, so Brightspace can finish setting it up.
-
-**3. Check the sections.** The app identifies every original course represented by the association's sections.
-
-**4. Check everything before changing anything.** If a course is missing, ambiguous, or does not match the expected structure, the app stops that association and records the problem. It does not make a partial set of changes.
-
-**5. Act and confirm.** If all checks pass and live processing is enabled, the app makes active originals inactive, then checks the result. Already-inactive courses are left alone.
-
-```text
-New shared course found
-          |
-          v
-Wait at least 10 minutes
-          |
-          v
-Check sections and original courses
-          |
-     Are checks OK?
-       /      \
-      No      Yes
-      |        |
- Record issue  Make originals inactive*
-      |        |
- Try again     Confirm and record result
- when eligible
-
-* Only in live mode. In dry-run mode, the app reports
-  what it would do but does not change Brightspace.
-```
-
-**Important:** The app starts in **dry-run mode by default**. In this mode, it can find and check courses, but **it does not inactivate anything**. Live mode must be enabled for actual course changes.
-
----
-
-## 4. What does the app do throughout the day?
-
-The scheduler starts the app **every 15 minutes**, including overnight. That does **not** mean every course is checked every 15 minutes. Different kinds of work happen at different times, and courses are checked in batches.
-
-All times below are **São Paulo local time**.
-
-| When | Main activity | Why it matters |
+| The app finds… | What it means | How the app looks |
 | --- | --- | --- |
-| **07:00–23:00** | **Find new associations and check known associations for section changes** | Detects new shared courses and added, removed, or changed sections. |
-| **23:00–01:00** | **Search older academic periods** | The broad search runs once in this nightly window. The window crosses midnight: after a successful search before midnight, its saved window date prevents a duplicate search after midnight. Failed attempts can retry on later 15-minute cron runs until 01:00. |
-| **01:00–07:00** | **Check saved original-course IDs** | Checks run every 30 minutes at :00 and :30 (01:00 through 06:30). Unexpected results trigger fresh safety checks before any possible update. |
-| **All other overnight cron ticks** | **Pending and recovery work** | The 15-minute scheduler still processes eligible pending work and recovery between lightweight monitoring slots. |
-| **All day** | **Process eligible pending work and recover from problems** | Keeps unfinished work moving. Recovery is normally due about every four hours. |
+| **A new association** | A new shared Course Offering has appeared in Brightspace. | Searches Brightspace's Course Offering list by the association's Org Code pattern and academic period, then compares the returned IDs with its MongoDB records. |
+| **A new child section** | An existing shared association now has a different set of child sections. | Opens each selected, already-known association's child list and compares it with that association's last verified snapshot. |
 
-### A typical day, at a glance
+A new association is found by a list search. A child change is found by checking the saved children of one known association at a time. They have different workloads and different detection timing.
 
-```text
-23:00          01:00                   07:00                23:00
-|--------------|-----------------------|--------------------|
- Broad historical  Cached-ID checks at     New + known association
- scan window       :00 and :30 only        discovery + child checks
+**New offering:** Brightspace code search → compare returned IDs with MongoDB → wait if newly found → validate and process.
 
-The Render Cron Job starts every 15 minutes throughout the day. Cached-ID verification uses only every other cron slot, so it runs every 30 minutes; skipped slots still allow pending and recovery work. Its default batch ceiling is 150 associations per eligible run and can be adjusted with `SECTION_ASSOCIATION_FIX_STATUS_VERIFY_BATCH_SIZE`. Twelve eligible runs give a theoretical ceiling of 1,800 associations per night at the default batch size. This is a maximum calculation, not a promise that every association will be checked: rate limits, errors, queued work, and available API capacity affect actual throughput.
+**Known association:** read its children → compare IDs and Org Codes with the saved list → fully recheck if they differ.
 
-Pending work and recovery may be handled at any hour.
-The scheduler starts a run every 15 minutes.
-```
+### Terms used in this guide
 
-The daytime search normally covers the **previous, current, and next academic periods**, unless configured differently. The nightly historical search is broader.
+- **Org Code:** Brightspace's code for a course or section.
+- **Academic period:** The year and semester part of a code. `YY01` means January–June; `YY02` means July–December. For example, `2602` means the second half of 2026.
+- **Child section:** A Group inside a Section Association Course Offering.
+- **Original Course Offering:** The standalone course represented by a child section. The app finds it by deriving its Org Code from the child section's code.
+- **Verified snapshot:** The last successfully checked list of child IDs and Org Codes, together with the original offerings they resolve to.
 
-The app processes a limited number of associations per run to control workload. If there is more work than fits in one run, the rest can be picked up later. **There is no guaranteed 15-minute response time for every course.**
+## 1. Finding new Section Associations
 
-The worker does three different kinds of work:
+During daytime discovery, Brightspace is searched for Course Offerings with either supported Org Code family:
 
-- **Full reconciliation** is the careful, complete check. The app reads the shared course, its groups, and each matching original course. It uses this when an association is new, a saved relationship needs to be refreshed, or a check finds a change. A fully completed dry run can remember the relationship when it confirms every original course is already inactive; it still makes no course changes.
-- **Daytime child monitoring** is a lighter check from 07:00 to 23:00. It compares the shared course's current groups with the last saved list. The app first puts saved IDs and Brightspace IDs into the same format and ignores response ordering. If the IDs and Org Codes are unchanged and all children are Groups, no full reconciliation is needed. Additions, removals, code changes, unexpected types, or an untrusted saved list still schedule a full check.
+- Legacy codes contain the selected period followed by `-I0001`, for example `002521-01-2602-I0001`.
+- PeopleSoft codes begin with `ESPM-` and the selected period, for example `ESPM-2602-GS2-C0011`.
 
-For troubleshooting, an operator can temporarily set `SECTION_ASSOCIATION_DEBUG_ID` to one association's numeric ID, or use `sample` to log the first association inspected during each daytime monitoring run. The worker logs the saved and current child IDs/codes and why it did or did not request a full check. Remove the setting after troubleshooting; it is normally unset.
-- **Nighttime status verification** runs every half hour from 01:00 to 06:30. It checks the saved original-course IDs to see whether the originals are still inactive. If one is active, missing, or inconsistent, the app performs a fresh full check before any possible change. A saved ID by itself never permits a course update.
+For each selected period, the app searches both code families. These searches return candidate Course Offerings from Brightspace's paginated list. The app checks the results against the tenant's MongoDB records by distinct Brightspace ID. It does not have to open every association individually just to discover which IDs exist. It opens a newly found association later when it performs the full safety check needed to process it.
 
----
+The optional `SECTION_ASSOCIATION_DISCOVERY_PERIODS` setting controls the period search:
 
-## 5. What if something changes later?
+- Unset, empty, or `auto`: previous, current, and next academic periods.
+- A value such as `2602` or `2601,2602`: exactly those periods.
+- `all`: broad searches across periods once each nightly window, instead of period-specific daytime searches. Ongoing child monitoring still uses the rolling previous/current/next periods.
 
-**A new section is added to a shared course.** During daytime monitoring, the app can notice the difference. It rechecks the association and the original courses before making any new inactivation.
+Discovery can only find an offering that Brightspace successfully created. A wider period search cannot repair an IPSIS import that failed before creating the offering.
 
-**A section is removed.** The app rechecks the relationship, but it **does not reactivate** an original course automatically.
+When an ID is new, MongoDB records it for processing. The app normally waits **10 minutes** from first seeing it before full reconciliation, giving Brightspace time to finish setting it up. A historical association found by the broad nightly scan does not use this new-record waiting period.
 
-**An original course is already inactive.** Nothing needs changing. The app records that it was already in the expected state.
+Full reconciliation then reads the association and its direct Group children. Each child code must have a valid section ending, such as `-01125`; removing that final hyphen and five-digit suffix gives the expected original Course Offering code. Every expected code must resolve to exactly one Course Offering. The app reads and validates the complete target set before making any update. If a course is missing, ambiguous, or structurally invalid, that association is blocked from changes and the problem is recorded. The app does not partially update a set of originals.
 
-**Brightspace temporarily returns an error.** The app records the issue and can try again later. It does not assume a failed lookup means a course has been deleted.
+## 2. Watching for child changes in existing associations
 
-**An association seems to have disappeared.** The app does not decide it is missing after just one failed lookup. It waits at least **30 minutes** and requires a newer successful search that also cannot find that exact association. The record stays in the app's history.
+After a successful full reconciliation, MongoDB keeps a verified snapshot containing the association ID, its child section IDs and Org Codes, and the corresponding original Course Offering IDs and Org Codes. A completed dry run can save this snapshot only when fresh reads confirm that every original is already inactive. If any original is still active in dry-run mode, the association remains pending and has no completed verified mapping yet.
 
-**An old association is discovered.** The daily historical search helps bring it into the workflow. Historical baseline records do not need the 10-minute waiting period used for new associations.
+A child check must ask Brightspace for the children of each selected known association. A search for new association Org Codes cannot answer whether a particular existing association gained or lost a child. The child check reuses the response it fetched and compares the current list with the saved snapshot:
 
----
+- **Added:** a child ID is in the current list but not the snapshot.
+- **Removed:** a child ID is in the snapshot but not the current list.
+- **Org Code changed:** the same child ID is present, but its Org Code differs.
 
-## 6. What keeps the process safe?
+The check compares IDs and Org Codes, not just the number of children. It sorts the lists before comparing them, so a different response order does not count as a change. An unchanged hourly inspection does not create a child-change audit record.
 
-The app is intentionally cautious:
+A difference requests full reconciliation. The app reads the current association and children again, resolves every original Course Offering by its current exact Org Code, and validates every target before any update. A saved mapping or a detected difference alone never authorizes a change. Removing a child never causes the app to reactivate an original offering.
 
-- **Check first, change second.** Every original course must be identified correctly before the app changes any of them.
-- **Only original courses are inactivated.** The shared course is not inactivated, and no course is deleted.
-- **No automatic reactivation.** The app never turns an inactive original back on.
-- **Confirm the result.** After an update, the app reads the course again to verify its status.
-- **Don't trust old notes alone.** MongoDB helps the app remember what happened, but the app must check current Brightspace information before changing a course.
-- **Dry-run is the default.** No Brightspace courses are updated until live processing is enabled.
+If there is no trusted verified snapshot, the app does not guess what was added or removed. It sends that association through full reconciliation to build a trustworthy mapping when possible. Initial discovery and baseline recording do not create Child Changes CSV rows because there is no earlier verified child list to compare.
 
-**What the app cannot do:** It cannot create a Section Association, fix an IPSIS import that never created a course in Brightspace, or correct section/enrollment mappings.
+## 3. Daily schedule and manual runs
 
----
+Times below are São Paulo local time. In the normal Render setup, one cron job starts an opportunity every 15 minutes, all day. The worker gates each activity to its window:
 
-## 7. How can I see what happened?
-
-The LTI monitoring page is available to authorized users. Administrators also have a **Run Now** button that asks the existing worker to check eligible associations immediately.
-
-| Area | What to look for |
+| Time | What happens |
 | --- | --- |
-| **Service Status** | Is the worker running or idle? What academic periods are configured? What happened most recently? |
-| **Execution History** | What happened in each run? How many associations were checked, already correct, changed, or affected by problems? |
-| **API Health Check** | Are the Brightspace API versions and available health information showing any concerns? This check does not change courses. |
-| **Corrections report** | Which course inactivations were successfully verified? |
-| **Exceptions report** | Which associations had problems, and why? |
-| **Child Changes report** | Which child sections were added, removed, or had an Org Code changed? |
+| **07:00–23:00** | Period-scoped association discovery and daytime child monitoring have 15-minute cron opportunities. |
+| **23:00–01:00** | One broad historical discovery window. If a scan fails, later cron starts in the same window can retry it. A successful scan before midnight prevents a duplicate after midnight. |
+| **01:00–07:00** | Saved original Course Offering IDs are checked at :00 and :30, from 01:00 through 06:30. These quick checks do not authorize updates; suspicious results go through full fresh reconciliation. |
+| **All day** | Pending and blocked work can be processed. Recovery is normally due every four hours. |
 
-**A completed run** means that particular run finished. It does **not** mean every association in Brightspace has been checked.
+The daytime period search scope and the rolling monitoring scope are related but different. An explicit discovery setting controls which periods are searched for new associations. Child monitoring covers the previous, current, and next periods; with an explicit list, it checks only the periods from that list that are in the rolling window. `all` runs broad discovery nightly, while child monitoring remains rolling.
 
-**A failed run** means that run did not finish normally. **A skipped run** often means another worker was already doing the job.
+**Run Now** starts a manual execution and fresh period-scoped discovery at any hour. With `all`, `auto`, or no configured scope, it searches the previous/current/next periods. It does not launch a broad historical scan just because it was requested manually. It does not force daytime child checks or nighttime saved-ID checks outside their normal windows. The usual 10-minute wait, reconciliation cap, safety checks, and dry-run setting still apply.
 
-If something looks wrong, start with **Execution History** and then open the **Exceptions report**, if available. Some older executions do not have detailed reports.
+An always-on `internal` setup uses the same service and maintenance windows, with a 15-minute fast interval by default. It should not run alongside the external cron job.
 
-Open a history row to see details. When daytime child monitoring ran, the details show how many child checks succeeded, how many were attempted, changes found, mapping refreshes needed, and the remaining child-check backlog when available. When nighttime status verification ran, the details show the equivalent status-check numbers. A row only shows metrics for monitoring that actually ran; old records may not have these details. “Mapping refreshes” or a backlog can explain why the worker is still busy. A batch of 50 checked associations can also be the expected first pass through older associations that were newly discovered by the broad historical search. The current counts alone do not say which case occurred; use the expanded monitoring details and available execution reports.
+## 4. Monitoring capacity and possible delays
 
-### Child Changes report
+The daytime child-inspection batch defaults to **125 associations per eligible run**. An administrator can lower or raise that ceiling with `SECTION_ASSOCIATION_FIX_CHILD_MONITOR_BATCH_SIZE`. The worker also has a shared limit of 50 full reconciliations per scheduled invocation; a detected change can wait if that capacity has already been used.
 
-During the day, the app compares each association's current child sections with its last verified list. It matches children by their Brightspace D2L ID. A child is **added** when a new ID appears, **removed** when a saved ID disappears, or **code changed** when the same ID now has a different Org Code. The comparison ignores list order, so Brightspace returning the same children in a different order creates no report row. An unchanged hourly check creates no child-change audit entry.
+There are four scheduled 15-minute opportunities in an hour. This gives the following theoretical child-inspection capacities:
 
-A child change describes what happened to the structure of the shared course. It is different from a correction: a correction means the app actually changed an original Course Offering and verified that it is inactive. If an added child's original offering was already inactive, Child Changes CSV records the addition and successful reconciliation, while Corrections CSV has no new row. If the app inactivates an active offering and verifies it, both reports record their separate events. A removed child keeps its former ID and Org Code in the report; removal never makes the app reactivate its original offering.
+| Batch per run | Runs per hour | Theoretical inspections per hour |
+| ---: | ---: | ---: |
+| 125 | 4 | 500 |
+| 160 | 4 | 640 |
 
-To download the report, open the relevant Execution History row, open **Reports**, and choose **Child Changes CSV**. The report includes the detection time, run ID and source, parent association, change type, child ID and before/after Org Codes, any original offering that could be safely identified, and reconciliation outcome. It can show a detection row and a separate outcome row: the first run owns the original detection, and a later run records its result while linking back to that detection. For example, a change deferred because the run reached its reconciliation limit stays recorded as pending/deferred; when a later run processes it, that later execution adds the outcome without changing the earlier report. If the child list has no verified earlier snapshot, the app does not guess what changed.
+For **604 known associations**, a batch of 125 cannot inspect all 604 in four runs: its theoretical capacity is 500, leaving at least 104 due for later selection. A batch of 160 has theoretical capacity for 640, enough for 604 if all four runs can use the full batch and no other limits or failures interfere.
 
-### Run Now
+These are capacity calculations, not time guarantees. The worker selects associations due for the current hourly window, starts with the oldest successful inspection, and applies a one-hour cooldown after an inspection attempt so one recent failure does not get retried every 15 minutes. The dashboard backlog count does not subtract those cooldown records. Selection order, earlier work, API errors, and the 50-reconciliation cap can all delay inspection or follow-up work.
 
-**Run Now** asks the service to perform a manual maintenance run without waiting for the next automatic 15-minute start. You must confirm the action, and Brightspace must identify your LTI launch as an Administrator or SysAdmin. Run Now performs a fresh search for Section Associations at any hour. It searches both legacy and PeopleSoft codes for the configured periods. If periods are set to “all”, or left automatic, it searches the previous, current, and next periods; it does not start a broad historical scan. A newly found association still waits at least 10 minutes before it can be reconciled. Child and cached-status monitoring continue to follow their normal time windows. The usual dry-run setting, checks, and safety limits still apply.
+### Example: a child added just after its check
 
-The button works with both Render setups. In cron mode, the LTI web service starts the run itself; it does not call Render or wait for the separate Cron Job. In internal mode, the always-on web service starts the same run and continues its regular schedule.
+- At **10:05**, the app successfully inspects an association.
+- At **10:06**, IPSIS adds a child section.
+- That association has already been checked in the 10:00 hourly window, so the new child is not necessarily checked again during that hour.
+- It can be selected in a later hourly window once the one-hour attempt cooldown has also passed. Since cron starts every 15 minutes, a check at 10:05 is not eligible at 11:00; 11:15 is the first scheduled opportunity after its cooldown, assuming batch capacity is available.
+- Once the difference is detected, the app may reconcile it in the same run if a full-reconciliation slot remains. Otherwise the change stays pending and a later run can reconcile it.
 
-If another execution is already using the shared worker, Run Now waits as a requested task. It never interrupts or overlaps that execution. Service Status shows when the worker is running, and the new manual run appears in Execution History with its outcome and reports. A request is not called running until the worker has the shared lease.
+So the time the app **detects** a child change and the time it **completes** reconciliation are separate. A child added just after inspection may be detected much later than a new association found by the 15-minute list search. The source does not guarantee a maximum such as 60, 75, or 120 minutes.
 
-If the web service restarts, MongoDB keeps the request. The web worker and the next scheduled worker can safely pick it up. The worker rechecks Brightspace before taking action, so an uncertain course update is not blindly repeated. Look in Execution History for **completed** or **failed** and open the Exceptions report when available.
+## 5. Understanding the monitoring numbers
 
----
+Open an Execution History row to see details for work that ran. The numbers describe different activities:
 
-## 8. The essentials to remember
+| Dashboard label | What it counts |
+| --- | --- |
+| **Child checks** | Successful child-list reads divided by attempted child-list reads, such as `121/125`. This is lightweight monitoring, not full reconciliation. |
+| **Changes detected** | Associations whose child list differed or had an unexpected child type. It counts associations, not individual changed sections. Child Changes CSV has a separate row for each changed child. |
+| **Mapping refreshes** | Associations that need full reconciliation to confirm or refresh the child-to-original-course mapping. It is not a count of courses to deactivate. An untrusted or missing saved mapping can also require a refresh. |
+| **Monitoring backlog** | Completed associations in the monitored periods whose last successful child inspection is before the current hourly window, or has never succeeded. It is not an error count or a count of required deactivations. Recent attempts in the one-hour cooldown can remain in this count while being temporarily left out of selection. |
+| **Checked** | Associations that received a full reconciliation attempt. A lightweight child check does not increase this number. |
+| **Corrections** | Associations with at least one original Course Offering update that was read back and verified as inactive. It counts associations, not target courses. Already-inactive courses add no correction. |
+| **Errors** | Failed or blocked reconciliation outcomes and known execution-level failures. Child monitoring read errors are tracked separately as monitoring errors when shown. |
+| **Historical backlog** | Older baseline associations still needing their first successful full reconciliation or verified mapping. This is different from the routine child-monitoring backlog. |
 
-- **Purpose:** keep old standalone courses from remaining active after their sections are combined into a shared course.
-- **Starting frequency:** every **15 minutes**, but each type of work has its own hours and capacity limits.
-- **Daytime (07:00–23:00):** find associations and watch for section changes.
-- **Late night (23:00–01:00):** search historical periods once per nightly window. Crossing midnight does not start a second broad search because completion is tied to the window that began at 23:00.
-- **Overnight (01:00–07:00):** check previously identified original courses every 30 minutes, at :00 and :30.
-- **Scheduler cadence:** Render starts the worker every 15 minutes; cached-ID checks run on alternate slots, while pending/recovery work remains eligible on all slots and outside monitoring windows.
-- **Nightly check capacity:** up to 150 cached associations per eligible run by default, configurable with `SECTION_ASSOCIATION_FIX_STATUS_VERIFY_BATCH_SIZE`. Capacity is a ceiling and cannot guarantee that all queued associations are checked each night.
-- **Always eligible:** processing due pending work and recovery from problems.
-- **New associations:** normally wait at least **10 minutes** before being processed.
-- **Safety first:** the app checks the current association before making changes, and it never deletes courses.
-- **Default setting:** **dry-run** — checks only, no actual course inactivation.
+For example, suppose **604** completed associations are due at 09:00. A 125-item run successfully inspects 125, so those records move out of that hour's due count. More 15-minute runs can inspect more of the remaining set. With only 500 theoretical checks in the hour, some can remain due. When the 10:00 window begins, records successfully inspected during the 09:00 hour are old enough to become due again; the oldest uninspected work is selected first. The backlog can therefore fall during an hour and rise again when a new hourly window begins.
 
-**Bottom line:** The app helps keep Brightspace course access organized after Section Associations are created. It finds the original courses, checks them carefully, inactivates them only when allowed and safe, and keeps a record of what happened.
+A run can show **Child checks: 0/0** and still show a nonzero backlog. For example, associations may be due by the hourly timestamp but still be within the one-hour attempt cooldown, so the worker leaves them out of that run's selection while the backlog count continues to include them.
+
+## 6. Example: what the app changes
+
+Suppose the shared association is `ESPM-2602-GS2-C0011` and it has two child sections:
+
+| Child section | Derived original Course Offering |
+| --- | --- |
+| `ESPM-2602-GS2-S51H-01125` | `ESPM-2602-GS2-S51H` |
+| `ESPM-2602-GS2-S52H-01139` | `ESPM-2602-GS2-S52H` |
+
+IPSIS adds a third child, `ESPM-2602-GS2-S53H-01140`, which maps to `ESPM-2602-GS2-S53H`. The child check detects the new child, then full reconciliation checks the whole current association and all three corresponding original Course Offerings before making any update.
+
+1. **The third original is active:** If every target is found exactly once and passes validation, live mode can make active originals inactive and then verify each result. Dry-run reports the intended action and sends no update.
+2. **The third original is already inactive:** The app leaves it alone. Reconciliation can complete with no correction, and Corrections CSV has no row for that offering. Child Changes CSV still records the added section.
+3. **The third original is missing or ambiguous:** Validation fails for the association. The app makes no partial updates to any of its three originals and records an exception for investigation.
+
+The app only changes original Course Offerings from active to inactive after successful validation. It never activates one, and it never changes the association's child structure.
+
+## 7. Reports and what they mean
+
+Open a row in Execution History and choose **Reports** to download the reports for that execution. Older executions without detailed audit coverage show that detailed reports are unavailable.
+
+- **Corrections CSV:** Course Offering changes that were verified by reading Brightspace after the update. Already-inactive offerings do not create correction rows.
+- **Exceptions CSV:** Associations that were blocked or failed, with the available reason. It also includes confirmed-missing lifecycle records.
+- **Child Changes CSV:** Genuine child additions, removals, and Org Code changes compared with a previous verified snapshot. An added child is reported even if its original Course Offering was already inactive.
+
+A detection and its eventual outcome can appear as separate rows. The execution that first sees the change owns the detection row, marked pending/deferred. If a later run reconciles the association, that run adds an outcome row linked to the original detection. The earlier detection row is not rewritten. The outcome says whether reconciliation completed without a correction, completed with a verified correction, or was blocked/failed. A missing or untrusted previous snapshot does not produce a guessed before-and-after change.
+
+## 8. Staying safe and getting help
+
+The app checks the association and every target before making any updates. The only possible Brightspace change is setting an original Course Offering to inactive, followed by a read-back check. If any target cannot be resolved or validated, the app stops before partial changes. Uncertain updates are checked before the app decides what happened; they are never blindly repeated.
+
+The LTI monitoring page shows Service Status, Execution History, API Health Check, and administrator-only Run Now. Start with Execution History when investigating a problem. Open the Exceptions CSV for blocked/failed work and the Child Changes CSV for changes to an existing association's structure. A completed run means that run ended; it does not mean every association has already been checked.
+
+**In short:** the app searches for new shared offerings, separately checks known shared offerings for section changes, validates their original courses, and inactivates only safe targets when live processing is enabled. It keeps reports so administrators can see what it found and what happened next.
