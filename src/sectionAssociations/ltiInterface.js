@@ -87,7 +87,7 @@ function executionHtml(run){
   if(Number.isSafeInteger(run.monitoringErrors)&&run.monitoringErrors>0)monitoring.push('Monitoring read errors: '+count(run.monitoringErrors));
   const info=parts.length?'<span>'+parts.map(safe).join(' · ')+'</span>':'';
   const infoHtml=[info,...monitoring.map(line=>'<span class="monitoring-line">'+safe(line)+'</span>')].filter(Boolean).join('');
-  const reports=run.detailedAuditAvailable===true?'<div class="report-entry"><details class="reports-menu"><summary aria-label="Reports for this execution">Reports</summary><div class="reports-options" role="group" aria-label="Execution reports"><button type="button" data-audit="corrections" data-execution="'+safe(run.executionId||'')+'">Corrections CSV</button><button type="button" data-audit="exceptions" data-execution="'+safe(run.executionId||'')+'">Exceptions CSV</button></div></details><span class="report-feedback" role="status" aria-live="polite"></span></div>':'<span class="audit-unavailable">Detailed reports unavailable.</span>';
+  const reports=run.detailedAuditAvailable===true?'<div class="report-entry"><details class="reports-menu"><summary aria-label="Reports for this execution">Reports</summary><div class="reports-options" role="group" aria-label="Execution reports"><button type="button" data-audit="corrections" data-execution="'+safe(run.executionId||'')+'">Corrections CSV</button><button type="button" data-audit="exceptions" data-execution="'+safe(run.executionId||'')+'">Exceptions CSV</button><button type="button" data-audit="child-change" data-execution="'+safe(run.executionId||'')+'">Child Changes CSV</button></div></details><span class="report-feedback" role="status" aria-live="polite"></span></div>':'<span class="audit-unavailable">Detailed reports unavailable.</span>';
   return '<details class="execution'+(quiet?' quiet-work':'')+'"><summary class="history-row execution-summary"><span class="date">'+safe(formatShortDate(run.startedAt))+'</span><span class="scope">'+safe(discoveryScope(run))+'</span><span class="outcome-cell"><span class="outcome '+outcomeClass(run.status)+'" aria-label="Outcome: '+label+'">'+label+'</span></span><span class="numeric" data-label="Checked">'+safe(count(run.associationsChecked))+'</span><span class="numeric" data-label="Corrections">'+safe(count(run.correctionsApplied))+'</span><span class="numeric" data-label="Errors">'+safe(count(run.errors))+'</span></summary><div class="detail-strip"><span class="execution-info">'+infoHtml+'</span>'+reports+'</div></details>'
 }
 async function refresh(){
@@ -253,7 +253,8 @@ function csvCell(value) {
 
 const AUDIT_COLUMNS = {
   corrections: [['Execution ID','executionId'],['Execution source','source'],['Correction timestamp','timestamp'],['Parent Association Offering D2L ID','parentAssociationD2lId'],['Parent Association Offering Org Code','parentAssociationOrgCode'],['Parent Association Offering Name','parentAssociationName'],['Updated Course Offering D2L ID','affectedCourseOfferingD2lId'],['Updated Course Offering Org Code','affectedCourseOfferingOrgCode'],['Updated Course Offering Name','affectedCourseOfferingName'],['Previous isActive','previousIsActive'],['Verified isActive','verifiedIsActive'],['Result','result']],
-  exceptions: [['Execution ID','executionId'],['Execution source','source'],['Timestamp','timestamp'],['Parent Association Offering D2L ID','parentAssociationD2lId'],['Parent Association Offering Org Code','parentAssociationOrgCode'],['Parent Association Offering Name','parentAssociationName'],['Affected Course Offering D2L ID','affectedCourseOfferingD2lId'],['Affected Course Offering Org Code','affectedCourseOfferingOrgCode'],['Affected Course Offering Name','affectedCourseOfferingName'],['Exception category','category'],['Explanation','explanation'],['Final outcome','finalOutcome']]
+  exceptions: [['Execution ID','executionId'],['Execution source','source'],['Timestamp','timestamp'],['Parent Association Offering D2L ID','parentAssociationD2lId'],['Parent Association Offering Org Code','parentAssociationOrgCode'],['Parent Association Offering Name','parentAssociationName'],['Affected Course Offering D2L ID','affectedCourseOfferingD2lId'],['Affected Course Offering Org Code','affectedCourseOfferingOrgCode'],['Affected Course Offering Name','affectedCourseOfferingName'],['Exception category','category'],['Explanation','explanation'],['Final outcome','finalOutcome']],
+  'child-change': [['Detection date/time','timestamp'],['Outcome date/time','outcomeTimestamp'],['Execution ID','executionId'],['Execution source','source'],['Audit event','auditEvent'],['Detection Execution ID','detectionExecutionId'],['Detection Record Key','detectionRecordKey'],['Parent Section Association D2L ID','parentAssociationD2lId'],['Parent Section Association Org Code','parentAssociationOrgCode'],['Change type','changeType'],['Child Section D2L ID','childSectionD2lId'],['Previous Child Section Org Code','previousChildSectionOrgCode'],['Current Child Section Org Code','currentChildSectionOrgCode'],['Related Original Course Offering D2L ID','relatedOriginalCourseOfferingD2lId'],['Related Original Course Offering Org Code','relatedOriginalCourseOfferingOrgCode'],['Reconciliation outcome','reconciliationOutcome']]
 };
 function auditCsvCell(value) {
   if (value == null) return '""';
@@ -326,7 +327,7 @@ function registerSectionAssociationLtiInterface(provider, { deploymentId, getSta
       else res.status(503).send('Execution history is temporarily unavailable.');
     }
   });
-  for (const kind of ['corrections', 'exceptions']) provider.app.get(`/api/section-association/${kind}.csv`, async (req, res) => {
+  for (const kind of ['corrections', 'exceptions', 'child-change']) provider.app.get(`/api/section-association/${kind}.csv`, async (req, res) => {
     if (!authorize(res.locals?.token, req, res)) return;
     const executionId = String(req.query?.executionId || '');
     if (!/^[a-f0-9-]{36}$/i.test(executionId) || typeof getExecutionAudit !== 'function') return res.status(400).send('A valid execution ID is required.');
@@ -337,7 +338,8 @@ function registerSectionAssociationLtiInterface(provider, { deploymentId, getSta
     const columns = AUDIT_COLUMNS[kind];
     try {
       res.write(columns.map(([name]) => auditCsvCell(name)).join(',') + '\r\n');
-      for await (const row of getExecutionAudit(executionId, kind.slice(0, -1))) {
+      const auditKind = kind === 'corrections' ? 'correction' : kind === 'exceptions' ? 'exception' : kind;
+      for await (const row of getExecutionAudit(executionId, auditKind)) {
         const line = columns.map(([, field]) => auditCsvCell(row[field])).join(',') + '\r\n';
         if (!res.write(line)) await once(res, 'drain');
       }

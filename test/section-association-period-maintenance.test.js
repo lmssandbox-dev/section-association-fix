@@ -281,7 +281,8 @@ test('daytime child monitoring ignores response order and routes changed snapsho
   assert.equal(changed.childMappingRefreshesRequired,1);
 });
 
-function childDiagnosticFixture({ debugAssociationId, ids = ['36183'], savedById = {}, currentById = {}, limit = 50 } = {}) {
+function childDiagnosticFixture({ debugAssociationId, ids = ['36183'], savedById = {}, currentById = {}, limit = 50,
+  reconciliationResult = { status: 'completed', targets: [{ status: 'already-inactive' }] } } = {}) {
   const time = Date.parse('2026-11-06T15:15:00Z');
   const calls = { children: [], reconciliations: [], records: [] };
   const mappings = id => {
@@ -292,11 +293,15 @@ function childDiagnosticFixture({ debugAssociationId, ids = ['36183'], savedById
         targetId: String(90000 + index), targetCode: child.code.slice(0, -6) })) };
   };
   const items = ids.map(id => ({ associationOrgUnitId: id, associationCode: '012263-01-2601-I0001', ...mappings(id) }));
+  const audits = [];
   const store = { async baselineStatus() { return { state: 'ready' }; }, async lastFullDiscoveryAt() { return new Date(time); },
     async recordDiscoveries() { return { newlyRecorded: 0, alreadyKnown: 0 }; }, async countHistoricalBacklog() { return 0; },
     async listWaitingNew() { return []; }, async listFastWork() { return []; },
     async listMonitoringWork({ kind }) { return kind === 'children' ? items : []; },
-    async record(id, fields) { calls.records.push({ id, fields }); }, async countDueMonitoring() { return 0; } };
+    async record(id, fields) { calls.records.push({ id, fields }); const item = items.find(row => row.associationOrgUnitId === id); if (item) Object.assign(item, fields); },
+    async get(id) { return items.find(row => row.associationOrgUnitId === id); },
+    async recordAudit(row) { if (!audits.some(item => item.executionId === row.executionId && item.recordKey === row.recordKey)) audits.push(row); },
+    async countDueMonitoring() { return 0; } };
   const defaultChildren = id => savedById[id] || [{ id: '36187', code: '012263-01-2601-POS-S51H-01125' }];
   const client = { async associationCandidates() { return []; }, async children(id) {
     calls.children.push(id);
@@ -305,13 +310,13 @@ function childDiagnosticFixture({ debugAssociationId, ids = ['36183'], savedById
   } };
   const reconciler = { async reconcileAssociation(id) {
     calls.reconciliations.push(id);
-    return { status: 'completed', targets: [{ status: 'already-inactive' }] };
+    return reconciliationResult;
   } };
   const lines = [];
   const service = createSectionAssociationService({ client, store, reconciler, maxReconciliationsPerRun: limit,
     childMonitoringBatchSize: ids.length, debugAssociationId,
     now: () => time, logger: { info(line) { lines.push(line); }, warn() {}, error() {} } });
-  return { service, calls, lines };
+  return { service, calls, lines, audits, items };
 }
 
 test('targeted child diagnostics are disabled by default and unchanged children do not reconcile', async () => {
@@ -433,6 +438,131 @@ test('child removals and Org Code changes still request full reconciliation', as
   }
 });
 
+test('child-change audit records structural differences and reconciliation outcomes', async t => {
+  const saved = [{ id: '36187', code: '012263-01-2601-POS-S51H-01125' },
+    { id: '36190', code: '012263-01-2601-POS-S52H-01139' }];
+  const added = { id: '36191', code: '012263-01-2601-POS-S53H-01140' };
+  const execution = { executionId: '12345678-1234-1234-1234-123456789abc', source: 'automatic' };
+  await t.test('addition with inactive original is reported without a correction', async () => {
+    const h = childDiagnosticFixture({ savedById: { '36183': saved }, currentById: { '36183': [...saved, added] },
+      reconciliationResult: { status: 'completed', targets: [{ id: '90002', code: '012263-01-2601-POS-S53H',
+        sectionId: added.id, status: 'already-inactive' }] } });
+    await h.service.fastTick({ execution });
+    assert.deepEqual(h.audits.map(row => [row.kind, row.changeType, row.reconciliationOutcome]), [
+      ['child-change', 'child-added', 'Detected; reconciliation pending/deferred'],
+      ['child-change', 'child-added', 'Reconciliation completed; no correction required']
+    ]);
+    assert.equal(h.audits[0].childSectionD2lId, '36191');
+    assert.equal(h.audits[1].relatedOriginalCourseOfferingD2lId, '90002');
+  });
+  await t.test('addition with verified deactivation is reported as completed with correction', async () => {
+    const h = childDiagnosticFixture({ savedById: { '36183': saved }, currentById: { '36183': [...saved, added] },
+      reconciliationResult: { status: 'completed', targets: [{ id: '90002', code: '012263-01-2601-POS-S53H',
+        sectionId: added.id, status: 'verified-inactive' }] } });
+    await h.service.fastTick({ execution });
+    assert.equal(h.audits.at(-1).reconciliationOutcome, 'Reconciliation completed; correction performed');
+  });
+  await t.test('removal preserves the former child and its verified target without reactivation', async () => {
+    const h = childDiagnosticFixture({ savedById: { '36183': saved }, currentById: { '36183': [saved[0]] } });
+    await h.service.fastTick({ execution });
+    assert.equal(h.audits[0].changeType, 'child-removed');
+    assert.equal(h.audits[0].childSectionD2lId, saved[1].id);
+    assert.equal(h.audits[0].previousChildSectionOrgCode, saved[1].code);
+    assert.equal(h.audits[0].currentChildSectionOrgCode, '');
+    assert.equal(h.audits[0].relatedOriginalCourseOfferingD2lId, '90001');
+    assert.equal(h.calls.reconciliations.length, 1);
+  });
+  await t.test('same child ID with a different code is identified by ID', async () => {
+    const changed = { ...saved[1], code: '012263-01-2601-POS-S52H-01141' };
+    const h = childDiagnosticFixture({ savedById: { '36183': saved }, currentById: { '36183': [saved[0], changed] } });
+    await h.service.fastTick({ execution });
+    assert.equal(h.audits[0].changeType, 'child-code-changed');
+    assert.equal(h.audits[0].previousChildSectionOrgCode, saved[1].code);
+    assert.equal(h.audits[0].currentChildSectionOrgCode, changed.code);
+  });
+});
+
+test('multiple genuine child changes each receive a row, while response ordering receives none', async () => {
+  const saved = [{ id: '36187', code: '012263-01-2601-POS-S51H-01125' },
+    { id: '36190', code: '012263-01-2601-POS-S52H-01139' }];
+  const h = childDiagnosticFixture({ savedById: { '36183': saved }, currentById: { '36183': [
+    { id: '36191', code: '012263-01-2601-POS-S53H-01140' }] } });
+  await h.service.fastTick({ execution: { executionId: '12345678-1234-1234-1234-123456789abc', source: 'manual' } });
+  assert.deepEqual(h.audits.filter(row => row.recordKey.startsWith('detection:')).map(row => row.changeType),
+    ['child-removed', 'child-removed', 'child-added']);
+  const noChange = childDiagnosticFixture({ savedById: { '36183': saved }, currentById: { '36183': [...saved].reverse() } });
+  await noChange.service.fastTick({ execution: { executionId: '12345678-1234-1234-1234-123456789abc', source: 'automatic' } });
+  assert.equal(noChange.audits.length, 0);
+});
+
+test('child-change audit survives a deferred reconciliation and reports blocked work', async () => {
+  const saved = [{ id: '36187', code: '012263-01-2601-POS-S51H-01125' }];
+  const h = childDiagnosticFixture({ limit: 0, savedById: { '36183': saved }, currentById: { '36183': [
+    ...saved, { id: '36190', code: '012263-01-2601-POS-S52H-01139' }] } });
+  await h.service.fastTick({ execution: { executionId: '12345678-1234-1234-1234-123456789abc', source: 'automatic' } });
+  assert.equal(h.calls.reconciliations.length, 0);
+  assert.equal(h.audits.length, 1);
+  assert.equal(h.items[0].pendingChildChanges.length, 1);
+  assert.match(h.audits[0].reconciliationOutcome, /pending\/deferred/);
+});
+
+test('repeated observation reuses the original detection and a later run links its outcome', async () => {
+  const saved = [{ id: '36187', code: '012263-01-2601-POS-S51H-01125' }];
+  const current = [...saved, { id: '36190', code: '012263-01-2601-POS-S52H-01139' }];
+  const h = childDiagnosticFixture({ savedById: { '36183': saved }, currentById: { '36183': current },
+    reconciliationResult: { status: 'pending', error: 'temporary read failure' } });
+  const detection = { executionId: '12345678-1234-1234-1234-123456789abc', source: 'automatic' };
+  await h.service.fastTick({ execution: detection });
+  assert.equal(h.audits.filter(row => row.auditEvent === 'detected').length, 1);
+  assert.equal(h.audits[0].reconciliationOutcome, 'Detected; reconciliation pending/deferred');
+  const outcome = { status: 'completed', targets: [{ id: '90001', code: '012263-01-2601-POS-S52H',
+    sectionId: '36190', status: 'already-inactive' }] };
+  h.service = createSectionAssociationService({
+    client: { async associationCandidates() { return []; }, async children() { return current.map(row => ({ Identifier: row.id,
+      Code: row.code, Type: { Code: 'Group' } })); } },
+    store: { async baselineStatus() { return { state: 'ready' }; }, async lastFullDiscoveryAt() { return new Date(Date.parse('2026-11-06T15:15:00Z')); },
+      async recordDiscoveries() { return { newlyRecorded: 0, alreadyKnown: 0 }; }, async countHistoricalBacklog() { return 0; },
+      async listWaitingNew() { return []; }, async listFastWork() { return []; }, async listMonitoringWork() { return h.items; },
+      async record(id, fields) { Object.assign(h.items[0], fields); }, async get() { return h.items[0]; },
+      async recordAudit(row) { if (!h.audits.some(item => item.executionId === row.executionId && item.recordKey === row.recordKey)) h.audits.push(row); },
+      async countDueMonitoring() { return 0; } },
+    reconciler: { async reconcileAssociation() { return outcome; } }, now: () => Date.parse('2026-11-06T15:15:00Z'),
+    logger: { info() {}, warn() {}, error() {} }
+  });
+  const later = { executionId: '22345678-1234-1234-1234-123456789abc', source: 'manual' };
+  await h.service.fastTick({ execution: later });
+  const detections = h.audits.filter(row => row.auditEvent === 'detected');
+  assert.equal(detections.length, 1);
+  const resolution = h.audits.find(row => row.auditEvent === 'reconciliation-outcome' && row.executionId === later.executionId);
+  assert.equal(resolution.executionId, later.executionId);
+  assert.equal(resolution.detectionExecutionId, detection.executionId);
+  assert.equal(resolution.detectionRecordKey, detections[0].detectionRecordKey);
+  assert.equal(resolution.reconciliationOutcome, 'Reconciliation completed; no correction required');
+});
+
+test('blocked reconciliation is recorded without writing a correction or inventing a target', async () => {
+  const h = childDiagnosticFixture({ currentById: { '36183': [
+    { id: '36187', code: '012263-01-2601-POS-S51H-01125' },
+    { id: '36190', code: '012263-01-2601-POS-S52H-01139' }] },
+  reconciliationResult: { status: 'blocked', error: 'validation failed' } });
+  await h.service.fastTick({ execution: { executionId: '12345678-1234-1234-1234-123456789abc', source: 'automatic' } });
+  const outcome = h.audits.find(row => row.auditEvent === 'reconciliation-outcome');
+  assert.equal(outcome.reconciliationOutcome, 'Reconciliation blocked or failed');
+  assert.equal(outcome.relatedOriginalCourseOfferingD2lId, '');
+  assert.equal(outcome.relatedOriginalCourseOfferingOrgCode, '');
+});
+
+test('dry-run active targets remain pending and do not claim a correction', async () => {
+  const h = childDiagnosticFixture({ currentById: { '36183': [
+    { id: '36187', code: '012263-01-2601-POS-S51H-01125' },
+    { id: '36190', code: '012263-01-2601-POS-S52H-01139' }] },
+  reconciliationResult: { status: 'pending', targets: [{ id: '90001', code: '012263-01-2601-POS-S52H',
+    sectionId: '36190', status: 'would-inactivate' }] } });
+  await h.service.fastTick({ execution: { executionId: '12345678-1234-1234-1234-123456789abc', source: 'automatic' } });
+  assert.equal(h.audits.some(row => row.auditEvent === 'reconciliation-outcome'), false);
+  assert.equal(h.audits.every(row => row.reconciliationOutcome === 'Detected; reconciliation pending/deferred'), true);
+});
+
 test('targeted child diagnostics report unexpected child types independently of list equality', async () => {
   const h = childDiagnosticFixture({ debugAssociationId: '36183', currentById: {
     '36183': [{ id: '36187', code: '012263-01-2601-POS-S51H-01125', type: 'Course Offering' }]
@@ -450,7 +580,7 @@ test('targeted child diagnostics report unexpected child types independently of 
 
 test('targeted child diagnostics explain invalid mappings without adding a Brightspace read', async () => {
   const invalid = childDiagnosticFixture({ debugAssociationId: '36183', savedById: { '36183': [] } });
-  const result = await invalid.service.fastTick();
+  const result = await invalid.service.fastTick({ execution: { executionId: '12345678-1234-1234-1234-123456789abc', source: 'automatic' } });
   const line = invalid.lines.find(row => row.includes('child monitoring diagnostic'));
   assert.match(line, /mappingTrusted=false/);
   assert.match(line, /mappingFailure=empty-children/);
@@ -459,6 +589,7 @@ test('targeted child diagnostics explain invalid mappings without adding a Brigh
   assert.deepEqual(invalid.calls.children, []);
   assert.deepEqual(invalid.calls.reconciliations, ['36183']);
   assert.equal(result.childChecksAttempted, 0);
+  assert.equal(invalid.audits.length, 0);
 });
 
 test('targeted child diagnostics report reconciliation deferred by the full-reconciliation cap', async () => {

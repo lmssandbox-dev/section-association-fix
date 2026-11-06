@@ -183,6 +183,7 @@ The LTI monitoring page is available to authorized users. Administrators also ha
 | **API Health Check** | Are the Brightspace API versions and available health information showing any concerns? This check does not change courses. |
 | **Corrections report** | Which course inactivations were successfully verified? |
 | **Exceptions report** | Which associations had problems, and why? |
+| **Child Changes report** | Which child sections were added, removed, or had an Org Code changed? |
 
 **A completed run** means that particular run finished. It does **not** mean every association in Brightspace has been checked.
 
@@ -191,6 +192,14 @@ The LTI monitoring page is available to authorized users. Administrators also ha
 If something looks wrong, start with **Execution History** and then open the **Exceptions report**, if available. Some older executions do not have detailed reports.
 
 Open a history row to see details. When daytime child monitoring ran, the details show how many child checks succeeded, how many were attempted, changes found, mapping refreshes needed, and the remaining child-check backlog when available. When nighttime status verification ran, the details show the equivalent status-check numbers. A row only shows metrics for monitoring that actually ran; old records may not have these details. “Mapping refreshes” or a backlog can explain why the worker is still busy. A batch of 50 checked associations can also be the expected first pass through older associations that were newly discovered by the broad historical search. The current counts alone do not say which case occurred; use the expanded monitoring details and available execution reports.
+
+### Child Changes report
+
+During the day, the app compares each association's current child sections with its last verified list. It matches children by their Brightspace D2L ID. A child is **added** when a new ID appears, **removed** when a saved ID disappears, or **code changed** when the same ID now has a different Org Code. The comparison ignores list order, so Brightspace returning the same children in a different order creates no report row. An unchanged hourly check creates no child-change audit entry.
+
+A child change describes what happened to the structure of the shared course. It is different from a correction: a correction means the app actually changed an original Course Offering and verified that it is inactive. If an added child's original offering was already inactive, Child Changes CSV records the addition and successful reconciliation, while Corrections CSV has no new row. If the app inactivates an active offering and verifies it, both reports record their separate events. A removed child keeps its former ID and Org Code in the report; removal never makes the app reactivate its original offering.
+
+To download the report, open the relevant Execution History row, open **Reports**, and choose **Child Changes CSV**. The report includes the detection time, run ID and source, parent association, change type, child ID and before/after Org Codes, any original offering that could be safely identified, and reconciliation outcome. It can show a detection row and a separate outcome row: the first run owns the original detection, and a later run records its result while linking back to that detection. For example, a change deferred because the run reached its reconciliation limit stays recorded as pending/deferred; when a later run processes it, that later execution adds the outcome without changing the earlier report. If the child list has no verified earlier snapshot, the app does not guess what changed.
 
 ### Run Now
 

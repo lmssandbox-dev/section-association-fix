@@ -272,6 +272,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
       if (item.workType === 'reverify') stats.discoveryActivities.reverification = true;
       const result = await reconciler.reconcileAssociation(id, { associationCode: item.associationCode, force: true,
         execution, recordAudit: store.recordAudit });
+      await recordPendingChildChangeOutcomes(id, result, execution);
       outcomes.set(id, result);
       stats.processedThisRun++;
       countStatus(stats, result);
@@ -289,6 +290,74 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     return rows.map(row => ({ id: String(row.Identifier ?? row.OrgUnitId ?? row.id ?? ''),
       code: String(row.Code ?? row.code ?? '') }))
       .sort((a, b) => a.id.localeCompare(b.id) || a.code.localeCompare(b.code));
+  }
+
+  function childChangeRows(previous, current) {
+    const before = new Map(previous.filter(row => /^\d+$/.test(row.id)).map(row => [row.id, row]));
+    const after = new Map(current.filter(row => /^\d+$/.test(row.id)).map(row => [row.id, row]));
+    const changes = [];
+    for (const [id, oldRow] of before) {
+      const newRow = after.get(id);
+      if (!newRow) changes.push({ changeType: 'child-removed', childSectionD2lId: id,
+        previousChildSectionOrgCode: oldRow.code, currentChildSectionOrgCode: '' });
+      else if (oldRow.code !== newRow.code) changes.push({ changeType: 'child-code-changed', childSectionD2lId: id,
+        previousChildSectionOrgCode: oldRow.code, currentChildSectionOrgCode: newRow.code });
+    }
+    for (const [id, newRow] of after) if (!before.has(id)) changes.push({ changeType: 'child-added',
+      childSectionD2lId: id, previousChildSectionOrgCode: '', currentChildSectionOrgCode: newRow.code });
+    return changes.sort((a, b) => a.childSectionD2lId.localeCompare(b.childSectionD2lId) || a.changeType.localeCompare(b.changeType));
+  }
+
+  function childChangeKey(change) {
+    return `child:${change.changeType}:${change.childSectionD2lId}:${change.previousChildSectionOrgCode}:${change.currentChildSectionOrgCode}`;
+  }
+
+  function childChangeAuditRow(change, { executionId, source, parentId, parentCode, timestamp, outcome, outcomeTimestamp, relatedTarget, recordKey, auditEvent = 'detected' } = {}) {
+    return { kind: 'child-change', auditEvent, executionId, source,
+      detectionExecutionId: change.detectionExecutionId || executionId, detectionRecordKey: change.recordKey,
+      timestamp: change.detectionTimestamp || timestamp, outcomeTimestamp, parentAssociationD2lId: parentId,
+      parentAssociationOrgCode: parentCode || '', changeType: change.changeType,
+      childSectionD2lId: change.childSectionD2lId,
+      previousChildSectionOrgCode: change.previousChildSectionOrgCode || '',
+      currentChildSectionOrgCode: change.currentChildSectionOrgCode || '',
+      relatedOriginalCourseOfferingD2lId: relatedTarget?.id || '',
+      relatedOriginalCourseOfferingOrgCode: relatedTarget?.code || '', reconciliationOutcome: outcome,
+      recordKey: recordKey || change.recordKey };
+  }
+
+  async function writeChildChangeAudit(row, execution) {
+    try { await store.recordAudit(row); }
+    catch (error) {
+      if (execution?.executionId === row.executionId) execution.auditIncomplete = true;
+      throw error;
+    }
+  }
+
+  async function recordPendingChildChangeOutcomes(id, result, execution) {
+    if (!execution?.executionId || typeof store.get !== 'function') return;
+    const record = await store.get(id);
+    const pending = Array.isArray(record?.pendingChildChanges) ? record.pendingChildChanges : [];
+    if (!pending.length) return;
+    const completed = result?.status === 'completed';
+    const outcome = completed
+      ? ((result.targets || []).some(target => target.status === 'verified-inactive')
+        ? 'Reconciliation completed; correction performed' : 'Reconciliation completed; no correction required')
+      : result?.status === 'blocked' || result?.error
+        ? 'Reconciliation blocked or failed' : 'Detected; reconciliation pending/deferred';
+    const timestamp = new Date(now());
+    for (const change of pending) {
+      if (outcome === 'Detected; reconciliation pending/deferred') continue;
+      const target = (result?.targets || []).find(row => String(row.sectionId) === String(change.childSectionD2lId));
+      const original = change.relatedOriginalCourseOfferingD2lId
+        ? { id: change.relatedOriginalCourseOfferingD2lId, code: change.relatedOriginalCourseOfferingOrgCode } : target
+          ? { id: String(target.id), code: target.code } : null;
+      await writeChildChangeAudit(childChangeAuditRow(change, { executionId: execution.executionId,
+        source: execution.source, parentId: id, parentCode: record.associationCode,
+        timestamp: change.detectionTimestamp, outcomeTimestamp: timestamp, outcome, relatedTarget: original,
+        auditEvent: 'reconciliation-outcome',
+        recordKey: `outcome:${change.recordKey}:${execution.executionId}` }), execution);
+    }
+    if (completed) await store.record(id, { pendingChildChanges: [] });
   }
 
   function diagnosticSavedChildren(rows) {
@@ -403,6 +472,12 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
       const unexpectedChildType = currentRows.some(row => row?.Type?.Code !== 'Group');
       const normalizedListsMatch = JSON.stringify(current) === JSON.stringify(previous);
       const listChanged = !normalizedListsMatch;
+      const structuralChanges = listChanged ? childChangeRows(previous, current) : [];
+      if (!listChanged && !unexpectedChildType && item.pendingChildChanges?.length && item.status === 'completed') {
+        // A prior reconciliation may have committed its snapshot before a report write failed.
+        // The current successful comparison confirms that the stored completed result is usable.
+        await recordPendingChildChangeOutcomes(id, { status: 'completed', targets: item.outcomes || [] }, execution);
+      }
       if (diagnostic) {
         diagnostic.childReadSucceeded = true;
         diagnostic.currentChildren = currentRows.map(row => ({
@@ -421,6 +496,38 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
             : unexpectedChildType ? 'unexpected-child-type' : 'child-list-difference';
         }
         changed.push(item); childChangesDetected++; mappingRefreshesRequired++;
+        if (listChanged && execution?.executionId && typeof store.recordAudit === 'function') {
+          const priorPending = Array.isArray(item.pendingChildChanges) ? item.pendingChildChanges : [];
+          const pendingByKey = new Map(priorPending.map(change => [change.signature, change]));
+          const detectedAt = new Date(now());
+          for (const structuralChange of structuralChanges) {
+            const signature = childChangeKey(structuralChange);
+            let pending = pendingByKey.get(signature);
+            if (!pending) {
+              const oldMapping = item.verifiedMappings.find(mapping => String(mapping.sectionId) === structuralChange.childSectionD2lId);
+              pending = { ...structuralChange, signature, recordKey: `detection:${id}:${signature}`,
+                detectionExecutionId: execution.executionId, detectionSource: execution.source,
+                detectionTimestamp: detectedAt,
+                ...(structuralChange.changeType === 'child-removed' && oldMapping ? {
+                  relatedOriginalCourseOfferingD2lId: String(oldMapping.targetId),
+                  relatedOriginalCourseOfferingOrgCode: String(oldMapping.targetCode) } : {}) };
+              pendingByKey.set(signature, pending);
+            }
+          }
+          const pendingChanges = [...pendingByKey.values()];
+          // Keep the event on the association before writing its execution report. A later
+          // inspection can recreate the idempotent report row if this execution fails here.
+          try { await store.record(id, { pendingChildChanges: pendingChanges }); }
+          catch (error) { execution.auditIncomplete = true; throw error; }
+          for (const pending of pendingChanges) {
+            const row = childChangeAuditRow(pending, { executionId: pending.detectionExecutionId,
+              source: pending.detectionSource, parentId: id, parentCode: item.associationCode,
+              timestamp: pending.detectionTimestamp, outcome: 'Detected; reconciliation pending/deferred',
+              relatedTarget: pending.relatedOriginalCourseOfferingD2lId
+                ? { id: pending.relatedOriginalCourseOfferingD2lId, code: pending.relatedOriginalCourseOfferingOrgCode } : null });
+            await writeChildChangeAudit(row, execution);
+          }
+        }
       } else {
         await store.record(id, { lastSuccessfulChildInspectionAt: new Date(now()) });
         if (diagnostic) diagnostic.successfulInspectionTimestampUpdated = true;

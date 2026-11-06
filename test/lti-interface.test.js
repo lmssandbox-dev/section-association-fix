@@ -422,17 +422,33 @@ test('audit CSV endpoint is authenticated, execution-scoped, empty-report safe, 
   const routes = {};
   const provider = { app: { get(path, handler) { routes[path] = handler; }, post(path, handler) { routes[path] = handler; } }, onConnect() {} };
   registerSectionAssociationLtiInterface(provider, { deploymentId: 'deployment-1', getStatus: async()=>({}),
-    getAuditAvailability: async id => id === '12345678-1234-1234-1234-123456789abc',
-    async *getExecutionAudit() {} });
+    getAuditAvailability: async id => ['12345678-1234-1234-1234-123456789abc','aaaaaaaa-1234-1234-1234-123456789abc'].includes(id),
+    async *getExecutionAudit(id, kind) { if (kind === 'child-change' && id === '12345678-1234-1234-1234-123456789abc') yield {
+      timestamp: new Date('2026-11-06T12:00:00Z'), executionId: id, source: 'automatic', auditEvent: 'detected',
+      detectionExecutionId: id, detectionRecordKey: 'detection:7:child-added:8', parentAssociationD2lId: '7',
+      parentAssociationOrgCode: 'parent,"code', changeType: 'child-added', childSectionD2lId: '8',
+      currentChildSectionOrgCode: '=SUM(A1:A2)', reconciliationOutcome: 'Detected; reconciliation pending/deferred' }; } });
   const res = response(); res.locals.token = { deploymentId: 'deployment-1' };
   await routes['/api/section-association/corrections.csv']({ query: { executionId: '12345678-1234-1234-1234-123456789abc' } }, res);
   assert.equal(res.ended, true); assert.equal(res.chunks.length, 1);
   assert.match(res.chunks[0], /Execution ID.*Verified isActive.*Result/);
   assert.equal(auditCsvCell('=SUM(A1:A2)'), "\"'=SUM(A1:A2)\"");
   assert.equal(auditCsvCell('a,"b'), '"a,""b"');
+  const child = response(); child.locals.token = { deploymentId: 'deployment-1' };
+  await routes['/api/section-association/child-change.csv']({ query: { executionId: '12345678-1234-1234-1234-123456789abc' } }, child);
+  assert.equal(child.ended, true); assert.equal(child.chunks.length, 2);
+  assert.match(child.chunks[0], /Detection date\/time.*Audit event.*Child Section D2L ID.*Reconciliation outcome/);
+  assert.match(child.chunks[1], /"parent,""code"/);
+  assert.match(child.chunks[1], /"'=SUM\(A1:A2\)"/);
+  const empty = response(); empty.locals.token = { deploymentId: 'deployment-1' };
+  await routes['/api/section-association/child-change.csv']({ query: { executionId: 'aaaaaaaa-1234-1234-1234-123456789abc' } }, empty);
+  assert.equal(empty.chunks.length, 1); assert.match(empty.chunks[0], /Child Section D2L ID/);
   const denied = response(); denied.locals.token = { deploymentId: 'other' };
   await routes['/api/section-association/exceptions.csv']({ query: { executionId: '12345678-1234-1234-1234-123456789abc' } }, denied);
   assert.equal(denied.statusCode, 403); assert.equal(denied.chunks.length, 0);
+  const childDenied = response(); childDenied.locals.token = { deploymentId: 'other' };
+  await routes['/api/section-association/child-change.csv']({ query: { executionId: '12345678-1234-1234-1234-123456789abc' } }, childDenied);
+  assert.equal(childDenied.statusCode, 403); assert.equal(childDenied.chunks.length, 0);
 });
 
 test('Reports dropdown is available for audited zero-result runs and keyboard dismissal restores focus', async () => {
@@ -441,12 +457,14 @@ test('Reports dropdown is available for audited zero-result runs and keyboard di
   let request;
   const elements=await runPage(async(...args)=>{request=args;if(args[0].includes('/corrections.csv?'))return{ok:true,async blob(){return{}},headers:{get(){return'attachment; filename="report.csv"'}}};return{ok:true,async json(){return{availability:'Available',worker:'idle',latestExecution:zeroAudited,executions:[zeroAudited]}}}});
   assert.match(elements.history.innerHTML,/<summary aria-label="Reports for this execution">Reports<\/summary>/);
-  assert.match(elements.history.innerHTML,/Corrections CSV/);assert.match(elements.history.innerHTML,/Exceptions CSV/);
+  assert.match(elements.history.innerHTML,/Corrections CSV/);assert.match(elements.history.innerHTML,/Exceptions CSV/);assert.match(elements.history.innerHTML,/Child Changes CSV/);
   assert.match(elements.history.innerHTML,/quiet-work/);
   await elements.history.listeners.click({target:{closest(selector){return selector==='[data-audit]'?{dataset:{audit:'corrections',execution:zeroAudited.executionId},closest(sel){return sel==='.reports-menu'?elements.reportMenu:elements.reportEntry}}:null}}});
   assert.equal(request[0],'/api/section-association/corrections.csv?executionId='+zeroAudited.executionId);
   assert.equal(request[1].headers.Authorization,'Bearer signed-lti-token');assert.equal(request[1].credentials,'same-origin');
   assert.equal(elements.reportMenu.open,false);assert.equal(elements.reportSummary.focused,true);
+  await elements.history.listeners.click({target:{closest(selector){return selector==='[data-audit]'?{dataset:{audit:'child-change',execution:zeroAudited.executionId},closest(sel){return sel==='.reports-menu'?elements.reportMenu:elements.reportEntry}}:null}}});
+  assert.equal(request[0],'/api/section-association/child-change.csv?executionId='+zeroAudited.executionId);
   elements.reportMenu.open=true;elements.documentListeners.keydown({key:'Escape',stopPropagation(){}});
   assert.equal(elements.reportMenu.open,false);assert.equal(elements.reportSummary.focused,true);
   elements.reportMenu.open=true;elements.documentListeners.click({target:{closest(){return null}}});
