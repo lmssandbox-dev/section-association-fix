@@ -130,18 +130,19 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     stats.alreadyInactive += result?.alreadyInactive || 0;
   }
 
-  async function prepareDiscovery(stats, setPhase = () => {}, execution) {
+  async function prepareDiscovery(stats, setPhase = () => {}, execution, manualDiscovery = false) {
     const currentTime = now();
     setPhase('database');
     const baselineStatus = typeof store.baselineStatus === 'function' ? await store.baselineStatus() : { state: 'ready' };
     const baselineRequired = !baselineStatus || baselineStatus.state !== 'ready';
     const lastFull = typeof store.lastFullDiscoveryAt === 'function' ? await store.lastFullDiscoveryAt() : new Date(currentTime);
-    const scope = discoveryScope(discoveryConfiguration, currentTime);
+    const configuredScope = discoveryScope(discoveryConfiguration, currentTime);
+    const scope = manualDiscovery && configuredScope.mode === 'all' ? academicPeriods(currentTime) : configuredScope;
     const broadWindow = isHistoricalDiscoveryWindow(currentTime);
     const regularWindow = isRegularOperationsWindow(currentTime);
-    const runFullDiscovery = broadWindow && (baselineRequired || fullDiscoveryDue(lastFull, currentTime));
-    if (!regularWindow && !runFullDiscovery && scope.mode !== 'all') return true;
-    if (scope.mode === 'all' && !regularWindow && !runFullDiscovery) return true;
+    const runFullDiscovery = !manualDiscovery && broadWindow && (baselineRequired || fullDiscoveryDue(lastFull, currentTime));
+    if (!manualDiscovery && !regularWindow && !runFullDiscovery && scope.mode !== 'all') return true;
+    if (!manualDiscovery && scope.mode === 'all' && !regularWindow && !runFullDiscovery) return true;
     setPhase('discovery');
     let full = [];
     const fullByFormat = {};
@@ -205,7 +206,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     }
     setPhase('discovery');
     const periodResults = [];
-    if (scope.mode !== 'all' && regularWindow) {
+    if (scope.mode !== 'all' && (regularWindow || manualDiscovery)) {
       // Keep Brightspace discovery bounded and retain separate absence evidence for each code family.
       for (const period of scope.periods) {
         const legacy = await discover(`${period}-I0001`);
@@ -400,7 +401,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
   }
 
   async function runCycle({ recovery = false, discoveryAlreadyCompleted = false,
-    maxReconciliations = maxReconciliationsPerRun, execution } = {}) {
+    maxReconciliations = maxReconciliationsPerRun, execution, manualDiscovery = false } = {}) {
     const startedAt = now();
     const name = recovery ? 'recovery cycle' : 'fast cycle';
     logEvent(logger, 'info', `${name} started`);
@@ -415,7 +416,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     let succeeded = false;
     let recoveryComplete = true;
     try {
-      if (!discoveryAlreadyCompleted && !await prepareDiscovery(stats, value => { phase = value; }, execution)) {
+      if (!discoveryAlreadyCompleted && !await prepareDiscovery(stats, value => { phase = value; }, execution, manualDiscovery)) {
         succeeded = true;
         return { status: 'completed', ...stats, recoveryComplete: false };
       }

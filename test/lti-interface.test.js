@@ -275,7 +275,7 @@ test('Escape cancels the Run Now dialog without submitting and restores focus',a
 });
 
 test('confirm submits one manual request and prevents a duplicate submission',async()=>{
-  const calls=[];const elements=await runPage(async(url,options={})=>{calls.push({url,options});return options.method==='POST'?{ok:true,async json(){return{request:{requestId:'manual-dialog',status:'requested'}}}}:{ok:true,async json(){return{availability:'Available',worker:'running',latestExecution:null,executions:[],manualExecution:{requestId:'manual-dialog',status:'requested'}}}}});
+  const calls=[];let statusReads=0;const elements=await runPage(async(url,options={})=>{calls.push({url,options});return options.method==='POST'?{ok:true,async json(){return{request:{requestId:'manual-dialog',status:'requested'}}}}:{ok:true,async json(){statusReads++;return{availability:'Available',worker:'running',latestExecution:null,executions:[],...(statusReads>1?{manualExecution:{requestId:'manual-dialog',status:'requested'}}:{})}}}});
   elements.runNow.listeners.click();assert.equal(elements.runNowDialog.open,true);
   await elements.runNowDialogConfirm.listeners.click();
   assert.equal(elements.runNowDialog.open,false);assert.equal(elements.runNow.focused,true);

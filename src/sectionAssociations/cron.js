@@ -64,7 +64,8 @@ async function runSectionAssociationCron({ service, store, recoveryIntervalHours
     }, heartbeatMs);
 
     phase = 'discovery';
-    const fast = await service.fastTick({ maxReconciliations: maxReconciliationsPerRun, execution });
+    const fast = await service.fastTick({ maxReconciliations: maxReconciliationsPerRun, execution,
+      manualDiscovery: executionSource === 'manual' });
     results.push(fast);
     if (fast?.status && fast.status !== 'completed') throw Object.assign(new Error('Fast cycle did not complete.'), {
       phase: fast.phase || 'discovery', code: fast.code || 'FAST_CYCLE_FAILED'

@@ -184,7 +184,7 @@ If something looks wrong, start with **Execution History** and then open the **E
 
 ### Run Now
 
-**Run Now** asks the service to perform a manual maintenance run without waiting for the next automatic 15-minute start. You must confirm the action, and Brightspace must identify your LTI launch as an Administrator or SysAdmin. The run follows the same time-of-day rules as automatic work, so it will not start a daytime or historical scan outside its normal window. The usual dry-run setting, checks, and safety limits still apply.
+**Run Now** asks the service to perform a manual maintenance run without waiting for the next automatic 15-minute start. You must confirm the action, and Brightspace must identify your LTI launch as an Administrator or SysAdmin. Run Now performs a fresh search for Section Associations at any hour. It searches both legacy and PeopleSoft codes for the configured periods. If periods are set to “all”, or left automatic, it searches the previous, current, and next periods; it does not start a broad historical scan. A newly found association still waits at least 10 minutes before it can be reconciled. Child and cached-status monitoring continue to follow their normal time windows. The usual dry-run setting, checks, and safety limits still apply.
 
 The button works with both Render setups. In cron mode, the LTI web service starts the run itself; it does not call Render or wait for the separate Cron Job. In internal mode, the always-on web service starts the same run and continues its regular schedule.
 

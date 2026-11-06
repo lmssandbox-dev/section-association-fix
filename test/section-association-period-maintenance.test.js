@@ -363,3 +363,86 @@ test('fast and recovery phases do not reconcile one association twice in the sam
   await service.recoveryTick({ execution, discoveryAlreadyCompleted: true });
   assert.equal(reconciles, 1);
 });
+
+function manualDiscoveryFixture({ time, discoveryConfiguration = { mode: 'auto', periods: [] }, lastFullAt = new Date(time) }) {
+  const calls = [], persisted = [], monitorKinds = [], reconciled = [];
+  const firstSeenAt = new Map();
+  const offerings = {
+    legacy: { Identifier: 701, Code: '002521-01-2602-I0001', Type: { Code: 'Course Offering' } },
+    peoplesoft: { Identifier: 702, Code: 'ESPM-2602-GS2-C0011', Type: { Code: 'Course Offering' } }
+  };
+  const store = {
+    async baselineStatus() { return { state: 'ready' }; },
+    async lastFullDiscoveryAt() { return lastFullAt; },
+    async recordDiscoveries(records) {
+      persisted.push(...records);
+      for (const item of records) firstSeenAt.set(String(item.id), new Date(time));
+      return { newlyRecorded: records.length, alreadyKnown: 0 };
+    },
+    async countHistoricalBacklog() { return 0; },
+    async listWaitingNew({ stabilityCutoff }) {
+      return [...firstSeenAt].filter(([, seen]) => seen > stabilityCutoff)
+        .map(([id]) => ({ associationOrgUnitId: id }));
+    },
+    async listFastWork() { return []; },
+    async listMonitoringWork({ kind }) { monitorKinds.push(kind); return []; },
+    async countDueMonitoring() { return 0; }
+  };
+  const client = { async associationCandidates(code) {
+    calls.push(code);
+    if (code === '2602-I0001') return [offerings.legacy];
+    if (code === 'ESPM-2602-') return [offerings.peoplesoft];
+    return [];
+  } };
+  const reconciler = { async reconcileAssociation(id) { reconciled.push(String(id)); return { status: 'completed' }; } };
+  const service = createSectionAssociationService({ client, store, reconciler, discoveryConfiguration,
+    now: () => time, logger: { info() {}, warn() {}, error() {} } });
+  return { service, calls, persisted, monitorKinds, reconciled };
+}
+
+test('manual discovery at 00:15 searches configured periods after nightly broad discovery completed and keeps new work pending', async () => {
+  const time = Date.parse('2026-10-20T03:15:00Z'); // 00:15 Sao Paulo
+  const lastFullAt = new Date('2026-10-20T02:30:00Z'); // successful scan in the same logical nightly window
+  const h = manualDiscoveryFixture({ time, lastFullAt });
+  const result = await h.service.fastTick({ manualDiscovery: true });
+  assert.deepEqual(h.calls, ['2601-I0001','ESPM-2601-','2602-I0001','ESPM-2602-','2701-I0001','ESPM-2701-']);
+  assert.deepEqual(h.persisted.map(item => String(item.id)).sort(), ['701','702']);
+  assert.equal(result.new, 2);
+  assert.equal(result.pending, 2);
+  assert.deepEqual(h.reconciled, []);
+  assert.deepEqual(h.monitorKinds, []);
+  assert.equal(result.discoveryActivities.historical, undefined);
+});
+
+test('manual discovery at 02:15 is period-scoped and does not start historical or cached-status work', async () => {
+  const time = Date.parse('2026-10-20T05:15:00Z'); // 02:15 Sao Paulo
+  const h = manualDiscoveryFixture({ time, discoveryConfiguration: { mode: 'explicit', periods: ['2501','2701'] } });
+  const result = await h.service.fastTick({ manualDiscovery: true });
+  assert.deepEqual(h.calls, ['2501-I0001','ESPM-2501-','2701-I0001','ESPM-2701-']);
+  assert.deepEqual(h.monitorKinds, []);
+  assert.equal(result.discoveryActivities.historical, undefined);
+  assert.equal(result.statusChecksAttempted, 0);
+});
+
+test('manual discovery at 10:00 retains daytime discovery and child-monitor eligibility', async () => {
+  const time = Date.parse('2026-10-20T13:00:00Z'); // 10:00 Sao Paulo
+  const h = manualDiscoveryFixture({ time });
+  const result = await h.service.fastTick({ manualDiscovery: true });
+  assert.deepEqual(h.calls, ['2601-I0001','ESPM-2601-','2602-I0001','ESPM-2602-','2701-I0001','ESPM-2701-']);
+  assert.deepEqual(h.monitorKinds, ['children']);
+  assert.equal(result.discoveryActivities.periods, true);
+});
+
+test('manual all-period scope falls back to rolling periods while automatic eligibility remains unchanged', async () => {
+  const time = Date.parse('2026-10-20T05:15:00Z');
+  const manual = manualDiscoveryFixture({ time, discoveryConfiguration: { mode: 'all', periods: [] } });
+  await manual.service.fastTick({ manualDiscovery: true });
+  assert.deepEqual(manual.calls, ['2601-I0001','ESPM-2601-','2602-I0001','ESPM-2602-','2701-I0001','ESPM-2701-']);
+  const automatic = manualDiscoveryFixture({ time, discoveryConfiguration: { mode: 'auto', periods: [] } });
+  await automatic.service.fastTick();
+  assert.deepEqual(automatic.calls, []);
+  const daytime = manualDiscoveryFixture({ time: Date.parse('2026-10-20T13:00:00Z') });
+  await daytime.service.fastTick();
+  assert.deepEqual(daytime.calls, ['2601-I0001','ESPM-2601-','2602-I0001','ESPM-2602-','2701-I0001','ESPM-2701-']);
+  assert.deepEqual(daytime.monitorKinds, ['children']);
+});

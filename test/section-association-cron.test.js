@@ -89,11 +89,20 @@ test('manual execution records manual history and transitions only after acquiri
     async markManualExecutionRunning(id){events.push(['running',id]);return true},async renewCronLease(){},
     async releaseCronLease(){held=false},async saveMaintenanceExecution(value){summary=value},
     async finishManualExecution(id,status){events.push([status,id])},async recoveryDue(){return false}};
-  const result=await runSectionAssociationCron({service:{async fastTick({execution}){events.push(execution.source);return{status:'completed',associationsChecked:2,associationsAlreadyCompliant:2,correctionsApplied:0,errors:0}},async recoveryTick(){}},
+  const result=await runSectionAssociationCron({service:{async fastTick({execution,manualDiscovery}){events.push(execution.source);events.push(['manualDiscovery',manualDiscovery]);return{status:'completed',associationsChecked:2,associationsAlreadyCompliant:2,correctionsApplied:0,errors:0}},async recoveryTick(){}},
     store,recoveryIntervalHours:4,source:'manual',manualRequestId:'request-1',logger:{info(){},warn(){},error(){}},
     setIntervalFn(){return 1},clearIntervalFn(){}});
-  assert.equal(result.status,'completed');assert.deepEqual(events.filter(Array.isArray),[['running','request-1'],['completed','request-1']]);
+  assert.equal(result.status,'completed');assert.deepEqual(events.filter(event=>Array.isArray(event)&&['running','completed'].includes(event[0])),[['running','request-1'],['completed','request-1']]);
+  assert.ok(events.some(event=>Array.isArray(event)&&event[0]==='manualDiscovery'&&event[1]===true));
   assert.equal(summary.source,'manual');assert.equal(summary.status,'completed');
+});
+
+test('automatic cron does not enable manual discovery',async()=>{
+  let manualDiscovery;
+  const store={async acquireCronLease(){return'lease'},async renewCronLease(){},async releaseCronLease(){},async recoveryDue(){return false}};
+  const result=await runSectionAssociationCron({service:{async fastTick(options){manualDiscovery=options.manualDiscovery;return{status:'completed',associationsChecked:0,associationsAlreadyCompliant:0,correctionsApplied:0,errors:0}},async recoveryTick(){}},
+    store,recoveryIntervalHours:4,logger:{info(){},warn(){},error(){}},setIntervalFn(){return 1},clearIntervalFn(){}});
+  assert.equal(result.status,'completed');assert.equal(manualDiscovery,false);
 });
 
 test('automatic cron recovers an interrupted manual request with manual history attribution',async()=>{
