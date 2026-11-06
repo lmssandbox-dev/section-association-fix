@@ -131,6 +131,12 @@ The daytime search normally covers the **previous, current, and next academic pe
 
 The app processes a limited number of associations per run to control workload. If there is more work than fits in one run, the rest can be picked up later. **There is no guaranteed 15-minute response time for every course.**
 
+The worker does three different kinds of work:
+
+- **Full reconciliation** is the careful, complete check. The app reads the shared course, its groups, and each matching original course. It uses this when an association is new, a saved relationship needs to be refreshed, or a check finds a change. A fully completed dry run can remember the relationship when it confirms every original course is already inactive; it still makes no course changes.
+- **Daytime child monitoring** is a lighter check from 07:00 to 23:00. It compares the shared course's current groups with the last saved list. If the list is unchanged, no full reconciliation is needed. If it changed or no trusted list exists, the app schedules a full check.
+- **Nighttime status verification** runs every half hour from 01:00 to 06:30. It checks the saved original-course IDs to see whether the originals are still inactive. If one is active, missing, or inconsistent, the app performs a fresh full check before any possible change. A saved ID by itself never permits a course update.
+
 ---
 
 ## 5. What if something changes later?
@@ -181,6 +187,8 @@ The LTI monitoring page is available to authorized users. Administrators also ha
 **A failed run** means that run did not finish normally. **A skipped run** often means another worker was already doing the job.
 
 If something looks wrong, start with **Execution History** and then open the **Exceptions report**, if available. Some older executions do not have detailed reports.
+
+Open a history row to see details. When daytime child monitoring ran, the details show how many child checks succeeded, how many were attempted, changes found, mapping refreshes needed, and the remaining child-check backlog when available. When nighttime status verification ran, the details show the equivalent status-check numbers. A row only shows metrics for monitoring that actually ran; old records may not have these details. “Mapping refreshes” or a backlog can explain why the worker is still busy. A batch of 50 checked associations can also be the expected first pass through older associations that were newly discovered by the broad historical search. The current counts alone do not say which case occurred; use the expanded monitoring details and available execution reports.
 
 ### Run Now
 

@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const { runSectionAssociationCron } = require('../src/sectionAssociations/cron');
 const { startSectionAssociationScheduler } = require('../src/sectionAssociations/scheduler');
 const { main: runOneShot, maintenanceSource } = require('../scripts/run-section-association');
+const { buildMaintenanceExecutionSummary } = require('../src/sectionAssociations/executionSummary');
 
 function memoryExecutionStore() {
   const summaries = [];
@@ -23,6 +24,21 @@ const stats = { associationsChecked: 3, associationsAlreadyCompliant: 1, correct
 test('one-shot source follows the actual invocation flag and defaults to scheduled automatic', () => {
   assert.equal(maintenanceSource(['node', 'scripts/run-section-association.js']), 'automatic');
   assert.equal(maintenanceSource(['node', 'scripts/run-section-association.js', '--manual']), 'manual');
+});
+
+test('execution summary persists monitoring activity, counters, and remaining backlog', () => {
+  const summary=buildMaintenanceExecutionSummary({executionId:'monitored',source:'automatic',startedAt:new Date(1)},
+    {status:'completed',now:()=>2,results:[{status:'completed',childChecksAttempted:125,childChecksSucceeded:124,
+      childChangesDetected:2,childMappingRefreshesRequired:3,childMonitoringLag:18,
+      statusChecksAttempted:0,statusChecksSucceeded:0,statusChangesDetected:0,statusMappingRefreshesRequired:0,
+      statusMonitoringLag:0,monitoringActivities:{children:true,status:true}}]});
+  assert.equal(summary.childChecksAttempted,125);
+  assert.equal(summary.childChecksSucceeded,124);
+  assert.equal(summary.childChangesDetected,2);
+  assert.equal(summary.childMappingRefreshesRequired,3);
+  assert.equal(summary.childMonitoringLag,18);
+  assert.deepEqual(summary.monitoringActivities,{children:true,status:true});
+  assert.equal(summary.statusMonitoringLag,0);
 });
 
 test('internal automatic scheduler persists compact association-level counters', async () => {

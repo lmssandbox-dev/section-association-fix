@@ -153,14 +153,14 @@ function createReconciler({ client, store, dryRun = true, now = Date.now, logger
         associationCode: association.Code, lastCheckedAt: checkedAt,
         processedAt: fullyVerified ? checkedAt : null, status, lastError: null,
         ...(fullyVerified ? { lastReconciledAt: checkedAt, lastVerifiedAt: checkedAt,
-          ...(!dryRun ? {
-            lastSuccessfulChildInspectionAt: checkedAt, lastSuccessfulStatusVerificationAt: checkedAt,
-            verifiedMappingVersion: 1,
-            verifiedChildren: targets.map(target => ({ id: target.sectionId, code: target.sectionCode })),
-            verifiedTargets: targets.map(target => ({ id: target.id, code: target.code })),
-            verifiedMappings: targets.map(target => ({ sectionId: target.sectionId, sectionCode: target.sectionCode,
-              targetId: target.id, targetCode: target.code })),
-          } : {}),
+          // A dry run still performed fresh structural validation and read every target.
+          // Persist that verified mapping so monitoring does not repeat this full work.
+          lastSuccessfulChildInspectionAt: checkedAt, lastSuccessfulStatusVerificationAt: checkedAt,
+          verifiedMappingVersion: 1,
+          verifiedChildren: targets.map(target => ({ id: target.sectionId, code: target.sectionCode })),
+          verifiedTargets: targets.map(target => ({ id: target.id, code: target.code })),
+          verifiedMappings: targets.map(target => ({ sectionId: target.sectionId, sectionCode: target.sectionCode,
+            targetId: target.id, targetCode: target.code })),
           reconciliationVersion: RECONCILIATION_VERSION } : {}),
         dryRun, outcomes
       });

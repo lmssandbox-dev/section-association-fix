@@ -22,7 +22,8 @@ function buildMaintenanceExecutionSummary(execution, { status, results = [], exe
     }
   }
   for (const field of ['childChecksAttempted', 'childChecksSucceeded', 'childChangesDetected',
-    'statusChecksAttempted', 'statusChecksSucceeded', 'statusChangesDetected', 'monitoringErrors', 'mappingRefreshesRequired']) {
+    'childMappingRefreshesRequired', 'statusChecksAttempted', 'statusChecksSucceeded', 'statusChangesDetected',
+    'statusMappingRefreshesRequired', 'monitoringErrors', 'mappingRefreshesRequired']) {
     if (results.some(result => Number.isSafeInteger(result?.[field]) && result[field] >= 0)) {
       summary[field] = results.reduce((total, result) => total + (Number.isSafeInteger(result?.[field]) ? result[field] : 0), 0);
     }

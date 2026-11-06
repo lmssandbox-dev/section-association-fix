@@ -311,6 +311,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     const attemptField = 'lastChildInspectionAttemptAt';
     const changed = [];
     let mappingsNeedRefresh = 0;
+    let mappingRefreshesRequired = 0;
     let childChangesDetected = 0;
     for (const item of items) {
       const id = String(item.associationOrgUnitId);
@@ -332,12 +333,14 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
       const current = normalizedChildren(currentRows);
       const previous = normalizedChildren(item.verifiedChildren || []);
       if (currentRows.some(row => row?.Type?.Code !== 'Group') || JSON.stringify(current) !== JSON.stringify(previous)) {
-        changed.push(item); childChangesDetected++;
+        changed.push(item); childChangesDetected++; mappingRefreshesRequired++;
       } else await store.record(id, { lastSuccessfulChildInspectionAt: new Date(now()) });
       stats.childChecksSucceeded++;
     }
     stats.childChangesDetected += childChangesDetected;
-    stats.mappingRefreshesRequired += mappingsNeedRefresh;
+    mappingRefreshesRequired += mappingsNeedRefresh;
+    stats.childMappingRefreshesRequired += mappingRefreshesRequired;
+    stats.mappingRefreshesRequired += mappingRefreshesRequired;
     if (changed.length) await processWork(changed.slice(0, remaining), stats, execution);
     stats.childMonitoringLag = await store.countDueMonitoring?.({ kind: 'children', periods: monitoringPeriods(time), before: localHourKey(time) }) ?? null;
   }
@@ -352,12 +355,13 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     const attemptField = 'lastStatusVerificationAttemptAt';
     const reconcile = [];
     let mappingsNeedRefresh = 0;
+    let mappingRefreshesRequired = 0;
     let statusChangesDetected = 0;
     for (const item of items) {
       const id = String(item.associationOrgUnitId);
       await store.record(id, { [attemptField]: new Date(now()) });
       const mappings = Array.isArray(item.verifiedTargets) ? item.verifiedTargets : [];
-      if (!trustedMapping(item)) { reconcile.push(item); mappingsNeedRefresh++; continue; }
+      if (!trustedMapping(item)) { reconcile.push(item); mappingsNeedRefresh++; mappingRefreshesRequired++; continue; }
       let requiresReconcile = false;
       try {
         stats.statusChecksAttempted++;
@@ -373,6 +377,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
         if (error?.status === 404) {
           reconcile.push(item);
           statusChangesDetected++;
+          mappingRefreshesRequired++;
           continue;
         }
         stats.monitoringErrors++;
@@ -380,11 +385,12 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
         continue;
       }
       stats.statusChecksSucceeded++;
-      if (requiresReconcile) { reconcile.push(item); statusChangesDetected++; }
+      if (requiresReconcile) { reconcile.push(item); statusChangesDetected++; mappingRefreshesRequired++; }
       else await store.record(id, { lastSuccessfulStatusVerificationAt: new Date(now()) });
     }
     const remaining = Math.max(0, reconciliationLimit - stats.processedThisRun);
-    stats.mappingRefreshesRequired += mappingsNeedRefresh;
+    stats.statusMappingRefreshesRequired += mappingRefreshesRequired;
+    stats.mappingRefreshesRequired += mappingRefreshesRequired;
     if (reconcile.length && remaining) await processWork(reconcile.slice(0, remaining), stats, execution);
     stats.statusChangesDetected += statusChangesDetected;
     stats.statusMonitoringLag = await store.countDueMonitoring?.({ kind: 'status', periods: monitoringPeriods(time), before: localDayStart(time) }) ?? null;
@@ -397,6 +403,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
       writesAttempted: 0, writesVerified: 0, alreadyInactive: 0, childChecksAttempted: 0, childChecksSucceeded: 0,
       childChangesDetected: 0, childMonitoringLag: null, statusChecksAttempted: 0, statusChecksSucceeded: 0,
       statusChangesDetected: 0, statusMonitoringLag: null, monitoringErrors: 0, mappingRefreshesRequired: 0,
+      childMappingRefreshesRequired: 0, statusMappingRefreshesRequired: 0,
       monitoringPeriods: null, monitoringActivities: {}, discoveryActivities: {} };
   }
 

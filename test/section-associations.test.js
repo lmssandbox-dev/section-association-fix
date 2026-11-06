@@ -306,6 +306,10 @@ test('all-inactive dry-run records positive verification evidence and completed 
   assert.equal(evidence.reconciliationVersion, RECONCILIATION_VERSION);
   assert.ok(evidence.lastReconciledAt instanceof Date);
   assert.ok(evidence.lastVerifiedAt instanceof Date);
+  assert.equal(evidence.verifiedMappingVersion, RECONCILIATION_VERSION);
+  assert.deepEqual(evidence.verifiedChildren, [{ id: '33669', code: '002521-01-2602-GS2-EL1S-03229' },
+    { id: '33673', code: '002521-01-2602-GS2-EL1T-03230' }]);
+  assert.equal(evidence.verifiedMappings.length, 2);
   assert.equal(hasVerifiedCompletion(evidence), true);
 
   let reads = 0;

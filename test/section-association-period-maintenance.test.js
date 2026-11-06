@@ -268,12 +268,17 @@ test('daytime child monitoring ignores response order and routes changed snapsho
   const client = { async associationCandidates(){return []}, async children(){return [...saved].reverse().map(row=>({...row,Type:{Code:'Group'}}))} };
   const reconciler = { async reconcileAssociation(){calls++;return {status:'completed',targets:[{status:'already-inactive'}]}} };
   const service = createSectionAssociationService({client,store,reconciler,now:()=>time,logger:{info(){},warn(){},error(){}}});
-  await service.fastTick();
+  const unchanged = await service.fastTick();
   assert.equal(calls,0);
+  assert.equal(unchanged.childChecksSucceeded,1);
+  assert.equal(unchanged.childChangesDetected,0);
+  assert.equal(unchanged.childMappingRefreshesRequired,0);
   assert.ok(writes.some(row=>row.lastSuccessfulChildInspectionAt instanceof Date));
   client.children = async()=>[...saved,{id:'14',code:'002521-01-2602-GS2-EL1U-00003'}].map(row=>({...row,Type:{Code:'Group'}}));
-  await service.fastTick();
+  const changed = await service.fastTick();
   assert.equal(calls,1);
+  assert.equal(changed.childChangesDetected,1);
+  assert.equal(changed.childMappingRefreshesRequired,1);
 });
 
 test('night cached-ID verification is skipped at quarter-hour slots and runs at half-hour slots', async()=>{
@@ -291,10 +296,12 @@ test('night cached-ID verification is skipped at quarter-hour slots and runs at 
   await service.fastTick();
   assert.equal(statusQueries,0);
   time=Date.parse('2026-10-18T04:30:00Z');
-  await service.fastTick();
+  const checked = await service.fastTick();
   assert.equal(statusQueries,1);
   assert.equal(statusLimit,150);
   assert.equal(reconciles,0);
+  assert.equal(checked.statusChecksSucceeded,1);
+  assert.equal(checked.statusChangesDetected,0);
   assert.ok(writes.some(row=>row.lastSuccessfulStatusVerificationAt instanceof Date));
   active=true; time=Date.parse('2026-10-18T05:00:00Z'); await service.fastTick(); assert.equal(reconciles,1);
 });
