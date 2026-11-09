@@ -1,8 +1,9 @@
 'use strict';
 
 const { createHash, randomUUID } = require('node:crypto');
-const { API_HEALTH_INVENTORY, AUTHENTICATION_DIAGNOSTIC, LIFECYCLE, LIFECYCLE_EVIDENCE_MAX_AGE_DAYS,
-  VERSION_CHECK_DOCS, API_PROPERTIES_DOCS, ROUTING_TABLE_DOCS } = require('./apiHealthInventory');
+const { API_HEALTH_INVENTORY, AUTHENTICATION_DIAGNOSTIC, DIAGNOSTIC_OPERATIONS, LIFECYCLE, LIFECYCLE_EVIDENCE_MAX_AGE_DAYS,
+  VERSION_CHECK_DOCS, API_PROPERTIES_DOCS, ROUTING_TABLE_DOCS, OAUTH_SCOPES_DOCS } = require('./apiHealthInventory');
+const { hasScope } = require('../shared/client');
 
 const DAILY_AFTER_MINUTE = 120;
 const HEALTH_LEASE_MS = 5 * 60 * 1000;
@@ -71,7 +72,35 @@ function endpointResults(status, configuredVersion, explanation) {
     documentation: endpoint.docs }));
 }
 
-function createApiHealthService({ get, http, oauth, baseUrl, configuredVersion, store, now = Date.now, logger = console,
+function assessOAuthScopes(configuredScopes = '', inventory = API_HEALTH_INVENTORY) {
+  const requiredScopes = [...new Set(inventory.map(endpoint => endpoint.oauthScope).filter(Boolean))];
+  const configured = typeof configuredScopes === 'string' ? configuredScopes.trim().split(/\s+/).filter(Boolean) : [];
+  const required = requiredScopes.map(scope => {
+    const covering = configured.filter(token => hasScope(token, scope));
+    const wildcardCovered = covering.some(token => token.split(':').some(part => part === '*'));
+    return { scope, status: covering.length ? 'Required and configured' : 'Missing',
+      coverage: covering.length ? (wildcardCovered ? 'wildcard' : 'configured') : 'missing' };
+  });
+  const requiredSet = new Set(requiredScopes);
+  const excessive = configured.filter(token => {
+    const parts = token.split(':');
+    if (parts.length !== 3 || parts.some(part => !part)) return true;
+    if (parts.some(part => part === '*')) return true;
+    const actions = parts[2].split(',');
+    if (actions.some(action => !/^[A-Za-z][A-Za-z0-9]*$/.test(action))) return true;
+    return actions.some(action => !requiredSet.has(`${parts[0]}:${parts[1]}:${action}`));
+  }).map(scope => {
+    const scopeLike = /^[A-Za-z][A-Za-z0-9_*]*:[A-Za-z][A-Za-z0-9_*]*:[A-Za-z][A-Za-z0-9_*,]*$/.test(scope);
+    return { scope: scopeLike ? scope : 'Unrecognized value (hidden)',
+      status: scopeLike ? 'Excessive or overly broad' : 'Malformed scope value (hidden)' };
+  });
+  return { assessment: 'Configuration assessment only; it does not verify live OAuth authorization.',
+    required, excessive, configuredCount: configured.length,
+    documentation: OAUTH_SCOPES_DOCS,
+    status: required.some(item => item.status === 'Missing') ? 'Incomplete' : excessive.length ? 'Review recommended' : 'Configured' };
+}
+
+function createApiHealthService({ get, http, oauth, baseUrl, configuredVersion, configuredScopes = '', store, now = Date.now, logger = console,
   lifecycleEvidence = LIFECYCLE }) {
   if (typeof get !== 'function' || typeof http !== 'function' || !oauth?.getAccessToken || !store) throw new Error('API Health Check dependencies are required.');
   const root = new URL(baseUrl);
@@ -108,6 +137,7 @@ function createApiHealthService({ get, http, oauth, baseUrl, configuredVersion, 
       latestSupportedVersion: versions.latestVersion, supportedVersions: versions.supportedVersions,
       tenantSupported: check.supported, versionHealth: versionHealth.status, explanation: versionHealth.explanation,
       contractVerification: 'Not Verified', authenticationDiagnostic: AUTHENTICATION_DIAGNOSTIC,
+      oauthScopeConfiguration: assessOAuthScopes(configuredScopes), diagnosticOperations: DIAGNOSTIC_OPERATIONS,
       lifecycleEvidence: { ...lifecycleEvidence, maxAgeDays: LIFECYCLE_EVIDENCE_MAX_AGE_DAYS },
       documentation: { versionCheck: VERSION_CHECK_DOCS, apiProperties: API_PROPERTIES_DOCS, routingTable: ROUTING_TABLE_DOCS },
       counts, endpoints };
@@ -156,12 +186,14 @@ function createApiHealthService({ get, http, oauth, baseUrl, configuredVersion, 
       currentStatus, stale, staleAfterHours: 36, lastAttemptAt: state?.lastAttemptAt || null,
       lastAttemptMode: state?.lastAttemptMode || null, lastAttemptStatus: state?.lastAttemptStatus || null,
       lastFailure: state?.lastFailure || null, history: state?.history || [], inventoryRevision: revision,
+      authenticationDiagnostic: AUTHENTICATION_DIAGNOSTIC,
       endpoints: currentEvidence ? successful.endpoints : unknownEndpoints,
+      oauthScopeConfiguration: assessOAuthScopes(configuredScopes), diagnosticOperations: DIAGNOSTIC_OPERATIONS,
       counts: currentEvidence ? successful.counts : { Healthy: 0, 'Update Available': 0, 'At Risk': 0, Critical: 0, Unknown: API_HEALTH_INVENTORY.length } };
   }
   return { assess, run, runIfDue, inventory: API_HEALTH_INVENTORY, inventoryRevision: revision, getCached,
     async runManual() { return run('manual'); } };
 }
 
-module.exports = { createApiHealthService, classifyVersion, compareVersions, extractVersionsResponse, extractCheckResponse,
+module.exports = { createApiHealthService, classifyVersion, compareVersions, extractVersionsResponse, extractCheckResponse, assessOAuthScopes,
   evidenceIsCurrent, inventoryRevision, DAILY_AFTER_MINUTE, HEALTH_LEASE_MS, MANUAL_COOLDOWN_MS, HISTORY_LIMIT, STALE_AFTER_MS };

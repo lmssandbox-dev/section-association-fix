@@ -27,6 +27,18 @@ A new association is found by a list search. A child change is found by checking
 - **Original Course Offering:** The standalone course represented by a child section. The app finds it by deriving its Org Code from the child section's code.
 - **Verified snapshot:** The last successfully checked list of child IDs and Org Codes, together with the original offerings they resolve to.
 
+## Brightspace Service User access
+
+The app needs three OAuth scopes because its job uses three kinds of access: read organization and section structure, read original courses, and update an original course's active status. Configure these exact scopes in `BS_OAUTH2_SCOPES`:
+
+- `organizations:organization:read` lets the app read Course Offering organization details and Group children.
+- `orgunits:course:read` lets it read the original Course Offerings and check whether they are active.
+- `orgunits:course:update` lets it send the Course Offering update that changes an eligible original from active to inactive. Updating course information is more powerful than reading it, so keep this permission limited to the Service User used by the app.
+
+OAuth scopes are the permissions the registered app may request. Brightspace role permissions are the Service User's permissions inside Brightspace. Both must allow an action: scopes alone do not grant a user permission to see or update a course.
+
+The API Health Check shows whether the configured scope string covers the three required scopes and calls out extra or wildcard scopes. It also checks the configured API version against Brightspace's supported versions and the documented version evidence. These checks review configuration and version support; they cannot prove that a live token was granted every permission, that the Service User's Brightspace role allows a particular course action, or that every request contract will succeed. The web service and cron worker both stop during startup if a required scope is missing. The app does not change OAuth settings for you.
+
 ## 1. Finding new Section Associations
 
 During daytime discovery, Brightspace is searched for Course Offerings with either supported Org Code family:

@@ -1,5 +1,8 @@
 'use strict';
 
+const { hasScope } = require('../shared/client');
+const { API_HEALTH_INVENTORY } = require('./apiHealthInventory');
+
 const REQUIRED_ENVIRONMENT = [
   'DB_MONGODB_URL', 'APP_LTI_SECRET', 'BS_URL',
   'BS_OAUTH2_CLIENT_ID', 'BS_OAUTH2_PRIVATE_KEY', 'BS_OAUTH2_KEY_ID',
@@ -15,6 +18,11 @@ const WORKER_ENVIRONMENT = [
 ];
 const TRIGGER_MODES = new Set(['cron', 'internal']);
 const PERIOD_CODE = /^\d{2}0[12]$/;
+const REQUIRED_OAUTH_SCOPES = [...new Set(API_HEALTH_INVENTORY.map(operation => operation.oauthScope).filter(Boolean))];
+
+function missingOAuthScopes(env) {
+  return REQUIRED_OAUTH_SCOPES.filter(scope => !hasScope(env.BS_OAUTH2_SCOPES, scope));
+}
 
 function discoveryPeriodsConfiguration(env = process.env) {
   if (!Object.prototype.hasOwnProperty.call(env, 'SECTION_ASSOCIATION_DISCOVERY_PERIODS')) return { mode: 'auto', periods: [] };
@@ -39,6 +47,8 @@ function validateRequiredEnvironment(env = process.env) {
   const missing = REQUIRED_ENVIRONMENT.filter(name => !String(env[name] || '').trim());
   if (missing.length) throw new Error(`Missing required environment settings: ${missing.join(', ')}`);
   if (!/^\d+\.\d+$/.test(env.D2L_API_LP_VERSION)) throw new Error('D2L_API_LP_VERSION must use the form major.minor.');
+  const scopes = missingOAuthScopes(env);
+  if (scopes.length) throw new Error(`BS_OAUTH2_SCOPES is missing required OAuth scopes: ${scopes.join(', ')}`);
   return true;
 }
 
@@ -48,6 +58,8 @@ function validateWorkerEnvironment(env = process.env, { requireDryRun = true } =
   const missing = required.filter(name => !String(env[name] || '').trim());
   if (missing.length) throw new Error(`Missing required worker environment settings: ${missing.join(', ')}`);
   if (!/^\d+\.\d+$/.test(env.D2L_API_LP_VERSION)) throw new Error('D2L_API_LP_VERSION must use the form major.minor.');
+  const scopes = missingOAuthScopes(env);
+  if (scopes.length) throw new Error(`BS_OAUTH2_SCOPES is missing required OAuth scopes: ${scopes.join(', ')}`);
   return true;
 }
 
@@ -76,6 +88,6 @@ function installPublicBootstrapEndpoints(provider, jwks) {
   provider.app.get('/ping', (_req, res) => res.type('text/plain').send('Section Association service is running.'));
 }
 
-module.exports = { REQUIRED_ENVIRONMENT, LTI_ENVIRONMENT, WORKER_ENVIRONMENT, TRIGGER_MODES,
+module.exports = { REQUIRED_ENVIRONMENT, LTI_ENVIRONMENT, WORKER_ENVIRONMENT, TRIGGER_MODES, REQUIRED_OAUTH_SCOPES,
   sectionAssociationTriggerMode, discoveryPeriodsConfiguration, validateRequiredEnvironment, validateWorkerEnvironment,
   ltiConfiguration, registerBrightspacePlatform, installPublicBootstrapEndpoints };

@@ -4,11 +4,11 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { createSectionAssociationClient } = require('../src/sectionAssociations/client');
 const { createSectionAssociationStore } = require('../src/sectionAssociations/store');
-const { API_HEALTH_INVENTORY, AUTHENTICATION_DIAGNOSTIC } = require('../src/sectionAssociations/apiHealthInventory');
+const { API_HEALTH_INVENTORY, AUTHENTICATION_DIAGNOSTIC, DIAGNOSTIC_OPERATIONS } = require('../src/sectionAssociations/apiHealthInventory');
 const { createApiHealthService, classifyVersion, extractVersionsResponse, extractCheckResponse,
-  inventoryRevision, STALE_AFTER_MS } = require('../src/sectionAssociations/apiHealth');
+  inventoryRevision, STALE_AFTER_MS, assessOAuthScopes } = require('../src/sectionAssociations/apiHealth');
 
-const now = Date.parse('2026-10-19T16:00:00.000Z');
+const now = Date.parse('2026-11-09T16:00:00.000Z');
 const tenantVersions = { ProductCode: 'lp', LatestVersion: '1.64', SupportedVersions: ['1.49','1.53','1.59','1.64'] };
 
 test('endpoint inventory covers all six actual logical client operations and five route shapes', async () => {
@@ -24,12 +24,33 @@ test('endpoint inventory covers all six actual logical client operations and fiv
   assert.equal(API_HEALTH_INVENTORY.length, 6);
   assert.equal(AUTHENTICATION_DIAGNOSTIC.endpointSource, 'BS_OAUTH2_TOKEN_ENDPOINT');
   assert.equal(AUTHENTICATION_DIAGNOSTIC.versionedBrightspaceApi, false);
+  assert.deepEqual(DIAGNOSTIC_OPERATIONS.map(item => `${item.method} ${item.route}`), [
+    'GET /d2l/api/lp/versions/', 'POST /d2l/api/versions/check'
+  ]);
   assert.equal(new Set(inventory).size, 5);
   for (const route of actual) assert.ok(inventory.includes(route), `missing inventory entry for ${route}`);
   assert.equal(requests.filter(item => item.method === 'PUT').length, 1);
   assert.equal(requests[0].url.searchParams.get('orgUnitCode'), 'I0001');
   assert.equal(requests[1].url.searchParams.get('exactOrgUnitCode'), '2601-ABC');
   assert.equal(inventoryRevision().length, 16);
+});
+
+test('OAuth scope assessment distinguishes required, missing, excessive, and wildcard scopes', () => {
+  const exact = assessOAuthScopes('organizations:organization:read orgunits:course:read orgunits:course:update');
+  assert.equal(exact.status, 'Configured');
+  assert.equal(exact.required.length, 3);
+  assert.ok(exact.required.every(item => item.status === 'Required and configured'));
+  assert.deepEqual(exact.excessive, []);
+  const absentRead = assessOAuthScopes('organizations:organization:read orgunits:course:update');
+  assert.equal(absentRead.required.find(item => item.scope === 'orgunits:course:read').status, 'Missing');
+  assert.equal(absentRead.status, 'Incomplete');
+  const broad = assessOAuthScopes('organizations:organization:read orgunits:course:* extra:feature:read');
+  assert.equal(broad.required.find(item => item.scope === 'orgunits:course:update').coverage, 'wildcard');
+  assert.deepEqual(broad.excessive.map(item => item.scope), ['orgunits:course:*', 'extra:feature:read']);
+  const malformed = assessOAuthScopes('organizations:organization:read orgunits:course:read orgunits:course:update client-private-key');
+  assert.equal(JSON.stringify(malformed).includes('client-private-key'), false);
+  const combined = assessOAuthScopes('organizations:organization:read orgunits:course:read,update');
+  assert.equal(combined.status, 'Configured');
 });
 
 test('version service response formats are validated and LP check response is selected by component and version', () => {
@@ -42,12 +63,12 @@ test('version service response formats are validated and LP check response is se
 
 test('automatic assessment only becomes due after 02:00 once per Sao Paulo calendar day', async () => {
   let assessCalls=0;
-  const state={lastAutomaticAttemptAt:new Date('2026-10-19T12:00:00.000Z')};
+  const state={lastAutomaticAttemptAt:new Date('2026-11-09T12:00:00.000Z')};
   const service=createApiHealthService({baseUrl:'https://tenant.example',configuredVersion:'1.64',store:{async getApiHealthState(){return state},
     async acquireApiHealthLease(){assessCalls++;state.lastAutomaticAttemptAt=new Date(now);return{reason:'busy'}}},now:()=>now,
     oauth:{async getAccessToken(){return'token'}},async get(){return tenantVersions},async http(){return{}},logger:{warn(){}}});
   assert.equal((await service.runIfDue()).status,'not-due');
-  state.lastAutomaticAttemptAt=new Date('2026-10-18T12:00:00.000Z');
+  state.lastAutomaticAttemptAt=new Date('2026-11-08T12:00:00.000Z');
   assert.equal((await service.runIfDue()).status,'busy');assert.equal(assessCalls,1);
 });
 
@@ -77,10 +98,13 @@ test('assessment checks LP support, lifecycle, endpoint minimums, and does not p
     logger: { warn() {} } });
   const result = await service.runManual();
   assert.equal(result.status, 'completed');
-  assert.equal(result.assessment.versionHealth, 'Critical');
-  assert.equal(result.assessment.endpoints.find(endpoint => endpoint.id === 'course-offering-update').versionHealth, 'Critical');
+  assert.equal(result.assessment.versionHealth, 'Update Available');
+  assert.equal(result.assessment.endpoints.find(endpoint => endpoint.id === 'course-offering-update').versionHealth, 'Update Available');
   assert.equal(result.assessment.endpoints.find(endpoint => endpoint.id === 'course-offering-read').minimumVersion, '1.49');
   assert.equal(result.assessment.contractVerification, 'Not Verified');
+  assert.equal(result.assessment.oauthScopeConfiguration.required.length, 3);
+  assert.equal(result.assessment.diagnosticOperations.length, 2);
+  assert.equal(result.assessment.authenticationDiagnostic, AUTHENTICATION_DIAGNOSTIC);
   assert.equal(calls.length, 2);
   assert.equal(calls[1].method, 'POST'); assert.match(calls[1].url, /\/d2l\/api\/versions\/check$/);
   assert.equal(calls.some(call => call.method === 'PUT'), false);

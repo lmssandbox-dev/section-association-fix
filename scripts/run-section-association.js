@@ -4,7 +4,6 @@ require('dotenv').config();
 
 const axios = require('axios');
 const { databaseConfig } = require('../src/shared/database');
-const { hasScope } = require('../src/shared/client');
 const { createSectionAssociationRuntime } = require('../src/sectionAssociations/runtime');
 const { runSectionAssociationCron } = require('../src/sectionAssociations/cron');
 const { validateWorkerEnvironment } = require('../src/sectionAssociations/config');
@@ -18,8 +17,6 @@ async function main(env = process.env, dependencies = {}) {
     if (tenant.protocol !== 'https:' || tenant.username || tenant.password || tenant.search || tenant.hash) {
       throw new Error('BS_URL must be the Brightspace HTTPS origin without credentials, query, or fragment.');
     }
-    const missingScopes = ['organizations:organization:read', 'orgunits:course:update'].filter(scope => !hasScope(env.BS_OAUTH2_SCOPES, scope));
-    if (missingScopes.length) throw new Error(`BS_OAUTH2_SCOPES must include: ${missingScopes.join(', ')}`);
     runtime = (dependencies.createRuntime || createSectionAssociationRuntime)({ env, http: axios });
     const result = await (dependencies.runCron || runSectionAssociationCron)({ service: runtime.service, store: runtime.store,
       apiHealthService: runtime.apiHealthService,

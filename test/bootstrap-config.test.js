@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
-  REQUIRED_ENVIRONMENT, LTI_ENVIRONMENT, validateRequiredEnvironment,
+  REQUIRED_ENVIRONMENT, LTI_ENVIRONMENT, REQUIRED_OAUTH_SCOPES, validateRequiredEnvironment,
   ltiConfiguration, registerBrightspacePlatform, installPublicBootstrapEndpoints,
   sectionAssociationTriggerMode, validateWorkerEnvironment, discoveryPeriodsConfiguration
 } = require('../src/sectionAssociations/config');
@@ -18,7 +18,7 @@ function validEnvironment(overrides = {}) {
     BS_OAUTH2_PRIVATE_KEY: 'private-key-placeholder',
     BS_OAUTH2_KEY_ID: 'oauth-key-id',
     BS_OAUTH2_TOKEN_ENDPOINT: 'https://auth.brightspace.com/core/connect/token',
-    BS_OAUTH2_SCOPES: 'organizations:organization:read orgunits:course:update',
+    BS_OAUTH2_SCOPES: 'organizations:organization:read orgunits:course:read orgunits:course:update',
     D2L_API_LP_VERSION: '1.53',
     ...overrides
   };
@@ -90,6 +90,18 @@ test('OAuth service-account settings and exact LP version setting remain require
   ]);
 });
 
+test('web and cron validation enforce all inventory OAuth scopes while retaining wildcard compatibility', () => {
+  const expected = ['organizations:organization:read', 'orgunits:course:read', 'orgunits:course:update'];
+  assert.deepEqual(REQUIRED_OAUTH_SCOPES, expected);
+  for (const validate of [validateRequiredEnvironment, validateWorkerEnvironment]) {
+    const missingRead = validEnvironment({ BS_OAUTH2_SCOPES: 'organizations:organization:read orgunits:course:update' });
+    assert.throws(() => validate(missingRead), /orgunits:course:read/);
+    const missingOrgRead = validEnvironment({ BS_OAUTH2_SCOPES: 'orgunits:course:read orgunits:course:update' });
+    assert.throws(() => validate(missingOrgRead), /organizations:organization:read/);
+    assert.equal(validate(validEnvironment({ BS_OAUTH2_SCOPES: 'organizations:organization:read orgunits:course:*' })), true);
+  }
+});
+
 test('public bootstrap routes expose ping and only the supplied public JWKS', () => {
   const routes = new Map();
   const whitelisted = [];
@@ -132,7 +144,8 @@ test('cron trigger does not start internal scheduler while internal trigger does
 
 test('cron worker validation does not require APP_LTI_SECRET or any LTI registration values', () => {
   const env = Object.fromEntries(['DB_MONGODB_URL','BS_URL','BS_OAUTH2_CLIENT_ID','BS_OAUTH2_PRIVATE_KEY','BS_OAUTH2_KEY_ID',
-    'BS_OAUTH2_TOKEN_ENDPOINT','BS_OAUTH2_SCOPES','D2L_API_LP_VERSION','SECTION_ASSOCIATION_FIX_DRY_RUN'].map(key => [key, 'configured']));
+    'BS_OAUTH2_TOKEN_ENDPOINT','D2L_API_LP_VERSION','SECTION_ASSOCIATION_FIX_DRY_RUN'].map(key => [key, 'configured']));
+  env.BS_OAUTH2_SCOPES = 'organizations:organization:read orgunits:course:read orgunits:course:update';
   env.D2L_API_LP_VERSION = '1.53';
   assert.equal(validateWorkerEnvironment(env), true);
   delete env.SECTION_ASSOCIATION_FIX_DRY_RUN;

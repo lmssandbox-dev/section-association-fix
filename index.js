@@ -5,7 +5,6 @@ require('dotenv').config();
 const axios = require('axios');
 const lti = require('ltijs').Provider;
 const { databaseConfig } = require('./src/shared/database');
-const { hasScope } = require('./src/shared/client');
 const { startSectionAssociationTrigger } = require('./src/sectionAssociations/trigger');
 const { createSectionAssociationRuntime, positiveInteger } = require('./src/sectionAssociations/runtime');
 const { discoveryScope } = require('./src/sectionAssociations/service');
@@ -16,10 +15,7 @@ const { createManualExecutionController } = require('./src/sectionAssociations/m
 
 const env = process.env;
 const port = Number(env.PORT || 3000);
-const {
-  DB_MONGODB_URL, APP_LTI_SECRET, BS_URL,
-  BS_OAUTH2_SCOPES
-} = env;
+const { DB_MONGODB_URL, APP_LTI_SECRET, BS_URL } = env;
 validateRequiredEnvironment(env);
 const triggerMode = sectionAssociationTriggerMode(env);
 const D2L_API_LP_VERSION = process.env.D2L_API_LP_VERSION;
@@ -29,8 +25,6 @@ const brightspace = new URL(BS_URL);
 if (brightspace.protocol !== 'https:' || brightspace.username || brightspace.password || brightspace.search || brightspace.hash) {
   throw new Error('BS_URL must be the Brightspace HTTPS origin without credentials, query, or fragment.');
 }
-const missingScopes = ['organizations:organization:read', 'orgunits:course:update'].filter(scope => !hasScope(BS_OAUTH2_SCOPES, scope));
-if (missingScopes.length) throw new Error(`BS_OAUTH2_SCOPES must include: ${missingScopes.join(', ')}`);
 if (!/^\d+$/.test(String(port)) || port < 1 || port > 65535) throw new Error('PORT must be a valid TCP port.');
 
 const runtime = createSectionAssociationRuntime({ env, http: axios });

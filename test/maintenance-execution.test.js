@@ -100,7 +100,7 @@ test('manual one-shot invocation passes manual source into the shared persisted 
     BS_URL: 'https://tenant.brightspace.com', BS_OAUTH2_CLIENT_ID: 'client',
     BS_OAUTH2_PRIVATE_KEY: 'private-key', BS_OAUTH2_KEY_ID: 'key-id',
     BS_OAUTH2_TOKEN_ENDPOINT: 'https://auth.brightspace.com/core/connect/token',
-    BS_OAUTH2_SCOPES: 'organizations:organization:read orgunits:course:update',
+    BS_OAUTH2_SCOPES: 'organizations:organization:read orgunits:course:read orgunits:course:update',
     D2L_API_LP_VERSION: '1.53', SECTION_ASSOCIATION_FIX_DRY_RUN: 'true' };
   const code = await runOneShot(env, { argv: ['node', 'scripts/run-section-association.js', '--manual'],
     createRuntime() { return { service: { async fastTick() { return { status: 'completed', ...stats }; } }, store,
