@@ -90,7 +90,7 @@ function assessOAuthScopes(configuredScopes = '', inventory = API_HEALTH_INVENTO
     if (actions.some(action => !/^[A-Za-z][A-Za-z0-9]*$/.test(action))) return true;
     return actions.some(action => !requiredSet.has(`${parts[0]}:${parts[1]}:${action}`));
   }).map(scope => {
-    const scopeLike = /^[A-Za-z][A-Za-z0-9_*]*:[A-Za-z][A-Za-z0-9_*]*:[A-Za-z][A-Za-z0-9_*,]*$/.test(scope);
+    const scopeLike = /^[A-Za-z][A-Za-z0-9_]*:(?:[A-Za-z][A-Za-z0-9_]*|\*):(?:[A-Za-z][A-Za-z0-9_]*(?:,[A-Za-z][A-Za-z0-9_]*)*|\*)$/.test(scope);
     return { scope: scopeLike ? scope : 'Unrecognized value (hidden)',
       status: scopeLike ? 'Excessive or overly broad' : 'Malformed scope value (hidden)' };
   });

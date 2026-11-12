@@ -73,6 +73,8 @@ function executionHtml(run){
   if(run.monitoringActivities?.children===true&&Number.isSafeInteger(run.childChecksAttempted)){
     const line=['Child checks: '+count(run.childChecksSucceeded)+'/'+count(run.childChecksAttempted)];
     if(Number.isSafeInteger(run.childChangesDetected))line.push('Changes: '+count(run.childChangesDetected));
+    if(Number.isSafeInteger(run.reconciliationsCompleted))line.push('Reconciled: '+count(run.reconciliationsCompleted));
+    if(Number.isSafeInteger(run.childChangeReconciliationsDeferred))line.push('Deferred: '+count(run.childChangeReconciliationsDeferred));
     if(Number.isSafeInteger(run.childMappingRefreshesRequired))line.push('Mapping refreshes: '+count(run.childMappingRefreshesRequired));
     if(Number.isSafeInteger(run.childMonitoringLag))line.push('Backlog: '+count(run.childMonitoringLag));
     monitoring.push(line.join(' · '));

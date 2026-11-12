@@ -286,6 +286,48 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
     }
     return selected;
   }
+  async function listNewWork({ limit, stabilityCutoff }) {
+    const { associations } = await collections();
+    if (limit <= 0) return [];
+    return queryBucket(associations, { namespace, baseline: { $ne: true }, status: 'pending',
+      lastCheckedAt: { $exists: false }, firstSeenAt: { $lte: stabilityCutoff } }, limit, 'new');
+  }
+  async function listPendingChildChangeWork({ limit }) {
+    const { associations } = await collections();
+    if (limit <= 0) return [];
+    return (await associations.find({ namespace, status: { $in: ['completed', 'pending'] }, reconciliationVersion: 1,
+      pendingChildChanges: { $exists: true, $ne: [] } })
+      .sort({ 'pendingChildChanges.0.detectionTimestamp': 1, lastCheckedAt: 1, associationOrgUnitId: 1 })
+      .limit(limit).toArray()).map(item => ({ ...item, workType: 'child-change' }));
+  }
+  async function countPendingChildChangeWork() {
+    const { associations } = await collections();
+    return associations.countDocuments({ namespace, status: { $in: ['completed', 'pending'] }, reconciliationVersion: 1,
+      pendingChildChanges: { $exists: true, $ne: [] } });
+  }
+  async function listRoutineFastWork({ limit, excludeIds = [] }) {
+    const { associations } = await collections();
+    if (limit <= 0) return [];
+    const selected = [];
+    const seen = new Set();
+    const buckets = [
+      ['pending', { namespace, baseline: { $ne: true }, status: 'pending', lastCheckedAt: { $exists: true },
+        ...(excludeIds.length ? { associationOrgUnitId: { $nin: excludeIds.map(String) } } : {}) }],
+      ['historical', { namespace, baseline: true, ...(excludeIds.length ? { associationOrgUnitId: { $nin: excludeIds.map(String) } } : {}), $or: [
+        { status: 'pending' },
+        { status: 'completed', $or: [{ reconciliationVersion: { $ne: 1 } },
+          { lastReconciledAt: { $exists: false } }, { lastVerifiedAt: { $exists: false } }] }
+      ] }]
+    ];
+    for (const [workType, filter] of buckets) {
+      for (const item of await queryBucket(associations, filter, limit - selected.length, workType)) {
+        const id = String(item.associationOrgUnitId);
+        if (!seen.has(id)) { seen.add(id); selected.push(item); }
+      }
+      if (selected.length >= limit) break;
+    }
+    return selected;
+  }
   async function listWaitingNew({ stabilityCutoff, limit = 1000 }) {
     const { associations } = await collections();
     return associations.find({ namespace, baseline: { $ne: true }, status: 'pending',
@@ -329,20 +371,25 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
     return associations.countDocuments({ namespace, status: 'completed', reconciliationVersion: 1,
       lastVerifiedAt: { $lte: reverifyBefore } });
   }
-  async function listMonitoringWork({ kind, periods, limit, windowKey, attemptCutoff }) {
+  async function listMonitoringWork({ kind, periods, limit, windowKey, inspectionCutoff, attemptCutoff, excludeIds = [] }) {
     const { associations } = await collections();
     if (!['children', 'status'].includes(kind) || !Array.isArray(periods) || !periods.length || limit <= 0) return [];
     const periodPattern = new RegExp(`(?:${periods.join('|')})`);
     const query = { namespace, status: 'completed', reconciliationVersion: 1,
-      associationCode: { $regex: periodPattern } };
+      associationCode: { $regex: periodPattern }, ...(excludeIds.length ? {
+        associationOrgUnitId: { $nin: excludeIds.map(String) } } : {}) };
     const timestamp = kind === 'children' ? 'lastSuccessfulChildInspectionAt' : 'lastSuccessfulStatusVerificationAt';
-    const attemptTimestamp = kind === 'children' ? 'lastChildInspectionAttemptAt' : 'lastStatusVerificationAttemptAt';
-    // A window marker prevents a fast record from cycling ahead of unchecked records.
-    query.$or = [{ [timestamp]: { $exists: false } }, { [timestamp]: { $lt: windowKey } }];
+    const attemptTimestamp = kind === 'children' ? 'childInspectionFailureCooldownUntil' : 'lastStatusVerificationAttemptAt';
+    if (kind === 'children' && inspectionCutoff) {
+      query.$and = [{ $or: [{ [timestamp]: { $exists: false } }, { [timestamp]: { $lte: inspectionCutoff } }] }];
+    }
+    if (kind === 'status' && windowKey) {
+      query.$and = [{ $or: [{ [timestamp]: { $exists: false } }, { [timestamp]: { $lt: windowKey } }] }];
+    }
     if (attemptCutoff) {
-      query.$and = [{ $or: [{ [timestamp]: { $exists: false } }, { [timestamp]: { $lt: windowKey } }] },
-        { $or: [{ [attemptTimestamp]: { $exists: false } }, { [attemptTimestamp]: { $lte: attemptCutoff } }] }];
-      delete query.$or;
+      const attemptDue = { $or: [{ [attemptTimestamp]: { $exists: false } }, { [attemptTimestamp]: { $lte: attemptCutoff } }] };
+      if (query.$and) query.$and.push(attemptDue);
+      else query.$or = attemptDue.$or;
     }
     return associations.find(query).sort({ [timestamp]: 1, firstSeenAt: 1, associationOrgUnitId: 1 }).limit(limit).toArray();
   }
@@ -352,7 +399,7 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
     const timestamp = kind === 'children' ? 'lastSuccessfulChildInspectionAt' : 'lastSuccessfulStatusVerificationAt';
     return associations.countDocuments({ namespace, status: 'completed', reconciliationVersion: 1,
       associationCode: { $regex: new RegExp(`(?:${periods.join('|')})`) },
-      $or: [{ [timestamp]: { $exists: false } }, { [timestamp]: { $lt: before } }] });
+      $or: [{ [timestamp]: { $exists: false } }, { [timestamp]: { $lte: before } }] });
   }
   async function countRecoveryWork({ stabilityCutoff, blockedBefore }) {
     const { associations } = await collections();
@@ -603,7 +650,7 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
   async function close() { if (!mongoClient) await client.close(); }
   return { get, record, baselineStatus, beginBaseline, finishBaseline, releaseBaseline, recordDiscovery, recordDiscoveries,
     recordPotentialMissing, confirmMissing,
-    listFastWork, listWaitingNew, listRecoveryWork, countHistoricalBacklog, countDueCompleted, listMonitoringWork, countDueMonitoring, countRecoveryWork,
+    listFastWork, listNewWork, listPendingChildChangeWork, countPendingChildChangeWork, listRoutineFastWork, listWaitingNew, listRecoveryWork, countHistoricalBacklog, countDueCompleted, listMonitoringWork, countDueMonitoring, countRecoveryWork,
     lastFullDiscoveryAt, markFullDiscoveryCompleted,
     acquireCronLease, renewCronLease, releaseCronLease, cronLeaseStatus, recoveryDue, markRecoveryCompleted,
     saveMaintenanceExecution, latestMaintenanceExecution, recentMaintenanceExecutions, allMaintenanceExecutions,

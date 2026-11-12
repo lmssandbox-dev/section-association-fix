@@ -11,6 +11,10 @@ const { createSectionAssociationService } = require('./service');
 const { createApiHealthService } = require('./apiHealth');
 const { discoveryPeriodsConfiguration } = require('./config');
 
+const RUNTIME_DEFAULTS = Object.freeze({ stabilityMinutes: 5, fastIntervalMinutes: 5,
+  recoveryIntervalHours: 4, maxReconciliationsPerRun: 50, completedReverifyHours: 24,
+  childMonitoringBatchSize: 320, statusVerificationBatchSize: 150 });
+
 function createSectionAssociationRuntime({ env = process.env, http, logger = console }) {
   const brightspace = new URL(env.BS_URL);
   const namespace = createHash('sha256').update(`${brightspace.origin}|${env.BS_OAUTH2_CLIENT_ID}`).digest('hex');
@@ -28,13 +32,13 @@ function createSectionAssociationRuntime({ env = process.env, http, logger = con
     lpVersion: env.D2L_API_LP_VERSION });
   const store = createSectionAssociationStore({ uri: env.DB_MONGODB_URL, namespace });
   const dryRun = !/^(false|0|no)$/i.test(env.SECTION_ASSOCIATION_FIX_DRY_RUN || 'true');
-  const stabilityMinutes = positiveInteger(env.SECTION_ASSOCIATION_FIX_STABILITY_MINUTES, 10);
-  const fastIntervalMinutes = positiveInteger(env.SECTION_ASSOCIATION_FIX_FAST_INTERVAL_MINUTES, 15);
-  const recoveryIntervalHours = positiveInteger(env.SECTION_ASSOCIATION_FIX_RECOVERY_INTERVAL_HOURS, 4);
-  const maxReconciliationsPerRun = positiveInteger(env.SECTION_ASSOCIATION_FIX_MAX_RECONCILIATIONS_PER_RUN, 50);
-  const completedReverifyHours = positiveInteger(env.SECTION_ASSOCIATION_FIX_COMPLETED_REVERIFY_HOURS, 24);
-  const childMonitoringBatchSize = positiveInteger(env.SECTION_ASSOCIATION_FIX_CHILD_MONITOR_BATCH_SIZE, 125);
-  const statusVerificationBatchSize = positiveInteger(env.SECTION_ASSOCIATION_FIX_STATUS_VERIFY_BATCH_SIZE, 150);
+  const stabilityMinutes = positiveInteger(env.SECTION_ASSOCIATION_FIX_STABILITY_MINUTES, RUNTIME_DEFAULTS.stabilityMinutes);
+  const fastIntervalMinutes = positiveInteger(env.SECTION_ASSOCIATION_FIX_FAST_INTERVAL_MINUTES, RUNTIME_DEFAULTS.fastIntervalMinutes);
+  const recoveryIntervalHours = positiveInteger(env.SECTION_ASSOCIATION_FIX_RECOVERY_INTERVAL_HOURS, RUNTIME_DEFAULTS.recoveryIntervalHours);
+  const maxReconciliationsPerRun = positiveInteger(env.SECTION_ASSOCIATION_FIX_MAX_RECONCILIATIONS_PER_RUN, RUNTIME_DEFAULTS.maxReconciliationsPerRun);
+  const completedReverifyHours = positiveInteger(env.SECTION_ASSOCIATION_FIX_COMPLETED_REVERIFY_HOURS, RUNTIME_DEFAULTS.completedReverifyHours);
+  const childMonitoringBatchSize = positiveInteger(env.SECTION_ASSOCIATION_FIX_CHILD_MONITOR_BATCH_SIZE, RUNTIME_DEFAULTS.childMonitoringBatchSize);
+  const statusVerificationBatchSize = positiveInteger(env.SECTION_ASSOCIATION_FIX_STATUS_VERIFY_BATCH_SIZE, RUNTIME_DEFAULTS.statusVerificationBatchSize);
   const discoveryConfiguration = discoveryPeriodsConfiguration(env);
   const reconciler = createReconciler({ client, store, dryRun, logger });
   const service = createSectionAssociationService({ client, store, reconciler, stabilityMinutes,
@@ -57,4 +61,4 @@ function positiveInteger(value, fallback) {
   return parsed;
 }
 
-module.exports = { createSectionAssociationRuntime, positiveInteger };
+module.exports = { createSectionAssociationRuntime, positiveInteger, RUNTIME_DEFAULTS };

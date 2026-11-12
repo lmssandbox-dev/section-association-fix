@@ -511,19 +511,19 @@ test('first successful discovery records baseline history and sends it through t
   assert.equal(reconciles, 1);
 });
 
-test('pending associations wait ten minutes and completed associations are skipped', async () => {
+test('pending associations wait five minutes from firstSeenAt and completed associations are skipped', async () => {
   let time = Date.parse('2026-10-18T15:00:00Z');
   const store = serviceMemoryStore(() => time);
   const seen = [];
   const logger = captureLogger();
   const service = createSectionAssociationService({ client: { async associationCandidates() { return [association]; } }, store,
     reconciler: { async reconcileAssociation(id) { seen.push(id); await store.record(id, { status: 'completed', reconciliationVersion: 1, lastReconciledAt: new Date(time), lastVerifiedAt: new Date(time) }); return { status: 'completed' }; } },
-    stabilityMinutes: 10, now: () => time, logger });
+    stabilityMinutes: 5, now: () => time, logger });
   await service.fastTick();
   assert.equal(seen.length, 0);
   assert.equal(logger.lines.filter(line => line === '[section-association] pending associationId=33664 reason=stability-window').length, 1);
   assert.ok(logger.lines.includes('[section-association] discovery completed candidates=1 new=1 alreadyKnown=0'));
-  time += 10 * 60000;
+  time += 5 * 60000;
   await service.fastTick();
   assert.deepEqual(seen, ['33664']);
   assert.equal(logger.lines.filter(line => line === '[section-association] pending associationId=33664 reason=stability-window').length, 1);

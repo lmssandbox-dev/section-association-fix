@@ -47,6 +47,9 @@ test('OAuth scope assessment distinguishes required, missing, excessive, and wil
   const broad = assessOAuthScopes('organizations:organization:read orgunits:course:* extra:feature:read');
   assert.equal(broad.required.find(item => item.scope === 'orgunits:course:update').coverage, 'wildcard');
   assert.deepEqual(broad.excessive.map(item => item.scope), ['orgunits:course:*', 'extra:feature:read']);
+  const malformedWildcard = assessOAuthScopes('organizations:organization:read orgunits:course:rea*d');
+  assert.equal(malformedWildcard.excessive[0].scope, 'Unrecognized value (hidden)');
+  assert.equal(JSON.stringify(malformedWildcard).includes('orgunits:course:rea*d'), false);
   const malformed = assessOAuthScopes('organizations:organization:read orgunits:course:read orgunits:course:update client-private-key');
   assert.equal(JSON.stringify(malformed).includes('client-private-key'), false);
   const combined = assessOAuthScopes('organizations:organization:read orgunits:course:read,update');

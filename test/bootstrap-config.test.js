@@ -8,6 +8,7 @@ const {
   sectionAssociationTriggerMode, validateWorkerEnvironment, discoveryPeriodsConfiguration
 } = require('../src/sectionAssociations/config');
 const { startSectionAssociationTrigger } = require('../src/sectionAssociations/trigger');
+const { RUNTIME_DEFAULTS } = require('../src/sectionAssociations/runtime');
 
 function validEnvironment(overrides = {}) {
   return {
@@ -20,6 +21,7 @@ function validEnvironment(overrides = {}) {
     BS_OAUTH2_TOKEN_ENDPOINT: 'https://auth.brightspace.com/core/connect/token',
     BS_OAUTH2_SCOPES: 'organizations:organization:read orgunits:course:read orgunits:course:update',
     D2L_API_LP_VERSION: '1.53',
+    SECTION_ASSOCIATION_FIX_DRY_RUN: 'true',
     ...overrides
   };
 }
@@ -129,6 +131,12 @@ test('trigger mode defaults to cron and rejects ambiguous values', () => {
   assert.equal(sectionAssociationTriggerMode({}), 'cron');
   assert.equal(sectionAssociationTriggerMode({ SECTION_ASSOCIATION_FIX_TRIGGER_MODE: 'internal' }), 'internal');
   assert.throws(() => sectionAssociationTriggerMode({ SECTION_ASSOCIATION_FIX_TRIGGER_MODE: 'automatic' }), /must be either cron or internal/);
+});
+
+test('runtime defaults use five-minute discovery/stability and 320-association monitoring', () => {
+  assert.deepEqual(RUNTIME_DEFAULTS, { stabilityMinutes: 5, fastIntervalMinutes: 5,
+    recoveryIntervalHours: 4, maxReconciliationsPerRun: 50, completedReverifyHours: 24,
+    childMonitoringBatchSize: 320, statusVerificationBatchSize: 150 });
 });
 
 test('cron trigger does not start internal scheduler while internal trigger does', () => {

@@ -46,11 +46,6 @@ function isHistoricalDiscoveryWindow(value = Date.now()) {
   return hour === 23 || hour === 0;
 }
 
-function localHourKey(value = Date.now()) {
-  const { year, month, day, hour } = localParts(value);
-  return new Date(Date.UTC(year, month - 1, day, hour) - localOffsetMs(value));
-}
-
 function localDayStart(value = Date.now()) {
   const { year, month, day } = localParts(value);
   return new Date(Date.UTC(year, month - 1, day) - localOffsetMs(value));
@@ -75,9 +70,9 @@ function fullDiscoveryDue(lastCompletedAt, value = Date.now()) {
   return !lastCompletedAt || historicalWindowKey(lastCompletedAt) !== historicalWindowKey(value);
 }
 
-function createSectionAssociationService({ client, store, reconciler, stabilityMinutes = 10,
+function createSectionAssociationService({ client, store, reconciler, stabilityMinutes = 5,
   maxReconciliationsPerRun = 50, recoveryIntervalHours = 4, completedReverifyHours = 24,
-  discoveryConfiguration = { mode: 'auto', periods: [] }, childMonitoringBatchSize = 125,
+  discoveryConfiguration = { mode: 'auto', periods: [] }, childMonitoringBatchSize = 320,
   statusVerificationBatchSize = 150, debugAssociationId = '', now = Date.now, logger = console }) {
   let busy = false;
   const stabilityLogged = new Set();
@@ -121,7 +116,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
   }
 
   function countStatus(stats, result) {
-    if (result?.status === 'completed') stats.completed++;
+    if (result?.status === 'completed') { stats.completed++; stats.reconciliationsCompleted++; }
     else if (result?.status === 'blocked') stats.blocked++;
     else stats.pending++;
     stats.associationsChecked++;
@@ -411,11 +406,12 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     return 'unknown-mapping-validation-failure';
   }
 
-  async function monitorChildren(stats, execution, remaining) {
+  async function monitorChildren(stats, execution, remaining, excludeIds = []) {
     if (!isRegularOperationsWindow(now()) || typeof store.listMonitoringWork !== 'function') return;
     const time = now();
     const items = await store.listMonitoringWork({ kind: 'children', periods: monitoringPeriods(time),
-      limit: childMonitoringBatchSize, windowKey: localHourKey(time), attemptCutoff: new Date(time - 60 * 60000) });
+      limit: childMonitoringBatchSize, inspectionCutoff: new Date(time - 10 * 60000),
+      attemptCutoff: new Date(time), excludeIds });
     stats.monitoringPeriods = monitoringPeriods(time);
     stats.monitoringActivities.children = true;
     const attemptField = 'lastChildInspectionAttemptAt';
@@ -458,6 +454,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
         currentRows = await client.children(id);
       } catch (error) {
         stats.monitoringErrors++;
+        await store.record(id, { childInspectionFailureCooldownUntil: new Date(now() + 15 * 60000) });
         logEvent(logger, 'warn', 'child monitoring failed', safeErrorFields(error, { associationId: id, phase: 'children-read' }));
         if (diagnostic) {
           diagnostic.childReadSucceeded = false;
@@ -528,10 +525,11 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
             await writeChildChangeAudit(row, execution);
           }
         }
-      } else {
-        await store.record(id, { lastSuccessfulChildInspectionAt: new Date(now()) });
-        if (diagnostic) diagnostic.successfulInspectionTimestampUpdated = true;
       }
+      // A successful response advances rotation after any detected change is durable.
+      // Deferred changes have their own queue and remain eligible independently.
+      await store.record(id, { lastSuccessfulChildInspectionAt: new Date(now()) });
+      if (diagnostic) diagnostic.successfulInspectionTimestampUpdated = true;
       stats.childChecksSucceeded++;
     }
     stats.childChangesDetected += childChangesDetected;
@@ -539,17 +537,17 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     stats.childMappingRefreshesRequired += mappingRefreshesRequired;
     stats.mappingRefreshesRequired += mappingRefreshesRequired;
     const scheduled = changed.slice(0, remaining);
-    const processedResults = scheduled.length ? await processWork(scheduled, stats, execution) : new Map();
+    if (scheduled.length) await processWork(scheduled, stats, execution);
     for (let index = 0; index < changed.length; index++) {
       const id = String(changed[index].associationOrgUnitId);
       const diagnostic = targetedDiagnostics.get(id);
       if (!diagnostic) continue;
       diagnostic.reconciliationDisposition = index < remaining ? 'scheduled' : 'deferred-capacity';
-      const result = processedResults.get(id);
-      diagnostic.successfulInspectionTimestampUpdated = result?.status === 'completed';
     }
     for (const diagnostic of targetedDiagnostics.values()) logEvent(logger, 'info', 'child monitoring diagnostic', diagnostic);
-    stats.childMonitoringLag = await store.countDueMonitoring?.({ kind: 'children', periods: monitoringPeriods(time), before: localHourKey(time) }) ?? null;
+    stats.childMonitoringLag = await store.countDueMonitoring?.({ kind: 'children', periods: monitoringPeriods(time),
+      before: new Date(time - 10 * 60000) }) ?? null;
+    return scheduled.map(item => String(item.associationOrgUnitId));
   }
 
   async function verifyCachedTargets(stats, execution, reconciliationLimit) {
@@ -598,15 +596,18 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     const remaining = Math.max(0, reconciliationLimit - stats.processedThisRun);
     stats.statusMappingRefreshesRequired += mappingRefreshesRequired;
     stats.mappingRefreshesRequired += mappingRefreshesRequired;
-    if (reconcile.length && remaining) await processWork(reconcile.slice(0, remaining), stats, execution);
+    const scheduled = reconcile.slice(0, remaining);
+    if (scheduled.length) await processWork(scheduled, stats, execution);
     stats.statusChangesDetected += statusChangesDetected;
     stats.statusMonitoringLag = await store.countDueMonitoring?.({ kind: 'status', periods: monitoringPeriods(time), before: localDayStart(time) }) ?? null;
+    return scheduled.map(item => String(item.associationOrgUnitId));
   }
 
   function newStats(discovered = 0) {
     return { candidates: discovered, discovered, new: 0, alreadyKnown: 0, pending: 0, historicalPending: 0,
       blocked: 0, completed: 0, dueForReverification: 0, processedThisRun: 0, remainingHistoricalBacklog: null,
       associationsChecked: 0, associationsAlreadyCompliant: 0, correctionsApplied: 0, errors: 0,
+      reconciliationsCompleted: 0, childChangeReconciliationsDeferred: null,
       writesAttempted: 0, writesVerified: 0, alreadyInactive: 0, childChecksAttempted: 0, childChecksSucceeded: 0,
       childChangesDetected: 0, childMonitoringLag: null, statusChecksAttempted: 0, statusChecksSucceeded: 0,
       statusChangesDetected: 0, statusMonitoringLag: null, monitoringErrors: 0, mappingRefreshesRequired: 0,
@@ -650,16 +651,40 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
           stats.pending++;
           logStabilityWait(item.associationOrgUnitId);
         }
+      }
+      if (!recovery && typeof store.listNewWork === 'function' && typeof store.listRoutineFastWork === 'function') {
+        const priorityShare = Math.ceil(maxReconciliations / 3);
+        const newItems = await store.listNewWork({ limit: priorityShare, stabilityCutoff });
+        await processWork(newItems, stats, execution);
+        const excludedIds = newItems.map(item => String(item.associationOrgUnitId));
+        const remainingAfterNew = Math.max(0, maxReconciliations - stats.processedThisRun);
+        const childItems = await store.listPendingChildChangeWork?.({ limit: Math.min(priorityShare, remainingAfterNew) }) || [];
+        const childBefore = stats.processedThisRun;
+        await processWork(childItems, stats, execution);
+        excludedIds.push(...childItems.map(item => String(item.associationOrgUnitId)));
+        const alreadyUsedForChanges = stats.processedThisRun - childBefore;
+        phase = 'monitoring';
+        if (isRegularOperationsWindow(time)) excludedIds.push(...await monitorChildren(stats, execution,
+          Math.max(0, priorityShare - alreadyUsedForChanges), childItems.map(item => String(item.associationOrgUnitId))) || []);
+        else if (isReverificationWindow(time)) excludedIds.push(...await verifyCachedTargets(stats, execution,
+          Math.max(0, priorityShare - alreadyUsedForChanges)) || []);
+        const routineLimit = Math.max(0, maxReconciliations - stats.processedThisRun);
+        const routineItems = await store.listRoutineFastWork({ limit: routineLimit, stabilityCutoff, excludeIds: excludedIds });
+        await processWork(routineItems, stats, execution);
+      } else if (!recovery) {
         const items = await store.listFastWork({ limit: maxReconciliations, stabilityCutoff,
           includeCompletedReverification: false, reverifyBefore: new Date(time - completedReverifyMs) });
         await processWork(items, stats, execution);
-      }
-      if (!recovery) {
         phase = 'monitoring';
         if (isRegularOperationsWindow(time)) await monitorChildren(stats, execution,
           Math.max(0, maxReconciliations - stats.processedThisRun));
         else if (isReverificationWindow(time)) await verifyCachedTargets(stats, execution, maxReconciliations);
+      } else {
+        phase = 'monitoring';
+        if (isReverificationWindow(time)) await verifyCachedTargets(stats, execution,
+          Math.max(0, maxReconciliations - stats.processedThisRun));
       }
+      stats.childChangeReconciliationsDeferred = await store.countPendingChildChangeWork?.() ?? null;
       stats.remainingHistoricalBacklog = await store.countHistoricalBacklog();
       succeeded = true;
       return { status: 'completed', ...stats, recoveryComplete };
