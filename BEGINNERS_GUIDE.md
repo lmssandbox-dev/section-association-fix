@@ -22,7 +22,9 @@ The default batch is **320 association offerings inspected** per eligible run. I
 
 Under normal conditions, allow about **5–10 minutes** for discovery of a new association and for the next inspection to detect an incremental child change. These are operating targets, not guaranteed service levels. Processing time, Brightspace availability, API limits, failed reads, or a large backlog can make detection or deactivation take longer. Detection and completed deactivation are separate steps.
 
-The full-reconciliation limit is 50 associations per run. The worker reserves capacity for newly eligible associations and detected child changes, then uses available slots for routine work. If a change cannot be reconciled in that run, it stays recorded and is retried later.
+The app can complete full reconciliation for up to **50 association offerings per run**. A full reconciliation checks the whole association and its original offerings, and may safely inactivate originals when live updates are enabled. New associations and detected section changes receive priority. When one type of work does not need all of its reserved capacity, other eligible work can use those slots. The 50 limit is a maximum, not a target the app must always reach; a run may do less when fewer than 50 associations need reconciliation. If a change cannot be reconciled in that run, it stays recorded and is retried later.
+
+These full reconciliations are separate from the daytime section inspections described above. Every five minutes, the app can inspect up to 320 already-known association offerings for child-section changes. An inspection reads and compares sections; it does not necessarily require a full reconciliation.
 
 ## Daytime and nighttime schedule
 

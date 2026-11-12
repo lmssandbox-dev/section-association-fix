@@ -35,6 +35,19 @@ test('cron runs one fast cycle, runs due recovery, persists completion, and exit
   assert.ok(h.logs.some(line => /^\[section-association\] cron completed status=completed elapsedMs=\d+$/.test(line)));
 });
 
+test('due recovery receives only the reconciliation capacity left by the fast cycle',async()=>{
+  const calls=[];
+  const store={async acquireCronLease(){return'lease'},async renewCronLease(){},async releaseCronLease(){},
+    async recoveryDue(){return true},async markRecoveryCompleted(){}};
+  const service={async fastTick({maxReconciliations}){calls.push(['fast-cap',maxReconciliations]);return{status:'completed',processedThisRun:37}},
+    async recoveryTick({maxReconciliations}){calls.push(['recovery-cap',maxReconciliations]);return{status:'completed',processedThisRun:maxReconciliations}}};
+  const result=await runSectionAssociationCron({service,store,recoveryIntervalHours:4,maxReconciliationsPerRun:50,
+    logger:{info(){},warn(){},error(){}},setIntervalFn(){return 1},clearIntervalFn(){}});
+  assert.equal(result.status,'completed');
+  assert.deepEqual(calls,[['fast-cap',50],['recovery-cap',13]]);
+  assert.equal(37+calls[1][1],50);
+});
+
 test('recovery due state persists across separate cron invocations', async () => {
   let lastRecoveryAt = null;
   const calls = [];

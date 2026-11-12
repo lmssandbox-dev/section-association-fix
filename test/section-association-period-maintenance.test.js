@@ -278,6 +278,68 @@ test('fast reconciliation capacity gives new, child-change, and routine work bou
   assert.equal(calls.filter(([,id])=>String(id).startsWith('routine-')).length,16);
 });
 
+test('fast reconciliation work-conserves unused priority allocations without duplicates or exceeding the cap',async()=>{
+  const time=Date.parse('2026-11-06T15:15:00Z');
+  const rows=(prefix,count)=>Array.from({length:count},(_,index)=>({associationOrgUnitId:`${prefix}-${index}`,
+    associationCode:'ESPM-2602-GS2-C0011'}));
+  async function runScenario({newCount=0,childCount=0,routineCount=0,cap=50}){
+    const calls=[]; const newRows=rows('new',newCount), childRows=rows('child',childCount), routineRows=rows('routine',routineCount);
+    const take=(items,limit,excludeIds=[])=>items.filter(row=>!excludeIds.includes(String(row.associationOrgUnitId))).slice(0,limit);
+    const store={async baselineStatus(){return{state:'ready'}},async lastFullDiscoveryAt(){return new Date(time)},
+      async recordDiscoveries(){return{newlyRecorded:0,alreadyKnown:0}},async countHistoricalBacklog(){return 0},
+      async listWaitingNew(){return[]},async listNewWork({limit,excludeIds=[]}){return take(newRows,limit,excludeIds)},
+      async listPendingChildChangeWork({limit,excludeIds=[]}){return take(childRows,limit,excludeIds)},
+      async listRoutineFastWork({limit,excludeIds=[]}){return take(routineRows,limit,excludeIds)}};
+    const service=createSectionAssociationService({client:{async associationCandidates(){return[]}},store,
+      reconciler:{async reconcileAssociation(id){calls.push(String(id));return{status:'completed'}}},
+      maxReconciliationsPerRun:cap,discoveryConfiguration:{mode:'explicit',periods:['2602']},now:()=>time,
+      logger:{info(){},warn(){},error(){}}});
+    const result=await service.fastTick();
+    assert.equal(result.processedThisRun,calls.length);
+    assert.equal(new Set(calls).size,calls.length,'an association must not be processed twice');
+    assert.ok(calls.length<=cap,'the configured reconciliation cap must hold');
+    return {calls,result};
+  }
+
+  const manyNew=await runScenario({newCount:100});
+  assert.equal(manyNew.calls.length,50);
+  assert.equal(manyNew.calls.filter(id=>id.startsWith('new-')).length,50);
+  const fewerNew=await runScenario({newCount:30});
+  assert.equal(fewerNew.calls.length,30);
+  const mixed=await runScenario({newCount:30,childCount:10});
+  assert.equal(mixed.calls.length,40);
+  const childPriority=await runScenario({newCount:100,childCount:20});
+  assert.equal(childPriority.calls.length,50);
+  assert.equal(childPriority.calls.filter(id=>id.startsWith('child-')).length,20);
+  const mixedBacklogs=await runScenario({newCount:40,childCount:20});
+  assert.equal(mixedBacklogs.calls.length,50);
+  assert.equal(mixedBacklogs.calls.filter(id=>id.startsWith('child-')).length,20);
+  assert.equal(mixedBacklogs.calls.filter(id=>id.startsWith('new-')).length,30);
+  const routineFairness=await runScenario({newCount:100,routineCount:100});
+  assert.equal(routineFairness.calls.length,50);
+  assert.equal(routineFairness.calls.filter(id=>id.startsWith('routine-')).length,16);
+  const routineOnly=await runScenario({routineCount:100});
+  assert.equal(routineOnly.calls.length,50);
+  assert.equal(routineOnly.calls.filter(id=>id.startsWith('routine-')).length,50);
+  const empty=await runScenario({});
+  assert.equal(empty.calls.length,0);
+});
+
+test('fast scheduling does not reconcile an association twice when queues overlap',async()=>{
+  const time=Date.parse('2026-11-06T15:15:00Z'); const calls=[];
+  const duplicate={associationOrgUnitId:'same-id',associationCode:'ESPM-2602-GS2-C0011'};
+  const store={async baselineStatus(){return{state:'ready'}},async lastFullDiscoveryAt(){return new Date(time)},
+    async recordDiscoveries(){return{newlyRecorded:0,alreadyKnown:0}},async countHistoricalBacklog(){return 0},
+    async listWaitingNew(){return[]},async listNewWork(){return[duplicate]},
+    async listPendingChildChangeWork(){return[duplicate]},async listRoutineFastWork(){return[duplicate]}};
+  const service=createSectionAssociationService({client:{async associationCandidates(){return[]}},store,
+    reconciler:{async reconcileAssociation(id){calls.push(id);return{status:'completed'}}},
+    discoveryConfiguration:{mode:'explicit',periods:['2602']},now:()=>time,logger:{info(){},warn(){},error(){}}});
+  const result=await service.fastTick();
+  assert.deepEqual(calls,['same-id']);
+  assert.equal(result.processedThisRun,1);
+});
+
 test('daytime child monitoring ignores response order and routes changed snapshots through full reconciliation', async () => {
   const time = Date.parse('2026-10-18T15:15:00Z');
   const saved = [{ id:'12', code:'002521-01-2602-GS2-EL1S-00001' }, { id:'13', code:'002521-01-2602-GS2-EL1T-00002' }];

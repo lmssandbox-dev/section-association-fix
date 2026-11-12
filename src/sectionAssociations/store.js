@@ -286,17 +286,19 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
     }
     return selected;
   }
-  async function listNewWork({ limit, stabilityCutoff }) {
+  async function listNewWork({ limit, stabilityCutoff, excludeIds = [] }) {
     const { associations } = await collections();
     if (limit <= 0) return [];
     return queryBucket(associations, { namespace, baseline: { $ne: true }, status: 'pending',
-      lastCheckedAt: { $exists: false }, firstSeenAt: { $lte: stabilityCutoff } }, limit, 'new');
+      lastCheckedAt: { $exists: false }, firstSeenAt: { $lte: stabilityCutoff },
+      ...(excludeIds.length ? { associationOrgUnitId: { $nin: excludeIds.map(String) } } : {}) }, limit, 'new');
   }
-  async function listPendingChildChangeWork({ limit }) {
+  async function listPendingChildChangeWork({ limit, excludeIds = [] }) {
     const { associations } = await collections();
     if (limit <= 0) return [];
     return (await associations.find({ namespace, status: { $in: ['completed', 'pending'] }, reconciliationVersion: 1,
-      pendingChildChanges: { $exists: true, $ne: [] } })
+      pendingChildChanges: { $exists: true, $ne: [] },
+      ...(excludeIds.length ? { associationOrgUnitId: { $nin: excludeIds.map(String) } } : {}) })
       .sort({ 'pendingChildChanges.0.detectionTimestamp': 1, lastCheckedAt: 1, associationOrgUnitId: 1 })
       .limit(limit).toArray()).map(item => ({ ...item, workType: 'child-change' }));
   }

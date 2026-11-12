@@ -75,6 +75,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
   discoveryConfiguration = { mode: 'auto', periods: [] }, childMonitoringBatchSize = 320,
   statusVerificationBatchSize = 150, debugAssociationId = '', now = Date.now, logger = console }) {
   let busy = false;
+  let activeAttemptedIds = null;
   const stabilityLogged = new Set();
   const attemptedByExecution = new WeakMap();
   const sampledChildDiagnosticExecutions = new WeakSet();
@@ -261,7 +262,8 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     }
     for (const item of items) {
       const id = String(item.associationOrgUnitId);
-      if (attempted?.has(id)) continue;
+      if (activeAttemptedIds?.has(id) || attempted?.has(id)) continue;
+      activeAttemptedIds?.add(id);
       attempted?.add(id);
       stabilityLogged.delete(id);
       if (item.workType === 'reverify') stats.discoveryActivities.reverification = true;
@@ -626,6 +628,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
       return { status: 'skipped', processedThisRun: 0 };
     }
     busy = true;
+    activeAttemptedIds = new Set();
     let phase = 'discovery';
     let succeeded = false;
     let recoveryComplete = true;
@@ -652,24 +655,53 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
         }
       }
       if (!recovery && typeof store.listNewWork === 'function' && typeof store.listRoutineFastWork === 'function') {
-        const priorityShare = Math.ceil(maxReconciliations / 3);
-        const newItems = await store.listNewWork({ limit: priorityShare, stabilityCutoff });
+        const newShare = Math.ceil(maxReconciliations / 3);
+        const childShare = Math.ceil(maxReconciliations / 3);
+        const routineShare = Math.max(0, maxReconciliations - newShare - childShare);
+        const selectedIds = new Set();
+        const remember = items => { for (const item of items) selectedIds.add(String(item.associationOrgUnitId)); };
+        const newItems = await store.listNewWork({ limit: newShare, stabilityCutoff });
         await processWork(newItems, stats, execution);
-        const excludedIds = newItems.map(item => String(item.associationOrgUnitId));
+        remember(newItems);
         const remainingAfterNew = Math.max(0, maxReconciliations - stats.processedThisRun);
-        const childItems = await store.listPendingChildChangeWork?.({ limit: Math.min(priorityShare, remainingAfterNew) }) || [];
+        const childItems = await store.listPendingChildChangeWork?.({ limit: Math.min(childShare, remainingAfterNew),
+          excludeIds: [...selectedIds] }) || [];
         const childBefore = stats.processedThisRun;
         await processWork(childItems, stats, execution);
-        excludedIds.push(...childItems.map(item => String(item.associationOrgUnitId)));
+        remember(childItems);
         const alreadyUsedForChanges = stats.processedThisRun - childBefore;
         phase = 'monitoring';
-        if (isRegularOperationsWindow(time)) excludedIds.push(...await monitorChildren(stats, execution,
-          Math.max(0, priorityShare - alreadyUsedForChanges), childItems.map(item => String(item.associationOrgUnitId))) || []);
-        else if (isReverificationWindow(time)) excludedIds.push(...await verifyCachedTargets(stats, execution,
-          Math.max(0, priorityShare - alreadyUsedForChanges)) || []);
-        const routineLimit = Math.max(0, maxReconciliations - stats.processedThisRun);
-        const routineItems = await store.listRoutineFastWork({ limit: routineLimit, stabilityCutoff, excludeIds: excludedIds });
+        const childReconciliationCapacity = Math.max(0, Math.min(childShare - alreadyUsedForChanges,
+          maxReconciliations - stats.processedThisRun));
+        if (isRegularOperationsWindow(time)) remember(await monitorChildren(stats, execution,
+          childReconciliationCapacity, [...selectedIds]) || []);
+        else if (isReverificationWindow(time)) remember(await verifyCachedTargets(stats, execution,
+          childReconciliationCapacity) || []);
+        const routineLimit = Math.min(routineShare, Math.max(0, maxReconciliations - stats.processedThisRun));
+        const routineItems = await store.listRoutineFastWork({ limit: routineLimit, stabilityCutoff, excludeIds: [...selectedIds] });
         await processWork(routineItems, stats, execution);
+        remember(routineItems);
+
+        // Priority shares protect each class from starvation. Any share left unused is
+        // offered to the remaining queues, with durable child changes first.
+        let remaining = Math.max(0, maxReconciliations - stats.processedThisRun);
+        if (remaining && typeof store.listPendingChildChangeWork === 'function') {
+          const moreChildItems = await store.listPendingChildChangeWork({ limit: remaining, excludeIds: [...selectedIds] });
+          await processWork(moreChildItems, stats, execution);
+          remember(moreChildItems);
+          remaining = Math.max(0, maxReconciliations - stats.processedThisRun);
+        }
+        if (remaining) {
+          const moreNewItems = await store.listNewWork({ limit: remaining, stabilityCutoff, excludeIds: [...selectedIds] });
+          await processWork(moreNewItems, stats, execution);
+          remember(moreNewItems);
+          remaining = Math.max(0, maxReconciliations - stats.processedThisRun);
+        }
+        if (remaining) {
+          const moreRoutineItems = await store.listRoutineFastWork({ limit: remaining, stabilityCutoff, excludeIds: [...selectedIds] });
+          await processWork(moreRoutineItems, stats, execution);
+          remember(moreRoutineItems);
+        }
       } else if (!recovery) {
         const items = await store.listFastWork({ limit: maxReconciliations, stabilityCutoff,
           includeCompletedReverification: false, reverifyBefore: new Date(time - completedReverifyMs) });
@@ -696,6 +728,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
       stats.errors++;
       return { status: 'failed', phase: errorPhase, code: error?.code, ...stats };
     } finally {
+      activeAttemptedIds = null;
       busy = false;
       if (succeeded) logEvent(logger, 'info', recovery ? 'recovery cycle completed' : 'fast cycle completed', stats);
       logEvent(logger, 'info', `${name} finished`, { status: succeeded ? 'completed' : 'failed', elapsedMs: Math.max(0, now() - startedAt) });

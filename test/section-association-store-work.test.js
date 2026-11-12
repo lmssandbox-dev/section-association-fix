@@ -161,7 +161,9 @@ test('new associations and durable child changes have separate prioritized selec
     item(4,{lastCheckedAt:date(3)})
   ]);
   assert.deepEqual((await store.listNewWork({limit:5,stabilityCutoff:date(0)})).map(row=>row.associationOrgUnitId),['1']);
+  assert.deepEqual(await store.listNewWork({limit:5,stabilityCutoff:date(0),excludeIds:['1']}),[]);
   assert.deepEqual((await store.listPendingChildChangeWork({limit:5})).map(row=>row.associationOrgUnitId),['3']);
+  assert.deepEqual(await store.listPendingChildChangeWork({limit:5,excludeIds:['3']}),[]);
   assert.equal(await store.countPendingChildChangeWork(),1);
   assert.deepEqual((await store.listRoutineFastWork({limit:5,excludeIds:['4']})).map(row=>row.associationOrgUnitId),['2']);
 });
