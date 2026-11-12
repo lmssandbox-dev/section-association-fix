@@ -58,7 +58,9 @@ test('API Health Check read route returns cached results and manual route enforc
 test('API Health Check view is reachable in the existing page with expandable endpoint evidence', () => {
   const page=pageForLaunch('signed-lti-token');
   for(const expected of ['id="apiHealthOpen"','API Health Check','id="apiHealthView"','Back to Dashboard','Run Check','OAuth Scope Configuration',
-    'Diagnostic Operations','Six Operational Endpoint Details','Minimum','Version Health','Contract Verification','X-Requested-With','/api/section-association/api-health']) assert.ok(page.includes(expected),expected);
+    'Six Operational Endpoint Details','Minimum','Version Health','Contract Verification','X-Requested-With','/api/section-association/api-health']) assert.ok(page.includes(expected),expected);
+  assert.doesNotMatch(page,/Diagnostic Operations|healthDiagnostics/);
+  assert.match(page,/<div class="history-header health-header"><h2 id="apiHealthHeading"[^]*?<div class="health-header-actions"><button id="healthRun"[^]*?<button id="apiHealthBack"/);
   assert.match(page,/overflow-x:auto/);assert.match(page,/@media\(max-width:620px\)/);
 });
 
@@ -179,7 +181,7 @@ const execution = { executionId: 'run-1', source: 'manual', startedAt: '2026-10-
 
 async function runPage(fetchImpl) {
   const script = pageForLaunch('signed-lti-token').match(/<script>([\s\S]*?)<\/script>/)[1];
-  const ids = ['availability','worker','discoveryScope','latest','latestDate','outcome','latestMessage','emptyLatest','historyEmpty','history','updated','notice','refresh','runNow','runNowDialog','runNowDialogCancel','runNowDialogConfirm','runNowFeedback','runNowFeedbackDismiss','export','exportFeedback','dateFilters','fromDate','toDate','clearFilters','filterError','previousPage','nextPage','pageNumber','apiHealthOpen','apiHealthView','apiHealthHeading','apiHealthBack','healthConfigured','healthLatest','healthOverall','healthChecked','healthFreshness','healthCounts','healthScopeNote','healthScopeRows','healthExcessiveScopes','healthDiagnostics','healthRun','healthFeedback','healthEndpointRows','dashboardView','dashboardActions'];
+  const ids = ['availability','worker','discoveryScope','latest','latestDate','outcome','latestMessage','emptyLatest','historyEmpty','history','updated','notice','refresh','runNow','runNowDialog','runNowDialogCancel','runNowDialogConfirm','runNowFeedback','runNowFeedbackDismiss','export','exportFeedback','dateFilters','fromDate','toDate','clearFilters','filterError','previousPage','nextPage','pageNumber','apiHealthOpen','apiHealthView','apiHealthHeading','apiHealthBack','healthConfigured','healthLatest','healthOverall','healthChecked','healthFreshness','healthCounts','healthScopeNote','healthScopeRows','healthExcessiveScopes','healthRun','healthFeedback','healthEndpointRows','dashboardView','dashboardActions'];
   let finish; const finished = new Promise(resolve => { finish = resolve; });const timers=[];
   const summary={focused:false,focus(){this.focused=true}},reportMenu={open:true,querySelector(){return summary}},reportFeedback={textContent:'',className:''},reportEntry={querySelector(){return reportFeedback}};
   const links=[];
