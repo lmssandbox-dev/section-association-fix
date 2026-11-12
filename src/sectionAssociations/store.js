@@ -371,7 +371,7 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
     return associations.countDocuments({ namespace, status: 'completed', reconciliationVersion: 1,
       lastVerifiedAt: { $lte: reverifyBefore } });
   }
-  async function listMonitoringWork({ kind, periods, limit, windowKey, inspectionCutoff, attemptCutoff, excludeIds = [] }) {
+  async function listMonitoringWork({ kind, periods, limit, windowKey, attemptCutoff, excludeIds = [] }) {
     const { associations } = await collections();
     if (!['children', 'status'].includes(kind) || !Array.isArray(periods) || !periods.length || limit <= 0) return [];
     const periodPattern = new RegExp(`(?:${periods.join('|')})`);
@@ -380,9 +380,6 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
         associationOrgUnitId: { $nin: excludeIds.map(String) } } : {}) };
     const timestamp = kind === 'children' ? 'lastSuccessfulChildInspectionAt' : 'lastSuccessfulStatusVerificationAt';
     const attemptTimestamp = kind === 'children' ? 'childInspectionFailureCooldownUntil' : 'lastStatusVerificationAttemptAt';
-    if (kind === 'children' && inspectionCutoff) {
-      query.$and = [{ $or: [{ [timestamp]: { $exists: false } }, { [timestamp]: { $lte: inspectionCutoff } }] }];
-    }
     if (kind === 'status' && windowKey) {
       query.$and = [{ $or: [{ [timestamp]: { $exists: false } }, { [timestamp]: { $lt: windowKey } }] }];
     }
@@ -393,13 +390,17 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
     }
     return associations.find(query).sort({ [timestamp]: 1, firstSeenAt: 1, associationOrgUnitId: 1 }).limit(limit).toArray();
   }
-  async function countDueMonitoring({ kind, periods, before }) {
+  async function countDueMonitoring({ kind, periods, before, attemptCutoff }) {
     const { associations } = await collections();
     if (!['children', 'status'].includes(kind) || !Array.isArray(periods) || !periods.length) return 0;
     const timestamp = kind === 'children' ? 'lastSuccessfulChildInspectionAt' : 'lastSuccessfulStatusVerificationAt';
+    const due = [{ $or: [{ [timestamp]: { $exists: false } }, { [timestamp]: { $lte: before } }] }];
+    if (kind === 'children' && attemptCutoff) due.push({ $or: [
+      { childInspectionFailureCooldownUntil: { $exists: false } },
+      { childInspectionFailureCooldownUntil: { $lte: attemptCutoff } }
+    ] });
     return associations.countDocuments({ namespace, status: 'completed', reconciliationVersion: 1,
-      associationCode: { $regex: new RegExp(`(?:${periods.join('|')})`) },
-      $or: [{ [timestamp]: { $exists: false } }, { [timestamp]: { $lte: before } }] });
+      associationCode: { $regex: new RegExp(`(?:${periods.join('|')})`) }, $and: due });
   }
   async function countRecoveryWork({ stabilityCutoff, blockedBefore }) {
     const { associations } = await collections();

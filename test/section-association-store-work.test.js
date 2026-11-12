@@ -175,7 +175,7 @@ test('blocked associations enter recovery only after their retry interval', asyn
   assert.equal(retry[0].workType, 'blocked');
 });
 
-test('child monitoring rotates continuously by oldest successful check and backs off recent failures', async()=>{
+test('child monitoring selects oldest successful checks continuously and honors failure cooldown', async()=>{
   const records=[
     item(1,{status:'completed',reconciliationVersion:1,associationCode:'002521-01-2602-I0001',lastSuccessfulChildInspectionAt:date(50),lastChildInspectionAttemptAt:date(20)}),
     item(2,{status:'completed',reconciliationVersion:1,associationCode:'ESPM-2602-GS2-C0011',lastSuccessfulChildInspectionAt:date(150),lastChildInspectionAttemptAt:date(150),childInspectionFailureCooldownUntil:date(150)}),
@@ -183,31 +183,80 @@ test('child monitoring rotates continuously by oldest successful check and backs
     item(4,{status:'completed',reconciliationVersion:1,associationCode:'ESPM-2602-GS2-C0012',lastSuccessfulChildInspectionAt:date(175),lastStatusVerificationAttemptAt:date(150),lastChildInspectionAttemptAt:date(150),childInspectionFailureCooldownUntil:date(150)})
   ];
   const {store}=makeStore(records);
-  const selected=await store.listMonitoringWork({kind:'children',periods:['2602'],limit:10,inspectionCutoff:date(300),attemptCutoff:date(100)});
+  const selected=await store.listMonitoringWork({kind:'children',periods:['2602'],limit:10,attemptCutoff:date(149)});
   assert.deepEqual(selected.map(row=>row.associationOrgUnitId),['1','3']);
-  assert.equal(await store.countDueMonitoring({kind:'children',periods:['2602'],before:date(200)}),3);
+  assert.equal(await store.countDueMonitoring({kind:'children',periods:['2602'],before:date(200),attemptCutoff:date(149)}),1);
   records[0].lastSuccessfulChildInspectionAt=date(300);
   records[0].lastChildInspectionAttemptAt=date(300);
-  const next=await store.listMonitoringWork({kind:'children',periods:['2602'],limit:1,inspectionCutoff:date(300),attemptCutoff:date(200)});
-  assert.deepEqual(next.map(row=>row.associationOrgUnitId),['2']);
+  assert.deepEqual((await store.listMonitoringWork({kind:'children',periods:['2602'],limit:10,attemptCutoff:date(200)}))
+    .map(row=>row.associationOrgUnitId),['2','4','3','1']);
+  assert.equal(await store.countDueMonitoring({kind:'children',periods:['2602'],before:date(200),attemptCutoff:date(200)}),2);
 });
 
 test('two oldest-first batches cover all 604 associations and the next batch rotates back fairly', async()=>{
   const records=Array.from({length:604},(_,index)=>item(index+1,{status:'completed',reconciliationVersion:1,
     associationCode:'ESPM-2602-GS2-C0011',lastSuccessfulChildInspectionAt:date(0)}));
   const {store}=makeStore(records);
-  const first=await store.listMonitoringWork({kind:'children',periods:['2602'],limit:320,inspectionCutoff:date(0),attemptCutoff:date(0)});
+  const first=await store.listMonitoringWork({kind:'children',periods:['2602'],limit:320,attemptCutoff:date(0)});
   assert.equal(first.length,320);
-  for(const row of first) { const stored=records.find(record=>record.associationOrgUnitId===row.associationOrgUnitId);
-    stored.lastSuccessfulChildInspectionAt=date(5); stored.lastChildInspectionAttemptAt=date(5); }
-  const second=await store.listMonitoringWork({kind:'children',periods:['2602'],limit:320,inspectionCutoff:date(0),attemptCutoff:date(0)});
-  assert.equal(second.length,284);
-  assert.equal(new Set([...first,...second].map(row=>row.associationOrgUnitId)).size,604);
+  assert.equal(new Set(first.map(row=>row.associationOrgUnitId)).size,320);
+  for(const [index,row] of first.entries()) { const stored=records.find(record=>record.associationOrgUnitId===row.associationOrgUnitId);
+    stored.lastSuccessfulChildInspectionAt=new Date(date(5).getTime()+index);
+    stored.lastChildInspectionAttemptAt=stored.lastSuccessfulChildInspectionAt; }
+  const second=await store.listMonitoringWork({kind:'children',periods:['2602'],limit:320,attemptCutoff:date(5)});
+  assert.equal(second.length,320);
+  assert.equal(new Set(second.map(row=>row.associationOrgUnitId)).size,320);
   assert.equal(second.filter(row=>!first.some(firstRow=>firstRow.associationOrgUnitId===row.associationOrgUnitId)).length,284);
-  for(const row of second) { const stored=records.find(record=>record.associationOrgUnitId===row.associationOrgUnitId);
-    stored.lastSuccessfulChildInspectionAt=date(5); stored.lastChildInspectionAttemptAt=date(5); }
-  const third=await store.listMonitoringWork({kind:'children',periods:['2602'],limit:320,inspectionCutoff:date(10),attemptCutoff:date(20)});
-  assert.deepEqual(third.map(row=>row.associationOrgUnitId),first.map(row=>row.associationOrgUnitId));
+  assert.equal(second.filter(row=>first.some(firstRow=>firstRow.associationOrgUnitId===row.associationOrgUnitId)).length,36);
+  for(const [index,row] of second.entries()) { const stored=records.find(record=>record.associationOrgUnitId===row.associationOrgUnitId);
+    stored.lastSuccessfulChildInspectionAt=new Date(date(10).getTime()+index);
+    stored.lastChildInspectionAttemptAt=stored.lastSuccessfulChildInspectionAt; }
+  const third=await store.listMonitoringWork({kind:'children',periods:['2602'],limit:320,attemptCutoff:date(10)});
+  assert.equal(third.length,320);
+  assert.equal(new Set(third.map(row=>row.associationOrgUnitId)).size,320);
+  assert.equal(third.filter(row=>first.some(firstRow=>firstRow.associationOrgUnitId===row.associationOrgUnitId) &&
+    !second.some(secondRow=>secondRow.associationOrgUnitId===row.associationOrgUnitId)).length,284);
+  assert.equal(third.filter(row=>second.some(secondRow=>secondRow.associationOrgUnitId===row.associationOrgUnitId) &&
+    !first.some(firstRow=>firstRow.associationOrgUnitId===row.associationOrgUnitId)).length,36);
+  for(const [index,row] of third.entries()) { const stored=records.find(record=>record.associationOrgUnitId===row.associationOrgUnitId);
+    stored.lastSuccessfulChildInspectionAt=new Date(date(15).getTime()+index);
+    stored.lastChildInspectionAttemptAt=stored.lastSuccessfulChildInspectionAt; }
+  const fourth=await store.listMonitoringWork({kind:'children',periods:['2602'],limit:320,attemptCutoff:date(15)});
+  assert.equal(fourth.length,320);
+  assert.equal(new Set(fourth.map(row=>row.associationOrgUnitId)).size,320);
+  assert.equal(fourth.filter(row=>second.some(secondRow=>secondRow.associationOrgUnitId===row.associationOrgUnitId) &&
+    !third.some(thirdRow=>thirdRow.associationOrgUnitId===row.associationOrgUnitId)).length,284);
+  assert.equal(fourth.filter(row=>third.some(thirdRow=>thirdRow.associationOrgUnitId===row.associationOrgUnitId)).length,36);
+});
+
+test('800 associations rotate oldest-first without starvation',async()=>{
+  const records=Array.from({length:800},(_,index)=>item(index+1,{status:'completed',reconciliationVersion:1,
+    associationCode:'ESPM-2602-GS2-C0011',lastSuccessfulChildInspectionAt:date(0)}));
+  const {store}=makeStore(records);
+  const inspected=new Map();
+  for(let run=0;run<5;run++){
+    const selected=await store.listMonitoringWork({kind:'children',periods:['2602'],limit:320,attemptCutoff:date(run*5)});
+    assert.equal(selected.length,320);
+    assert.equal(new Set(selected.map(row=>row.associationOrgUnitId)).size,320);
+    for(const row of selected){
+      inspected.set(row.associationOrgUnitId,(inspected.get(row.associationOrgUnitId)||0)+1);
+      const stored=records.find(record=>record.associationOrgUnitId===row.associationOrgUnitId);
+      stored.lastSuccessfulChildInspectionAt=date((run+1)*5);
+      stored.lastChildInspectionAttemptAt=date((run+1)*5);
+    }
+  }
+  assert.equal(inspected.size,800);
+  assert.ok([...inspected.values()].every(count=>count>=1 && count<=3));
+});
+
+test('child monitoring remains restricted to configured academic periods',async()=>{
+  const {store}=makeStore([
+    item(1,{status:'completed',reconciliationVersion:1,associationCode:'ESPM-2602-GS2-C0011'}),
+    item(2,{status:'completed',reconciliationVersion:1,associationCode:'ESPM-2701-GS2-C0011'}),
+    item(3,{status:'pending',reconciliationVersion:1,associationCode:'ESPM-2602-GS2-C0012'})
+  ]);
+  const selected=await store.listMonitoringWork({kind:'children',periods:['2602'],limit:10,attemptCutoff:date(0)});
+  assert.deepEqual(selected.map(row=>row.associationOrgUnitId),['1']);
 });
 
 test('night cached-status selection retains its once-per-local-day marker', async()=>{

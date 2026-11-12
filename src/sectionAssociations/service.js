@@ -410,8 +410,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     if (!isRegularOperationsWindow(now()) || typeof store.listMonitoringWork !== 'function') return;
     const time = now();
     const items = await store.listMonitoringWork({ kind: 'children', periods: monitoringPeriods(time),
-      limit: childMonitoringBatchSize, inspectionCutoff: new Date(time - 10 * 60000),
-      attemptCutoff: new Date(time), excludeIds });
+      limit: childMonitoringBatchSize, attemptCutoff: new Date(time), excludeIds });
     stats.monitoringPeriods = monitoringPeriods(time);
     stats.monitoringActivities.children = true;
     const attemptField = 'lastChildInspectionAttemptAt';
@@ -546,7 +545,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     }
     for (const diagnostic of targetedDiagnostics.values()) logEvent(logger, 'info', 'child monitoring diagnostic', diagnostic);
     stats.childMonitoringLag = await store.countDueMonitoring?.({ kind: 'children', periods: monitoringPeriods(time),
-      before: new Date(time - 10 * 60000) }) ?? null;
+      before: new Date(time - 10 * 60000), attemptCutoff: new Date(time) }) ?? null;
     return scheduled.map(item => String(item.associationOrgUnitId));
   }
 

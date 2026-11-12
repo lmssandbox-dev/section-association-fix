@@ -259,19 +259,19 @@ test('expanded history shows only monitoring metrics for activities performed', 
     childChangesDetected:2,childMappingRefreshesRequired:3,childMonitoringLag:24};
   const child=await runPage(async()=>({ok:true,async json(){return{availability:'Available',worker:'idle',latestExecution:childRun,executions:[childRun]}}}));
   let details=child.history.innerHTML.match(/<div class="detail-strip">([\s\S]*?)<\/div><\/details>/)[1];
-  assert.match(details,/Child checks: 121\/125 · Changes: 2 · Mapping refreshes: 3 · Backlog: 24/);
+  assert.match(details,/Associations inspected: 121\/125 · Changes: 2 · Mapping refreshes: 3 · Backlog: 24/);
   assert.doesNotMatch(details,/Status checks/);
   const statusRun={...execution,monitoringActivities:{status:true},statusChecksSucceeded:148,statusChecksAttempted:150,
     statusChangesDetected:1,statusMappingRefreshesRequired:1,statusMonitoringLag:6};
   const status=await runPage(async()=>({ok:true,async json(){return{availability:'Available',worker:'idle',latestExecution:statusRun,executions:[statusRun]}}}));
   details=status.history.innerHTML.match(/<div class="detail-strip">([\s\S]*?)<\/div><\/details>/)[1];
   assert.match(details,/Status checks: 148\/150 · Changes: 1 · Mapping refreshes: 1 · Backlog: 6/);
-  assert.doesNotMatch(details,/Child checks/);
+  assert.doesNotMatch(details,/Associations inspected/);
   const legacy={...execution};
   delete legacy.monitoringActivities;
   const old=await runPage(async()=>({ok:true,async json(){return{availability:'Available',worker:'idle',latestExecution:legacy,executions:[legacy]}}}));
   details=old.history.innerHTML.match(/<div class="detail-strip">([\s\S]*?)<\/div><\/details>/)[1];
-  assert.doesNotMatch(details,/Child checks|Status checks|Mapping refreshes|Backlog/);
+  assert.doesNotMatch(details,/Associations inspected|Status checks|Mapping refreshes|Backlog/);
 });
 
 test('Refresh supports empty history and can be repeated', async () => {

@@ -71,7 +71,7 @@ function executionHtml(run){
   }
   const monitoring=[];
   if(run.monitoringActivities?.children===true&&Number.isSafeInteger(run.childChecksAttempted)){
-    const line=['Child checks: '+count(run.childChecksSucceeded)+'/'+count(run.childChecksAttempted)];
+    const line=['Associations inspected: '+count(run.childChecksSucceeded)+'/'+count(run.childChecksAttempted)];
     if(Number.isSafeInteger(run.childChangesDetected))line.push('Changes: '+count(run.childChangesDetected));
     if(Number.isSafeInteger(run.reconciliationsCompleted))line.push('Reconciled: '+count(run.reconciliationsCompleted));
     if(Number.isSafeInteger(run.childChangeReconciliationsDeferred))line.push('Deferred: '+count(run.childChangeReconciliationsDeferred));
