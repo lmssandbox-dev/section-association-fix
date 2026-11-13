@@ -41,7 +41,7 @@ test('due recovery receives only the reconciliation capacity left by the fast cy
     async recoveryDue(){return true},async markRecoveryCompleted(){}};
   const service={async fastTick({maxReconciliations}){calls.push(['fast-cap',maxReconciliations]);return{status:'completed',processedThisRun:37}},
     async recoveryTick({maxReconciliations}){calls.push(['recovery-cap',maxReconciliations]);return{status:'completed',processedThisRun:maxReconciliations}}};
-  const result=await runSectionAssociationCron({service,store,recoveryIntervalHours:4,maxReconciliationsPerRun:50,
+  const result=await runSectionAssociationCron({service,store,recoveryIntervalHours:4,maxReconciliationsPerRun:100,
     logger:{info(){},warn(){},error(){}},setIntervalFn(){return 1},clearIntervalFn(){}});
   assert.equal(result.status,'completed');
   assert.deepEqual(calls,[['fast-cap',50],['recovery-cap',13]]);

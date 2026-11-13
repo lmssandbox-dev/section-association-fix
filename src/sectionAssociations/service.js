@@ -4,6 +4,8 @@ const { isAssociation, originalOfferingCode } = require('./rules');
 const { logEvent, safeErrorFields } = require('./log');
 
 const ACADEMIC_TIME_ZONE = 'America/Sao_Paulo';
+const STATUS_VERIFICATION_MAX_BATCH_SIZE = 50;
+const MAX_RECONCILIATIONS_PER_EXECUTION = 50;
 
 function localParts(value) {
   const parts = new Intl.DateTimeFormat('en-US', { timeZone: ACADEMIC_TIME_ZONE, year: 'numeric',
@@ -32,8 +34,8 @@ function discoveryScope(configuration = { mode: 'auto' }, value = Date.now()) {
 }
 
 function isReverificationWindow(value = Date.now()) {
-  const { hour, minute } = localParts(value);
-  return hour >= 1 && hour < 7 && (minute === 0 || minute === 30);
+  const { hour } = localParts(value);
+  return hour >= 1 && hour < 6;
 }
 
 function isRegularOperationsWindow(value = Date.now()) {
@@ -43,7 +45,7 @@ function isRegularOperationsWindow(value = Date.now()) {
 
 function isHistoricalDiscoveryWindow(value = Date.now()) {
   const { hour } = localParts(value);
-  return hour === 23 || hour === 0;
+  return hour === 0;
 }
 
 function localDayStart(value = Date.now()) {
@@ -60,8 +62,8 @@ function localOffsetMs(value) {
 }
 
 function historicalWindowKey(value = Date.now()) {
-  const { year, month, day, hour } = localParts(value);
-  const localDate = new Date(Date.UTC(year, month - 1, day - (hour === 0 ? 1 : 0)));
+  const { year, month, day } = localParts(value);
+  const localDate = new Date(Date.UTC(year, month - 1, day));
   return `${localDate.getUTCFullYear()}-${String(localDate.getUTCMonth() + 1).padStart(2, '0')}-${String(localDate.getUTCDate()).padStart(2, '0')}`;
 }
 
@@ -71,9 +73,9 @@ function fullDiscoveryDue(lastCompletedAt, value = Date.now()) {
 }
 
 function createSectionAssociationService({ client, store, reconciler, stabilityMinutes = 5,
-  maxReconciliationsPerRun = 50, recoveryIntervalHours = 4, completedReverifyHours = 24,
+  maxReconciliationsPerRun = MAX_RECONCILIATIONS_PER_EXECUTION, recoveryIntervalHours = 4, completedReverifyHours = 24,
   discoveryConfiguration = { mode: 'auto', periods: [] }, childMonitoringBatchSize = 320,
-  statusVerificationBatchSize = 150, debugAssociationId = '', now = Date.now, logger = console }) {
+  statusVerificationBatchSize = STATUS_VERIFICATION_MAX_BATCH_SIZE, debugAssociationId = '', now = Date.now, logger = console }) {
   let busy = false;
   let activeAttemptedIds = null;
   const stabilityLogged = new Set();
@@ -270,6 +272,13 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
       const result = await reconciler.reconcileAssociation(id, { associationCode: item.associationCode, force: true,
         execution, recordAudit: store.recordAudit });
       await recordPendingChildChangeOutcomes(id, result, execution);
+      if (item.pendingStatusReconciliationAt && result?.status === 'completed') {
+        await store.clearStatusReconciliationPending?.(id);
+      }
+      if (item.pendingStatusReconciliationAt) {
+        stats.statusReconciliationsPerformed++;
+        stats.statusCourseOfferingCorrections += result?.writesVerified || 0;
+      }
       outcomes.set(id, result);
       stats.processedThisRun++;
       countStatus(stats, result);
@@ -551,11 +560,12 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
     return scheduled.map(item => String(item.associationOrgUnitId));
   }
 
-  async function verifyCachedTargets(stats, execution, reconciliationLimit) {
+  async function verifyCachedTargets(stats, execution, reconciliationLimit, excludeIds = []) {
     const time = now();
     if (!isReverificationWindow(time) || typeof store.listMonitoringWork !== 'function') return;
     const items = await store.listMonitoringWork({ kind: 'status', periods: monitoringPeriods(time),
-      limit: statusVerificationBatchSize, windowKey: localDayStart(time), attemptCutoff: new Date(time - 60 * 60000) });
+      limit: Math.min(statusVerificationBatchSize, STATUS_VERIFICATION_MAX_BATCH_SIZE), windowKey: localDayStart(time),
+      attemptCutoff: new Date(time - 60 * 60000), excludeIds });
     stats.monitoringPeriods = monitoringPeriods(time);
     stats.monitoringActivities.status = true;
     const attemptField = 'lastStatusVerificationAttemptAt';
@@ -574,14 +584,16 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
         for (const mapping of mappings) {
           if (!/^\d+$/.test(String(mapping.id || '')) || typeof mapping.code !== 'string' || !mapping.code) { requiresReconcile = true; break; }
           const course = await client.course(mapping.id);
-          const actualId = String(course?.Identifier ?? course?.OrgUnitId ?? '');
-          if (actualId !== String(mapping.id) || course?.Type?.Code !== 'Course Offering' || course?.Code !== mapping.code || course?.IsActive !== false) {
+          const actualId = String(course?.Identifier ?? '');
+          if (actualId !== String(mapping.id) || course?.Code !== mapping.code || course?.IsActive !== false) {
             requiresReconcile = true; break;
           }
         }
       } catch (error) {
         if (error?.status === 404) {
-          reconcile.push(item);
+          const pendingAt = item.pendingStatusReconciliationAt || new Date(time);
+          await store.record(id, { pendingStatusReconciliationAt: pendingAt });
+          reconcile.push({ ...item, workType: 'status-reconciliation', pendingStatusReconciliationAt: pendingAt });
           statusChangesDetected++;
           mappingRefreshesRequired++;
           continue;
@@ -591,14 +603,24 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
         continue;
       }
       stats.statusChecksSucceeded++;
-      if (requiresReconcile) { reconcile.push(item); statusChangesDetected++; mappingRefreshesRequired++; }
-      else await store.record(id, { lastSuccessfulStatusVerificationAt: new Date(now()) });
+      if (requiresReconcile) {
+        const pendingAt = item.pendingStatusReconciliationAt || new Date(time);
+        await store.record(id, { pendingStatusReconciliationAt: pendingAt });
+        reconcile.push({ ...item, workType: 'status-reconciliation', pendingStatusReconciliationAt: pendingAt });
+        statusChangesDetected++; mappingRefreshesRequired++;
+      }
+      else {
+        stats.statusAssociationsVerified++;
+        await store.record(id, { lastSuccessfulStatusVerificationAt: new Date(now()) });
+      }
     }
-    const remaining = Math.max(0, reconciliationLimit - stats.processedThisRun);
+    // Callers pass the capacity that remains in the shared execution budget.
+    const remaining = Math.max(0, reconciliationLimit);
     stats.statusMappingRefreshesRequired += mappingRefreshesRequired;
     stats.mappingRefreshesRequired += mappingRefreshesRequired;
     const scheduled = reconcile.slice(0, remaining);
     if (scheduled.length) await processWork(scheduled, stats, execution);
+    stats.statusReconciliationsDeferred += Math.max(0, reconcile.length - scheduled.length);
     stats.statusChangesDetected += statusChangesDetected;
     stats.statusMonitoringLag = await store.countDueMonitoring?.({ kind: 'status', periods: monitoringPeriods(time), before: localDayStart(time) }) ?? null;
     return scheduled.map(item => String(item.associationOrgUnitId));
@@ -611,14 +633,21 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
       reconciliationsCompleted: 0, childChangeReconciliationsDeferred: null,
       writesAttempted: 0, writesVerified: 0, alreadyInactive: 0, childChecksAttempted: 0, childChecksSucceeded: 0,
       childChangesDetected: 0, childMonitoringLag: null, statusChecksAttempted: 0, statusChecksSucceeded: 0,
-      statusChangesDetected: 0, statusMonitoringLag: null, monitoringErrors: 0, mappingRefreshesRequired: 0,
+      statusAssociationsVerified: 0, statusChangesDetected: 0, statusReconciliationsPerformed: 0,
+      statusCourseOfferingCorrections: 0, statusReconciliationsDeferred: 0,
+      statusMonitoringLag: null, monitoringErrors: 0, mappingRefreshesRequired: 0,
       childMappingRefreshesRequired: 0, statusMappingRefreshesRequired: 0,
       monitoringPeriods: null, monitoringActivities: {}, discoveryActivities: {} };
   }
 
   async function runCycle({ recovery = false, discoveryAlreadyCompleted = false,
-    maxReconciliations = maxReconciliationsPerRun, execution, manualDiscovery = false } = {}) {
+    maxReconciliations: requestedReconciliationLimit = maxReconciliationsPerRun, execution, manualDiscovery = false } = {}) {
     const startedAt = now();
+    const priorAttemptCount = execution && typeof execution === 'object'
+      ? attemptedByExecution.get(execution)?.size || 0 : 0;
+    const maxReconciliations = Math.min(MAX_RECONCILIATIONS_PER_EXECUTION,
+      Math.max(0, Math.floor(Number(requestedReconciliationLimit) || 0)),
+      Math.max(0, MAX_RECONCILIATIONS_PER_EXECUTION - priorAttemptCount));
     const name = recovery ? 'recovery cycle' : 'fast cycle';
     logEvent(logger, 'info', `${name} started`);
     const stats = newStats();
@@ -641,9 +670,11 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
       const time = now();
       const stabilityCutoff = new Date(time - stabilityMinutes * 60000);
       stats.historicalPending = await store.countHistoricalBacklog();
+      const executionAttemptedIds = execution && typeof execution === 'object'
+        ? [...(attemptedByExecution.get(execution) || [])] : [];
       if (recovery) {
         const items = await store.listRecoveryWork({ limit: maxReconciliations,
-          stabilityCutoff, blockedBefore: new Date(time - recoveryIntervalMs) });
+          stabilityCutoff, blockedBefore: new Date(time - recoveryIntervalMs), excludeIds: executionAttemptedIds });
         await processWork(items, stats, execution);
         recoveryComplete = await store.countRecoveryWork({ stabilityCutoff,
           blockedBefore: new Date(time - recoveryIntervalMs) }) === 0;
@@ -658,7 +689,7 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
         const newShare = Math.ceil(maxReconciliations / 3);
         const childShare = Math.ceil(maxReconciliations / 3);
         const routineShare = Math.max(0, maxReconciliations - newShare - childShare);
-        const selectedIds = new Set();
+        const selectedIds = new Set(executionAttemptedIds);
         const remember = items => { for (const item of items) selectedIds.add(String(item.associationOrgUnitId)); };
         const newItems = await store.listNewWork({ limit: newShare, stabilityCutoff });
         await processWork(newItems, stats, execution);
@@ -675,16 +706,32 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
           maxReconciliations - stats.processedThisRun));
         if (isRegularOperationsWindow(time)) remember(await monitorChildren(stats, execution,
           childReconciliationCapacity, [...selectedIds]) || []);
-        else if (isReverificationWindow(time)) remember(await verifyCachedTargets(stats, execution,
-          childReconciliationCapacity) || []);
-        const routineLimit = Math.min(routineShare, Math.max(0, maxReconciliations - stats.processedThisRun));
+        const statusPriorityShare = Math.min(Math.ceil(routineShare / 2),
+          Math.max(0, maxReconciliations - stats.processedThisRun));
+        const statusItems = await store.listPendingStatusReconciliationWork?.({ limit: statusPriorityShare,
+          excludeIds: [...selectedIds] }) || [];
+        const statusBefore = stats.processedThisRun;
+        await processWork(statusItems, stats, execution);
+        remember(statusItems);
+        const statusShareUsed = stats.processedThisRun - statusBefore;
+        const routineLimit = Math.min(Math.max(0, routineShare - statusShareUsed),
+          Math.max(0, maxReconciliations - stats.processedThisRun));
         const routineItems = await store.listRoutineFastWork({ limit: routineLimit, stabilityCutoff, excludeIds: [...selectedIds] });
         await processWork(routineItems, stats, execution);
         remember(routineItems);
 
+        if (isReverificationWindow(time)) remember(await verifyCachedTargets(stats, execution,
+          Math.max(0, maxReconciliations - stats.processedThisRun), [...selectedIds]) || []);
+
         // Priority shares protect each class from starvation. Any share left unused is
         // offered to the remaining queues, with durable child changes first.
         let remaining = Math.max(0, maxReconciliations - stats.processedThisRun);
+        if (remaining && typeof store.listPendingStatusReconciliationWork === 'function') {
+          const moreStatusItems = await store.listPendingStatusReconciliationWork({ limit: remaining, excludeIds: [...selectedIds] });
+          await processWork(moreStatusItems, stats, execution);
+          remember(moreStatusItems);
+          remaining = Math.max(0, maxReconciliations - stats.processedThisRun);
+        }
         if (remaining && typeof store.listPendingChildChangeWork === 'function') {
           const moreChildItems = await store.listPendingChildChangeWork({ limit: remaining, excludeIds: [...selectedIds] });
           await processWork(moreChildItems, stats, execution);
@@ -709,13 +756,21 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
         phase = 'monitoring';
         if (isRegularOperationsWindow(time)) await monitorChildren(stats, execution,
           Math.max(0, maxReconciliations - stats.processedThisRun));
-        else if (isReverificationWindow(time)) await verifyCachedTargets(stats, execution, maxReconciliations);
+        else if (isReverificationWindow(time)) await verifyCachedTargets(stats, execution,
+          Math.max(0, maxReconciliations - stats.processedThisRun));
       } else {
         phase = 'monitoring';
+        const remaining = Math.max(0, maxReconciliations - stats.processedThisRun);
+        const statusItems = await store.listPendingStatusReconciliationWork?.({ limit: remaining,
+          excludeIds: [...(attemptedByExecution.get(execution) || [])] }) || [];
+        await processWork(statusItems, stats, execution);
         if (isReverificationWindow(time)) await verifyCachedTargets(stats, execution,
-          Math.max(0, maxReconciliations - stats.processedThisRun));
+          Math.max(0, maxReconciliations - stats.processedThisRun), [...(attemptedByExecution.get(execution) || [])]);
       }
       stats.childChangeReconciliationsDeferred = await store.countPendingChildChangeWork?.() ?? null;
+      if (typeof store.countPendingStatusReconciliationWork === 'function') {
+        stats.statusReconciliationsDeferred = await store.countPendingStatusReconciliationWork();
+      }
       stats.remainingHistoricalBacklog = await store.countHistoricalBacklog();
       succeeded = true;
       return { status: 'completed', ...stats, recoveryComplete };
@@ -742,4 +797,5 @@ function createSectionAssociationService({ client, store, reconciler, stabilityM
 }
 
 module.exports = { createSectionAssociationService, academicPeriods, discoveryScope, isReverificationWindow,
-  isRegularOperationsWindow, isHistoricalDiscoveryWindow, historicalWindowKey, fullDiscoveryDue };
+  isRegularOperationsWindow, isHistoricalDiscoveryWindow, historicalWindowKey, fullDiscoveryDue,
+  MAX_RECONCILIATIONS_PER_EXECUTION };

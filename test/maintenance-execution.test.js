@@ -30,6 +30,7 @@ test('execution summary persists monitoring activity, counters, and remaining ba
   const summary=buildMaintenanceExecutionSummary({executionId:'monitored',source:'automatic',startedAt:new Date(1)},
     {status:'completed',now:()=>2,results:[{status:'completed',childChecksAttempted:125,childChecksSucceeded:124,
       childChangesDetected:2,childMappingRefreshesRequired:3,childMonitoringLag:18,
+      statusAssociationsVerified:50,statusReconciliationsPerformed:4,statusCourseOfferingCorrections:2,statusReconciliationsDeferred:3,
       statusChecksAttempted:0,statusChecksSucceeded:0,statusChangesDetected:0,statusMappingRefreshesRequired:0,
       statusMonitoringLag:0,monitoringActivities:{children:true,status:true}}]});
   assert.equal(summary.childChecksAttempted,125);
@@ -37,6 +38,10 @@ test('execution summary persists monitoring activity, counters, and remaining ba
   assert.equal(summary.childChangesDetected,2);
   assert.equal(summary.childMappingRefreshesRequired,3);
   assert.equal(summary.childMonitoringLag,18);
+  assert.equal(summary.statusAssociationsVerified,50);
+  assert.equal(summary.statusReconciliationsPerformed,4);
+  assert.equal(summary.statusCourseOfferingCorrections,2);
+  assert.equal(summary.statusReconciliationsDeferred,3);
   assert.deepEqual(summary.monitoringActivities,{children:true,status:true});
   assert.equal(summary.statusMonitoringLag,0);
 });

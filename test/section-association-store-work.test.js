@@ -53,7 +53,14 @@ function makeStore(records, metaDocuments = new Map()) {
         async toArray() { return rows.map(row => ({ ...row })); }
       };
     },
-    async countDocuments(filter) { return records.filter(record => matches(record, filter)).length; }
+    async countDocuments(filter) { return records.filter(record => matches(record, filter)).length; },
+    async updateOne(filter, update) {
+      const record = records.find(row => matches(row, filter));
+      if (!record) return { matchedCount: 0 };
+      Object.assign(record, structuredClone(update.$set || {}));
+      if (update.$unset) for (const key of Object.keys(update.$unset)) delete record[key];
+      return { matchedCount: 1 };
+    }
   };
   const meta = {
     async createIndex() {},
@@ -151,6 +158,20 @@ test('bounded selection advances past recently checked pending records', async (
   ]);
   const selected = await store.listFastWork({ limit: 1, stabilityCutoff: date(0) });
   assert.deepEqual(selected.map(row => row.associationOrgUnitId), ['3']);
+});
+
+test('deferred status reconciliations are durable, prioritized, and clear after success', async()=>{
+  const {store}=makeStore([
+    item(1,{status:'completed',reconciliationVersion:1,pendingStatusReconciliationAt:date(20)}),
+    item(2,{status:'completed',reconciliationVersion:1,pendingStatusReconciliationAt:date(10)}),
+    item(3,{status:'completed',reconciliationVersion:1})
+  ]);
+  const args={limit:1};
+  assert.deepEqual((await store.listPendingStatusReconciliationWork(args)).map(row=>row.associationOrgUnitId),['2']);
+  assert.equal(await store.countPendingStatusReconciliationWork(),2);
+  await store.clearStatusReconciliationPending('2');
+  assert.deepEqual((await store.listPendingStatusReconciliationWork({limit:5})).map(row=>row.associationOrgUnitId),['1']);
+  assert.equal(await store.countPendingStatusReconciliationWork(),1);
 });
 
 test('new associations and durable child changes have separate prioritized selections', async()=>{
@@ -271,6 +292,45 @@ test('night cached-status selection retains its once-per-local-day marker', asyn
   const selected=await store.listMonitoringWork({kind:'status',periods:['2602'],limit:10,
     windowKey:date(80),attemptCutoff:date(100)});
   assert.deepEqual(selected.map(row=>row.associationOrgUnitId),['2']);
+});
+
+test('nightly status pass resumes after restart and covers 604 associations in 13 batches of at most 50',async()=>{
+  const records=Array.from({length:604},(_,index)=>item(index+1,{status:'completed',reconciliationVersion:1,
+    associationCode:'ESPM-2602-GS2-C0011',lastSuccessfulStatusVerificationAt:date(0),lastStatusVerificationAttemptAt:date(0)}));
+  const windowKey=date(100); const checked=new Set(); const batches=[];
+  for(let batch=0;batch<13;batch++){
+    const store=makeStore(records).store; // Recreate the store wrapper to simulate a worker restart.
+    const rows=await store.listMonitoringWork({kind:'status',periods:['2602'],limit:50,windowKey,
+      attemptCutoff:date(100+batch*5)});
+    batches.push(rows.length);
+    assert.equal(new Set(rows.map(row=>row.associationOrgUnitId)).size,rows.length);
+    for(const row of rows){
+      assert.equal(checked.has(row.associationOrgUnitId),false);
+      checked.add(row.associationOrgUnitId);
+      const stored=records.find(record=>record.associationOrgUnitId===row.associationOrgUnitId);
+      stored.lastStatusVerificationAttemptAt=date(101+batch*5);
+      stored.lastSuccessfulStatusVerificationAt=date(101+batch*5);
+    }
+  }
+  assert.deepEqual(batches,[50,50,50,50,50,50,50,50,50,50,50,50,4]);
+  assert.equal(checked.size,604);
+  assert.deepEqual(await makeStore(records).store.listMonitoringWork({kind:'status',periods:['2602'],limit:50,windowKey,
+    attemptCutoff:date(200)}),[]);
+  assert.equal(await makeStore(records).store.countDueMonitoring({kind:'status',periods:['2602'],before:windowKey}),0);
+});
+
+test('failed status checks retry after the controlled attempt cooldown and unfinished work is due next pass',async()=>{
+  const {store}=makeStore([
+    item(1,{status:'completed',reconciliationVersion:1,associationCode:'ESPM-2602-GS2-C0011',
+      lastSuccessfulStatusVerificationAt:date(50),lastStatusVerificationAttemptAt:date(100)}),
+    item(2,{status:'completed',reconciliationVersion:1,associationCode:'ESPM-2602-GS2-C0012',
+      lastSuccessfulStatusVerificationAt:date(100)})
+  ]);
+  const samePass={kind:'status',periods:['2602'],limit:10,windowKey:date(90)};
+  assert.deepEqual(await store.listMonitoringWork({...samePass,attemptCutoff:date(99)}),[]);
+  assert.deepEqual((await store.listMonitoringWork({...samePass,attemptCutoff:date(100)})).map(row=>row.associationOrgUnitId),['1']);
+  const nextPass=await store.listMonitoringWork({...samePass,windowKey:date(200),attemptCutoff:date(200)});
+  assert.deepEqual(nextPass.map(row=>row.associationOrgUnitId),['1','2']);
 });
 
 test('successful full discovery timestamp is persisted across store instances', async () => {

@@ -4,7 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { createSectionAssociationClient } = require('../src/sectionAssociations/client');
 const { createSectionAssociationService, academicPeriods, discoveryScope, isReverificationWindow, isRegularOperationsWindow,
-  isHistoricalDiscoveryWindow, fullDiscoveryDue } = require('../src/sectionAssociations/service');
+  isHistoricalDiscoveryWindow, historicalWindowKey, fullDiscoveryDue } = require('../src/sectionAssociations/service');
 
 test('academic periods use Sao Paulo local date, semester convention, and year rollover', () => {
   assert.deepEqual(academicPeriods(Date.parse('2026-10-18T15:00:00Z')), { mode:'auto', previous:'2601', current:'2602', next:'2701', periods:['2601','2602','2701'] });
@@ -19,31 +19,34 @@ test('academic periods use Sao Paulo local date, semester convention, and year r
 test('operating windows use Sao Paulo boundaries and the nightly window crosses midnight once', () => {
   assert.equal(isReverificationWindow(Date.parse('2026-10-18T03:59:00Z')), false); // 00:59
   assert.equal(isReverificationWindow(Date.parse('2026-10-18T04:00:00Z')), true); // 01:00
-  assert.equal(isReverificationWindow(Date.parse('2026-10-18T04:15:00Z')), false); // 01:15
+  assert.equal(isReverificationWindow(Date.parse('2026-10-18T04:15:00Z')), true); // 01:15
   assert.equal(isReverificationWindow(Date.parse('2026-10-18T04:30:00Z')), true); // 01:30
-  assert.equal(isReverificationWindow(Date.parse('2026-10-18T09:30:00Z')), true); // 06:30
+  assert.equal(isReverificationWindow(Date.parse('2026-10-18T09:30:00Z')), false); // 06:30
   assert.equal(isReverificationWindow(Date.parse('2026-10-18T10:00:00Z')), false); // 07:00
   assert.equal(isRegularOperationsWindow(Date.parse('2026-10-18T09:59:00Z')), false); // 06:59
   assert.equal(isRegularOperationsWindow(Date.parse('2026-10-18T10:00:00Z')), true); // 07:00
   assert.equal(isRegularOperationsWindow(Date.parse('2026-10-19T01:59:00Z')), true); // 22:59
   assert.equal(isRegularOperationsWindow(Date.parse('2026-10-19T02:00:00Z')), false); // 23:00
-  assert.equal(isHistoricalDiscoveryWindow(Date.parse('2026-10-19T02:00:00Z')), true); // 23:00
-  assert.equal(isHistoricalDiscoveryWindow(Date.parse('2026-10-19T02:45:00Z')), true); // 23:45
+  assert.equal(isHistoricalDiscoveryWindow(Date.parse('2026-10-19T02:00:00Z')), false); // 23:00
+  assert.equal(isHistoricalDiscoveryWindow(Date.parse('2026-10-19T02:45:00Z')), false); // 23:45
   assert.equal(isHistoricalDiscoveryWindow(Date.parse('2026-10-19T03:00:00Z')), true); // 00:00
   assert.equal(isHistoricalDiscoveryWindow(Date.parse('2026-10-19T03:45:00Z')), true); // 00:45
   assert.equal(isHistoricalDiscoveryWindow(Date.parse('2026-10-19T04:00:00Z')), false); // 01:00
-  assert.equal(fullDiscoveryDue(new Date('2026-10-19T02:00:00Z'), Date.parse('2026-10-19T03:45:00Z')), false);
+  assert.equal(historicalWindowKey(Date.parse('2026-10-19T03:00:00Z')), '2026-10-19');
+  assert.equal(fullDiscoveryDue(new Date('2026-10-19T03:00:00Z'), Date.parse('2026-10-19T03:45:00Z')), false);
   assert.equal(fullDiscoveryDue(new Date('2026-10-19T03:15:00Z'), Date.parse('2026-10-19T03:45:00Z')), false);
-  assert.equal(fullDiscoveryDue(new Date('2026-10-19T03:15:00Z'), Date.parse('2026-10-20T02:00:00Z')), true);
-  assert.equal(fullDiscoveryDue(null, Date.parse('2026-10-19T01:59:00Z')), false);
-  assert.equal(fullDiscoveryDue(null, Date.parse('2026-10-19T02:00:00Z')), true);
+  assert.equal(fullDiscoveryDue(new Date('2026-10-19T03:15:00Z'), Date.parse('2026-10-20T03:00:00Z')), true);
+  assert.equal(fullDiscoveryDue(null, Date.parse('2026-10-19T02:59:00Z')), false);
+  assert.equal(fullDiscoveryDue(null, Date.parse('2026-10-19T03:00:00Z')), true);
   for (let hour = 1; hour <= 6; hour++) {
-    for (const minute of [0, 15, 30, 45]) {
+    for (const minute of [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55]) {
       const instant = Date.parse(`2026-10-18T${String(hour + 3).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00Z`);
-      assert.equal(isReverificationWindow(instant), minute === 0 || minute === 30, `${hour}:${minute}`);
+      assert.equal(isReverificationWindow(instant), hour < 6, `${hour}:${minute}`);
     }
   }
   assert.equal(isReverificationWindow(Date.parse('2026-10-18T03:00:00Z')), false); // before 01:00
+  assert.equal(isReverificationWindow(Date.parse('2026-10-18T08:55:00Z')), true); // 05:55
+  assert.equal(isReverificationWindow(Date.parse('2026-10-18T09:00:00Z')), false); // 06:00
   assert.equal(isReverificationWindow(Date.parse('2026-10-18T10:00:00Z')), false); // at 07:00
 });
 
@@ -84,8 +87,63 @@ function makeService({ time, failFull = false, duplicateAcrossQueries = false, d
   return { service, calls, store, persisted, get fullAt() { return fullAt; } };
 }
 
-test('broad discovery runs once across 23:00–01:00 and period discovery resumes the next morning', async () => {
-  const time = Date.parse('2026-10-19T02:15:00Z'); // 23:15 local
+function cachedStatusWork(id) {
+  const targetId=String(Number(id)+1000);
+  const childCode='002521-01-2602-GS2-EL1S-00001';
+  const targetCode='002521-01-2602-GS2-EL1S';
+  return {associationOrgUnitId:String(id),associationCode:'002521-01-2602-I0001',verifiedMappingVersion:1,
+    verifiedChildren:[{id:'12',code:childCode}],verifiedTargets:[{id:targetId,code:targetCode}],
+    verifiedMappings:[{sectionId:'12',sectionCode:childCode,targetId,targetCode}]};
+}
+
+async function runNightStatus({items,course,maxReconciliationsPerRun=50,statusVerificationBatchSize=150,
+  newWork=[],childWork=[],routineWork=[]}={}) {
+  const time=Date.parse('2026-10-18T04:05:00Z');
+  const calls={course:[],reconciliations:[],writes:[]};let statusLimit=null;
+  const store={async baselineStatus(){return{state:'ready'}},async lastFullDiscoveryAt(){return new Date(time)},
+    async recordDiscoveries(){return{newlyRecorded:0,alreadyKnown:0}},async countHistoricalBacklog(){return 0},
+    async listWaitingNew(){return[]},async listNewWork({limit,excludeIds=[]}={}){return newWork.filter(row=>!excludeIds.includes(String(row.associationOrgUnitId))).slice(0,limit)},
+    async listPendingChildChangeWork({limit,excludeIds=[]}={}){return childWork.filter(row=>!excludeIds.includes(String(row.associationOrgUnitId))).slice(0,limit)},
+    async listRoutineFastWork({limit,excludeIds=[]}={}){return routineWork.filter(row=>!excludeIds.includes(String(row.associationOrgUnitId))).slice(0,limit)},
+    async listPendingStatusReconciliationWork(){return[]},async listMonitoringWork({kind,limit}){if(kind==='status'){statusLimit=limit;return items.slice(0,limit)}return[]},
+    async record(id,fields){calls.writes.push({id,fields})},async countDueMonitoring(){return 554}};
+  const client={async associationCandidates(){return[]},async course(id){calls.course.push(String(id));return course(id)}};
+  const reconciler={async reconcileAssociation(id){calls.reconciliations.push(String(id));return{status:'completed',targets:[{status:'already-inactive'}]}}};
+  const service=createSectionAssociationService({client,store,reconciler,maxReconciliationsPerRun,statusVerificationBatchSize,
+    now:()=>time,logger:{info(){},warn(){},error(){}}});
+  return {result:await service.fastTick(),calls,statusLimit};
+}
+
+function deferredStatusHarness({items,time,maxReconciliationsPerRun=20}) {
+  let currentTime=time; const calls=[]; const targets=new Map(items.map(item=>[String(item.associationOrgUnitId),item]));
+  const store={async baselineStatus(){return{state:'ready'}},async lastFullDiscoveryAt(){return new Date(currentTime)},
+    async recordDiscoveries(){return{newlyRecorded:0,alreadyKnown:0}},async countHistoricalBacklog(){return 0},
+    async listWaitingNew(){return[]},async listNewWork(){return[]},async listPendingChildChangeWork(){return[]},
+    async listRoutineFastWork(){return[]},async listMonitoringWork({kind,limit,windowKey,attemptCutoff}){
+      if(kind!=='status')return[];
+      return items.filter(item=>(!item.lastSuccessfulStatusVerificationAt||item.lastSuccessfulStatusVerificationAt<windowKey)&&
+        (!item.lastStatusVerificationAttemptAt||item.lastStatusVerificationAttemptAt<=attemptCutoff)).slice(0,limit);
+    },
+    async listPendingStatusReconciliationWork({limit,excludeIds=[]}){
+      return items.filter(item=>item.pendingStatusReconciliationAt&&!excludeIds.includes(String(item.associationOrgUnitId)))
+        .sort((a,b)=>a.pendingStatusReconciliationAt-b.pendingStatusReconciliationAt).slice(0,limit)
+        .map(item=>({...item,workType:'status-reconciliation'}));
+    },
+    async countPendingStatusReconciliationWork(){return items.filter(item=>item.pendingStatusReconciliationAt).length},
+    async clearStatusReconciliationPending(id){delete targets.get(String(id)).pendingStatusReconciliationAt},
+    async record(id,fields){Object.assign(targets.get(String(id)),fields)},async countDueMonitoring(){return 0}};
+  const client={async associationCandidates(){return[]},async course(id){const target=items.find(item=>
+    item.verifiedTargets.some(mapping=>String(mapping.id)===String(id)));
+    return{Identifier:String(id),Code:target.verifiedTargets[0].code,IsActive:!target.reconciled}}};
+  const reconciler={async reconcileAssociation(id){const target=targets.get(String(id));target.reconciled=true;
+    calls.push(String(id));return{status:'completed',writesVerified:1}}};
+  const service=createSectionAssociationService({client,store,reconciler,maxReconciliationsPerRun,
+    now:()=>currentTime,logger:{info(){},warn(){},error(){}}});
+  return{items,calls,service,setTime(value){currentTime=value}};
+}
+
+test('broad discovery runs once from midnight to 01:00 and period discovery resumes at 07:00', async () => {
+  const time = Date.parse('2026-10-19T03:15:00Z'); // 00:15 local
   const h = makeService({ time });
   const first = await h.service.fastTick();
   assert.equal(first.status, 'completed');
@@ -102,8 +160,8 @@ test('broad discovery runs once across 23:00–01:00 and period discovery resume
   assert.deepEqual(h.calls.filter(([kind]) => kind === 'query').map(([, code]) => code), ['2601-I0001', 'ESPM-2601-', '2602-I0001', 'ESPM-2602-', '2701-I0001', 'ESPM-2701-']);
 });
 
-test('failed full discovery retries after midnight within the same nightly window', async () => {
-  let time = Date.parse('2026-10-19T02:45:00Z'); // 23:45
+test('failed full discovery retries within the midnight-to-01:00 window', async () => {
+  let time = Date.parse('2026-10-19T03:15:00Z'); // 00:15
   let fullAt = null, failLegacy = true;
   const queries = [];
   const store = { async baselineStatus() { return { state: 'ready' }; }, async lastFullDiscoveryAt() { return fullAt; },
@@ -114,15 +172,15 @@ test('failed full discovery retries after midnight within the same nightly windo
     logger: { info() {}, warn() {}, error() {} } });
   assert.equal((await service.fastTick()).status, 'completed');
   assert.equal(fullAt, null);
-  time = Date.parse('2026-10-20T03:15:00Z'); // 00:15 in the same nightly window
+  time = Date.parse('2026-10-19T03:45:00Z'); // 00:45 in the same nightly window
   failLegacy = false;
   assert.equal((await service.fastTick()).status, 'completed');
   assert.ok(fullAt instanceof Date);
   assert.deepEqual(queries, ['I0001', 'I0001', 'ESPM-']);
 });
 
-test('successful broad discovery at 23:00 does not repeat after midnight in the same nightly window', async () => {
-  let time = Date.parse('2026-10-19T02:00:00Z'); // 23:00
+test('successful broad discovery at midnight does not repeat in the nightly window', async () => {
+  let time = Date.parse('2026-10-19T03:00:00Z'); // 00:00
   let fullAt = null;
   const queries = [];
   const store = { async baselineStatus() { return { state: 'ready' }; }, async lastFullDiscoveryAt() { return fullAt; },
@@ -133,13 +191,16 @@ test('successful broad discovery at 23:00 does not repeat after midnight in the 
     logger: { info() {}, warn() {}, error() {} } });
   await service.fastTick();
   assert.deepEqual(queries, ['I0001', 'ESPM-']);
-  time = Date.parse('2026-10-19T03:15:00Z'); // 00:15 same logical window
+  time = Date.parse('2026-10-19T03:45:00Z'); // 00:45 same logical window
   await service.fastTick();
   assert.deepEqual(queries, ['I0001', 'ESPM-']);
+  time = Date.parse('2026-10-20T03:00:00Z'); // next local day at midnight
+  await service.fastTick();
+  assert.deepEqual(queries, ['I0001', 'ESPM-', 'I0001', 'ESPM-']);
 });
 
-test('historical discovery does not run period queries outside their daytime window', async () => {
-  const time=Date.parse('2026-10-19T02:15:00Z');
+test('historical discovery runs at midnight and does not run period queries outside daytime', async () => {
+  const time=Date.parse('2026-10-19T03:15:00Z');
   const calls=[];
   const store={async baselineStatus(){return {state:'ready'}},async lastFullDiscoveryAt(){return null},
     async markFullDiscoveryCompleted(){},async recordDiscoveries(){return {newlyRecorded:0,alreadyKnown:0}},
@@ -171,7 +232,7 @@ test('explicit discovery queries configured periods and all mode reuses one broa
   const explicitResult=await explicit.service.fastTick();
   assert.deepEqual(explicitResult.discoveryPeriods,{mode:'explicit',periods:['2601','2701']});
   assert.deepEqual(explicit.calls.filter(([kind])=>kind==='query').map(([,code])=>code),['2601-I0001','ESPM-2601-','2701-I0001','ESPM-2701-']);
-  const all=makeService({time:Date.parse('2026-10-19T02:15:00Z'),discoveryConfiguration:{mode:'all',periods:[]}});
+  const all=makeService({time:Date.parse('2026-10-19T03:15:00Z'),discoveryConfiguration:{mode:'all',periods:[]}});
   const allResult=await all.service.fastTick();
   assert.deepEqual(allResult.discoveryPeriods,{mode:'all',periods:[]});
   assert.deepEqual(all.calls.filter(([kind])=>kind==='query').map(([,code])=>code),['I0001','ESPM-']);
@@ -202,7 +263,7 @@ test('legacy and PeopleSoft candidates are both discovered and deduplicated by B
 });
 
 test('initial historical baseline waits for the broad discovery window', async () => {
-  const time=Date.parse('2026-10-19T02:00:00Z'); const calls=[]; let baselineRecords=[];
+  const time=Date.parse('2026-10-19T03:00:00Z'); const calls=[]; let baselineRecords=[];
   const legacy={Identifier:61,Code:'002521-01-2602-I0001',Type:{Code:'Course Offering'}};
   const modern={Identifier:62,Code:'ESPM-2602-GS2-C0011',Type:{Code:'Course Offering'}};
   const store={async baselineStatus(){return {state:'pending'}},async lastFullDiscoveryAt(){return null},
@@ -321,8 +382,97 @@ test('fast reconciliation work-conserves unused priority allocations without dup
   const routineOnly=await runScenario({routineCount:100});
   assert.equal(routineOnly.calls.length,50);
   assert.equal(routineOnly.calls.filter(id=>id.startsWith('routine-')).length,50);
+  const configuredAboveHardLimit=await runScenario({newCount:100,cap:100});
+  assert.equal(configuredAboveHardLimit.calls.length,50);
   const empty=await runScenario({});
   assert.equal(empty.calls.length,0);
+});
+
+test('a shared execution cannot exceed 50 reconciliations across repeated service calls',async()=>{
+  const time=Date.parse('2026-11-06T15:15:00Z');const rows=Array.from({length:100},(_,index)=>({
+    associationOrgUnitId:`same-execution-${index}`,associationCode:'ESPM-2602-GS2-C0011'}));
+  const completed=new Set();const calls=[];
+  const store={async baselineStatus(){return{state:'ready'}},async lastFullDiscoveryAt(){return new Date(time)},
+    async recordDiscoveries(){return{newlyRecorded:0,alreadyKnown:0}},async countHistoricalBacklog(){return 0},
+    async listWaitingNew(){return[]},async listNewWork({limit,excludeIds=[]}){return rows.filter(row=>
+      !completed.has(row.associationOrgUnitId)&&!excludeIds.includes(row.associationOrgUnitId)).slice(0,limit)},
+    async listPendingStatusReconciliationWork(){return[]},async listPendingChildChangeWork(){return[]},async listRoutineFastWork(){return[]}};
+  const service=createSectionAssociationService({client:{async associationCandidates(){return[]}},store,
+    maxReconciliationsPerRun:100,reconciler:{async reconcileAssociation(id){calls.push(id);completed.add(id);return{status:'completed'}}},
+    now:()=>time,logger:{info(){},warn(){},error(){}}});
+  const execution={executionId:'one-execution'};
+  const first=await service.fastTick({execution,maxReconciliations:100});
+  const second=await service.fastTick({execution,maxReconciliations:100});
+  assert.equal(first.processedThisRun,50);assert.equal(second.processedThisRun,0);
+  assert.equal(calls.length,50);assert.equal(new Set(calls).size,50);
+});
+
+test('daytime fast processing uses all 50 shared reconciliation slots when eligible work exists',async()=>{
+  const time=Date.parse('2026-11-06T15:15:00Z'); const rows=Array.from({length:80},(_,index)=>({
+    associationOrgUnitId:`day-${index}`,associationCode:'ESPM-2602-GS2-C0011'})); const calls=[];
+  const store={async baselineStatus(){return{state:'ready'}},async lastFullDiscoveryAt(){return new Date(time)},
+    async recordDiscoveries(){return{newlyRecorded:0,alreadyKnown:0}},async countHistoricalBacklog(){return 0},
+    async listWaitingNew(){return[]},async listNewWork({limit,excludeIds=[]}){return rows.filter(row=>!excludeIds.includes(row.associationOrgUnitId)).slice(0,limit)},
+    async listPendingStatusReconciliationWork(){return[]},async listPendingChildChangeWork(){return[]},async listRoutineFastWork(){return[]}};
+  const service=createSectionAssociationService({client:{async associationCandidates(){return[]}},store,
+    reconciler:{async reconcileAssociation(id){calls.push(String(id));return{status:'completed'}}},
+    now:()=>time,logger:{info(){},warn(){},error(){}}});
+  const result=await service.fastTick();
+  assert.equal(result.processedThisRun,50);assert.equal(calls.length,50);assert.equal(new Set(calls).size,50);
+});
+
+test('daytime status backlog does not consume new-association or incremental-change priority shares',async()=>{
+  const time=Date.parse('2026-11-06T15:15:00Z');const rows=(prefix,count)=>Array.from({length:count},(_,index)=>({
+    associationOrgUnitId:`${prefix}-${index}`,associationCode:'ESPM-2602-GS2-C0011'}));
+  const categories={new:rows('new',100),child:rows('child',100),status:rows('status',100),routine:rows('routine',100)};const calls=[];
+  const select=(items,limit,excludeIds=[])=>items.filter(row=>!excludeIds.includes(String(row.associationOrgUnitId))).slice(0,limit);
+  const store={async baselineStatus(){return{state:'ready'}},async lastFullDiscoveryAt(){return new Date(time)},
+    async recordDiscoveries(){return{newlyRecorded:0,alreadyKnown:0}},async countHistoricalBacklog(){return 0},
+    async listWaitingNew(){return[]},async listNewWork({limit,excludeIds=[]}){return select(categories.new,limit,excludeIds)},
+    async listPendingChildChangeWork({limit,excludeIds=[]}){return select(categories.child,limit,excludeIds)},
+    async listPendingStatusReconciliationWork({limit,excludeIds=[]}){return select(categories.status,limit,excludeIds)},
+    async listRoutineFastWork({limit,excludeIds=[]}){return select(categories.routine,limit,excludeIds)}};
+  const service=createSectionAssociationService({client:{async associationCandidates(){return[]}},store,
+    reconciler:{async reconcileAssociation(id){calls.push(String(id));return{status:'completed'}}},now:()=>time,
+    logger:{info(){},warn(){},error(){}}});
+  const result=await service.fastTick();
+  assert.equal(result.processedThisRun,50);
+  assert.equal(calls.filter(id=>id.startsWith('new-')).length,17);
+  assert.equal(calls.filter(id=>id.startsWith('child-')).length,17);
+  assert.equal(calls.filter(id=>id.startsWith('status-')).length,8);
+  assert.equal(calls.filter(id=>id.startsWith('routine-')).length,8);
+});
+
+test('night mixed workload shares 50 slots across new, incremental, routine, and reactivated offerings',async()=>{
+  const rows=(prefix,count)=>Array.from({length:count},(_,index)=>({associationOrgUnitId:`${prefix}-${index}`,
+    associationCode:'ESPM-2602-GS2-C0011'}));
+  const h=await runNightStatus({items:Array.from({length:50},(_,index)=>cachedStatusWork(index+1)),
+    newWork:rows('new',10),childWork:rows('child',10),routineWork:rows('routine',10),
+    course:id=>({Identifier:String(id),Code:'002521-01-2602-GS2-EL1S',IsActive:true})});
+  const reconciled=h.calls.reconciliations;
+  assert.equal(h.result.processedThisRun,50);assert.equal(reconciled.length,50);assert.equal(new Set(reconciled).size,50);
+  assert.equal(reconciled.filter(id=>id.startsWith('new-')).length,10);
+  assert.equal(reconciled.filter(id=>id.startsWith('child-')).length,10);
+  assert.equal(reconciled.filter(id=>id.startsWith('routine-')).length,10);
+  assert.equal(reconciled.filter(id=>/^\d+$/.test(id)).length,20);
+  assert.equal(h.result.statusReconciliationsDeferred,30);
+});
+
+test('deferred nighttime reactivations persist and consume remaining shared capacity next run',async()=>{
+  const items=Array.from({length:50},(_,index)=>cachedStatusWork(index+1));
+  const h=deferredStatusHarness({items,time:Date.parse('2026-10-18T04:05:00Z'),maxReconciliationsPerRun:20});
+  const first=await h.service.fastTick();
+  assert.equal(first.statusChecksAttempted,50);
+  assert.equal(first.processedThisRun,20);assert.equal(first.statusReconciliationsDeferred,30);
+  assert.equal(h.calls.length,20);assert.equal(new Set(h.calls).size,20);
+  h.setTime(Date.parse('2026-10-18T04:10:00Z'));
+  const second=await h.service.fastTick();
+  assert.equal(second.processedThisRun,20);assert.equal(second.statusReconciliationsDeferred,10);
+  assert.equal(h.calls.length,40);assert.equal(new Set(h.calls).size,40);
+  h.setTime(Date.parse('2026-10-18T04:15:00Z'));
+  const third=await h.service.fastTick();
+  assert.equal(third.processedThisRun,10);assert.equal(third.statusReconciliationsDeferred,0);
+  assert.equal(h.calls.length,50);assert.equal(new Set(h.calls).size,50);
 });
 
 test('fast scheduling does not reconcile an association twice when queues overlap',async()=>{
@@ -714,7 +864,7 @@ test('targeted child diagnostics report reconciliation deferred by the full-reco
   assert.equal(h.calls.children.length, 2);
 });
 
-test('night cached-ID verification is skipped at quarter-hour slots and runs at half-hour slots', async()=>{
+test('night cached-ID verification runs every five minutes and accepts the documented CourseOffering fields', async()=>{
   let time=Date.parse('2026-10-18T04:15:00Z'); let active=false, reconciles=0, statusQueries=0, statusLimit; const writes=[];
   const store={async baselineStatus(){return {state:'ready'}},async lastFullDiscoveryAt(){return new Date(time)},
     async recordDiscoveries(){return {newlyRecorded:0,alreadyKnown:0}},async countHistoricalBacklog(){return 0},
@@ -723,23 +873,80 @@ test('night cached-ID verification is skipped at quarter-hour slots and runs at 
       verifiedMappingVersion:1,verifiedChildren:[{id:'12',code:'002521-01-2602-GS2-EL1S-00001'}],
       verifiedTargets:[{id:'90',code:'002521-01-2602-GS2-EL1S'}],verifiedMappings:[{sectionId:'12',sectionCode:'002521-01-2602-GS2-EL1S-00001',targetId:'90',targetCode:'002521-01-2602-GS2-EL1S'}]}]:[]},
     async record(id,fields){writes.push(fields)},async countDueMonitoring(){return 0}};
-  const client={async associationCandidates(){return []},async course(){return {Identifier:90,Type:{Code:'Course Offering'},Code:'002521-01-2602-GS2-EL1S',IsActive:active}}};
+  const client={async associationCandidates(){return []},async course(){return {Identifier:90,Code:'002521-01-2602-GS2-EL1S',IsActive:active}}};
   const reconciler={async reconcileAssociation(){reconciles++;return {status:'completed',targets:[{status:'already-inactive'}]}}};
   const service=createSectionAssociationService({client,store,reconciler,now:()=>time,logger:{info(){},warn(){},error(){}}});
-  await service.fastTick();
-  assert.equal(statusQueries,0);
-  time=Date.parse('2026-10-18T04:30:00Z');
   const checked = await service.fastTick();
   assert.equal(statusQueries,1);
-  assert.equal(statusLimit,150);
+  assert.equal(statusLimit,50);
   assert.equal(reconciles,0);
   assert.equal(checked.statusChecksSucceeded,1);
+  assert.equal(checked.statusAssociationsVerified,1);
   assert.equal(checked.statusChangesDetected,0);
   assert.ok(writes.some(row=>row.lastSuccessfulStatusVerificationAt instanceof Date));
-  active=true; time=Date.parse('2026-10-18T05:00:00Z'); await service.fastTick(); assert.equal(reconciles,1);
+  time=Date.parse('2026-10-18T04:30:00Z');
+  active=true; await service.fastTick(); assert.equal(statusQueries,2); assert.equal(reconciles,1);
 });
 
-test('pending work remains eligible at quarter-hour slots when cached-ID verification is skipped', async () => {
+test('night verification checks 50 offerings in one five-minute run and reports actual compliant results',async()=>{
+  const items=Array.from({length:50},(_,index)=>cachedStatusWork(index+1));
+  const h=await runNightStatus({items,course:id=>({Identifier:String(id),Code:'002521-01-2602-GS2-EL1S',IsActive:false})});
+  assert.equal(h.statusLimit,50);
+  assert.equal(h.result.statusChecksAttempted,50);
+  assert.equal(h.result.statusChecksSucceeded,50);
+  assert.equal(h.result.statusAssociationsVerified,50);
+  assert.equal(h.result.statusChangesDetected,0);
+  assert.equal(h.result.processedThisRun,0);
+  assert.equal(h.result.statusMonitoringLag,554);
+  assert.equal(h.calls.reconciliations.length,0);
+  assert.equal(h.calls.writes.filter(row=>row.fields.lastSuccessfulStatusVerificationAt instanceof Date).length,50);
+});
+
+test('night verification discrepancies use all available reconciliation capacity, not the daytime 17-slot share',async()=>{
+  const items=Array.from({length:50},(_,index)=>cachedStatusWork(index+1));
+  const h=await runNightStatus({items,maxReconciliationsPerRun:100,
+    course:id=>({Identifier:String(id),Code:'002521-01-2602-GS2-EL1S',IsActive:true})});
+  assert.equal(h.statusLimit,50);
+  assert.equal(h.result.statusChecksAttempted,50);
+  assert.equal(h.result.statusAssociationsVerified,0);
+  assert.equal(h.result.statusChangesDetected,50);
+  assert.equal(h.result.statusReconciliationsPerformed,50);
+  assert.equal(h.result.statusCourseOfferingCorrections,0);
+  assert.equal(h.result.statusReconciliationsDeferred,0);
+  assert.equal(h.result.processedThisRun,50);
+  assert.equal(h.calls.reconciliations.length,50);
+  assert.equal(new Set(h.calls.reconciliations).size,50);
+});
+
+test('night verification still honors a smaller global reconciliation cap and records deferred work',async()=>{
+  const items=Array.from({length:50},(_,index)=>cachedStatusWork(index+1));
+  const h=await runNightStatus({items,maxReconciliationsPerRun:20,
+    course:id=>({Identifier:String(id),Code:'002521-01-2602-GS2-EL1S',IsActive:true})});
+  assert.equal(h.result.statusChecksAttempted,50);
+  assert.equal(h.result.statusChangesDetected,50);
+  assert.equal(h.result.statusReconciliationsPerformed,20);
+  assert.equal(h.result.statusReconciliationsDeferred,30);
+  assert.equal(h.result.processedThisRun,20);
+  assert.equal(h.calls.reconciliations.length,20);
+});
+
+test('night verification reconciles incorrect identities, codes, malformed responses and missing targets safely',async()=>{
+  const cases=[
+    ['incorrect ID',id=>({Identifier:String(Number(id)+1),Code:'002521-01-2602-GS2-EL1S',IsActive:false})],
+    ['incorrect code',id=>({Identifier:String(id),Code:'wrong-code',IsActive:false})],
+    ['malformed response',()=>null],
+    ['missing target',()=>{throw Object.assign(new Error('not found'),{status:404})}]
+  ];
+  for(const [label,course] of cases){
+    const h=await runNightStatus({items:[cachedStatusWork(7)],course});
+    assert.equal(h.result.statusChangesDetected,1,label);
+    assert.equal(h.result.statusReconciliationsPerformed,1,label);
+    assert.equal(h.result.processedThisRun,1,label);
+    assert.deepEqual(h.calls.reconciliations,['7'],label);
+  }
+});
+
+test('pending reconciliation and status verification run during the same five-minute nighttime cycle', async () => {
   const time = Date.parse('2026-10-18T04:15:00Z'); // 01:15 local
   let pendingProcessed = 0, statusQueries = 0;
   const store = { async baselineStatus() { return { state: 'ready' }; }, async lastFullDiscoveryAt() { return new Date(time); },
@@ -751,7 +958,7 @@ test('pending work remains eligible at quarter-hour slots when cached-ID verific
     now: () => time, logger: { info() {}, warn() {}, error() {} } });
   await service.fastTick();
   assert.equal(pendingProcessed, 1);
-  assert.equal(statusQueries, 0);
+  assert.equal(statusQueries, 1);
 });
 
 test('missing confirmation uses completed period results and exact IDs without extra API requests', async () => {
@@ -854,12 +1061,12 @@ test('manual discovery at 00:15 searches configured periods after nightly broad 
   assert.equal(result.discoveryActivities.historical, undefined);
 });
 
-test('manual discovery at 02:15 is period-scoped and does not start historical or cached-status work', async () => {
+test('manual discovery at 02:15 is period-scoped and allows normally scheduled status verification', async () => {
   const time = Date.parse('2026-10-20T05:15:00Z'); // 02:15 Sao Paulo
   const h = manualDiscoveryFixture({ time, discoveryConfiguration: { mode: 'explicit', periods: ['2501','2701'] } });
   const result = await h.service.fastTick({ manualDiscovery: true });
   assert.deepEqual(h.calls, ['2501-I0001','ESPM-2501-','2701-I0001','ESPM-2701-']);
-  assert.deepEqual(h.monitorKinds, []);
+  assert.deepEqual(h.monitorKinds, ['status']);
   assert.equal(result.discoveryActivities.historical, undefined);
   assert.equal(result.statusChecksAttempted, 0);
 });

@@ -136,7 +136,7 @@ test('trigger mode defaults to cron and rejects ambiguous values', () => {
 test('runtime defaults use five-minute discovery/stability and 320-association monitoring', () => {
   assert.deepEqual(RUNTIME_DEFAULTS, { stabilityMinutes: 5, fastIntervalMinutes: 5,
     recoveryIntervalHours: 4, maxReconciliationsPerRun: 50, completedReverifyHours: 24,
-    childMonitoringBatchSize: 320, statusVerificationBatchSize: 150 });
+    childMonitoringBatchSize: 320, statusVerificationBatchSize: 50 });
 });
 
 test('cron trigger does not start internal scheduler while internal trigger does', () => {

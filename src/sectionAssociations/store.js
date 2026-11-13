@@ -40,6 +40,11 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
       await associations.updateOne(filter, { $set: { ...fields } });
     }
   }
+  async function clearStatusReconciliationPending(id) {
+    const { associations } = await collections();
+    await associations.updateOne({ namespace, associationOrgUnitId: String(id) },
+      { $unset: { pendingStatusReconciliationAt: '' } });
+  }
   async function baselineStatus() {
     const { meta } = await collections();
     return meta.findOne({ _id: `baseline:${namespace}` });
@@ -302,6 +307,19 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
       .sort({ 'pendingChildChanges.0.detectionTimestamp': 1, lastCheckedAt: 1, associationOrgUnitId: 1 })
       .limit(limit).toArray()).map(item => ({ ...item, workType: 'child-change' }));
   }
+  async function listPendingStatusReconciliationWork({ limit, excludeIds = [] }) {
+    const { associations } = await collections();
+    if (limit <= 0) return [];
+    return (await associations.find({ namespace, status: 'completed', reconciliationVersion: 1,
+      pendingStatusReconciliationAt: { $exists: true },
+      ...(excludeIds.length ? { associationOrgUnitId: { $nin: excludeIds.map(String) } } : {}) })
+      .sort({ pendingStatusReconciliationAt: 1, associationOrgUnitId: 1 })
+      .limit(limit).toArray()).map(item => ({ ...item, workType: 'status-reconciliation' }));
+  }
+  async function countPendingStatusReconciliationWork() {
+    const { associations } = await collections();
+    return associations.countDocuments({ namespace, pendingStatusReconciliationAt: { $exists: true } });
+  }
   async function countPendingChildChangeWork() {
     const { associations } = await collections();
     return associations.countDocuments({ namespace, status: { $in: ['completed', 'pending'] }, reconciliationVersion: 1,
@@ -336,19 +354,20 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
       lastCheckedAt: { $exists: false }, firstSeenAt: { $gt: stabilityCutoff } })
       .sort(sortOrder).limit(limit).toArray();
   }
-  async function listRecoveryWork({ limit, stabilityCutoff, blockedBefore }) {
+  async function listRecoveryWork({ limit, stabilityCutoff, blockedBefore, excludeIds = [] }) {
     const { associations } = await collections();
     const selected = [];
     const seen = new Set();
+    const excluded = excludeIds.length ? { associationOrgUnitId: { $nin: excludeIds.map(String) } } : {};
     const buckets = [
-      ['new', { namespace, baseline: { $ne: true }, status: 'pending', lastCheckedAt: { $exists: false }, firstSeenAt: { $lte: stabilityCutoff } }],
-      ['pending', { namespace, baseline: { $ne: true }, status: 'pending', lastCheckedAt: { $exists: true } }],
-      ['historical', { namespace, baseline: true, $or: [
+      ['new', { namespace, ...excluded, baseline: { $ne: true }, status: 'pending', lastCheckedAt: { $exists: false }, firstSeenAt: { $lte: stabilityCutoff } }],
+      ['pending', { namespace, ...excluded, baseline: { $ne: true }, status: 'pending', lastCheckedAt: { $exists: true } }],
+      ['historical', { namespace, ...excluded, baseline: true, $or: [
         { status: 'pending' },
         { status: 'completed', $or: [{ reconciliationVersion: { $ne: 1 } },
           { lastReconciledAt: { $exists: false } }, { lastVerifiedAt: { $exists: false } }] }
       ] }],
-      ['blocked', { namespace, status: 'blocked', $or: [{ lastCheckedAt: { $lte: blockedBefore } }, { lastCheckedAt: { $exists: false } }] }]
+      ['blocked', { namespace, ...excluded, status: 'blocked', $or: [{ lastCheckedAt: { $lte: blockedBefore } }, { lastCheckedAt: { $exists: false } }] }]
     ];
     for (const [workType, filter] of buckets) {
       const remaining = limit - selected.length;
@@ -543,7 +562,9 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
       'discoveryPeriods', 'discoveryActivities', 'monitoringActivities', 'monitoringPeriods',
       'childChecksAttempted', 'childChecksSucceeded', 'childChangesDetected', 'childMappingRefreshesRequired',
       'childMonitoringLag', 'statusChecksAttempted', 'statusChecksSucceeded', 'statusChangesDetected',
-      'statusMappingRefreshesRequired', 'statusMonitoringLag', 'monitoringErrors', 'mappingRefreshesRequired'];
+      'statusAssociationsVerified', 'statusReconciliationsPerformed', 'statusCourseOfferingCorrections',
+      'statusReconciliationsDeferred', 'statusMappingRefreshesRequired', 'statusMonitoringLag',
+      'monitoringErrors', 'mappingRefreshesRequired'];
     const unset = Object.fromEntries(fields.filter(field => !Object.hasOwn(summary, field)).map(field => [field, '']));
     await meta.updateOne({ _id: `maintenance-history:${namespace}:${summary.executionId}` },
       { $set: { ...summary, namespace, history: true } }, { upsert: true });
@@ -651,9 +672,9 @@ function createSectionAssociationStore({ uri, namespace, mongoClient, now = Date
     return summary;
   }
   async function close() { if (!mongoClient) await client.close(); }
-  return { get, record, baselineStatus, beginBaseline, finishBaseline, releaseBaseline, recordDiscovery, recordDiscoveries,
+  return { get, record, clearStatusReconciliationPending, baselineStatus, beginBaseline, finishBaseline, releaseBaseline, recordDiscovery, recordDiscoveries,
     recordPotentialMissing, confirmMissing,
-    listFastWork, listNewWork, listPendingChildChangeWork, countPendingChildChangeWork, listRoutineFastWork, listWaitingNew, listRecoveryWork, countHistoricalBacklog, countDueCompleted, listMonitoringWork, countDueMonitoring, countRecoveryWork,
+    listFastWork, listNewWork, listPendingStatusReconciliationWork, countPendingStatusReconciliationWork, listPendingChildChangeWork, countPendingChildChangeWork, listRoutineFastWork, listWaitingNew, listRecoveryWork, countHistoricalBacklog, countDueCompleted, listMonitoringWork, countDueMonitoring, countRecoveryWork,
     lastFullDiscoveryAt, markFullDiscoveryCompleted,
     acquireCronLease, renewCronLease, releaseCronLease, cronLeaseStatus, recoveryDue, markRecoveryCompleted,
     saveMaintenanceExecution, latestMaintenanceExecution, recentMaintenanceExecutions, allMaintenanceExecutions,

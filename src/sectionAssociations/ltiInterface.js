@@ -80,10 +80,16 @@ function executionHtml(run){
     monitoring.push(line.join(' · '));
   }
   if(run.monitoringActivities?.status===true&&Number.isSafeInteger(run.statusChecksAttempted)){
-    const line=['Status checks: '+count(run.statusChecksSucceeded)+'/'+count(run.statusChecksAttempted)];
+    const line=Number.isSafeInteger(run.statusAssociationsVerified)
+      ? ['Offerings verified: '+count(run.statusAssociationsVerified)]
+      : ['Status checks: '+count(run.statusChecksSucceeded)+'/'+count(run.statusChecksAttempted)];
     if(Number.isSafeInteger(run.statusChangesDetected))line.push('Changes: '+count(run.statusChangesDetected));
-    if(Number.isSafeInteger(run.statusMappingRefreshesRequired))line.push('Mapping refreshes: '+count(run.statusMappingRefreshesRequired));
-    if(Number.isSafeInteger(run.statusMonitoringLag))line.push('Backlog: '+count(run.statusMonitoringLag));
+    if(Number.isSafeInteger(run.statusReconciliationsPerformed))line.push('Reconciled: '+count(run.statusReconciliationsPerformed));
+    if(Number.isSafeInteger(run.statusCourseOfferingCorrections))line.push('Course corrections: '+count(run.statusCourseOfferingCorrections));
+    if(Number.isSafeInteger(run.statusReconciliationsDeferred))line.push('Deferred: '+count(run.statusReconciliationsDeferred));
+    if(Number.isSafeInteger(run.statusMonitoringLag))line.push('Remaining: '+count(run.statusMonitoringLag));
+    if(!Number.isSafeInteger(run.statusAssociationsVerified)&&Number.isSafeInteger(run.statusMappingRefreshesRequired))line.push('Mapping refreshes: '+count(run.statusMappingRefreshesRequired));
+    if(!Number.isSafeInteger(run.statusAssociationsVerified)&&Number.isSafeInteger(run.statusMonitoringLag))line.push('Backlog: '+count(run.statusMonitoringLag));
     monitoring.push(line.join(' · '));
   }
   if(Number.isSafeInteger(run.monitoringErrors)&&run.monitoringErrors>0)monitoring.push('Monitoring read errors: '+count(run.monitoringErrors));
@@ -249,7 +255,11 @@ const CSV_COLUMNS = [
   ['Cached status changes detected', run => run.statusChangesDetected], ['Cached status monitoring lag', run => run.statusMonitoringLag],
   ['Monitoring read errors', run => run.monitoringErrors], ['Mapping refreshes required', run => run.mappingRefreshesRequired],
   ['Monitoring periods', run => run.monitoringPeriods?.join(' + ')],
-  ['Monitoring activities', run => Object.keys(run.monitoringActivities || {}).join('; ')]
+  ['Monitoring activities', run => Object.keys(run.monitoringActivities || {}).join('; ')],
+  ['Status association offerings verified', run => run.statusAssociationsVerified],
+  ['Status reconciliations performed', run => run.statusReconciliationsPerformed],
+  ['Status Course Offering corrections', run => run.statusCourseOfferingCorrections],
+  ['Status reconciliations deferred', run => run.statusReconciliationsDeferred]
 ];
 
 function csvCell(value) {

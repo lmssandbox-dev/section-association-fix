@@ -33,11 +33,13 @@ Times below use São Paulo local time. The external Render job wakes the app eve
 | Time | What the app does |
 | --- | --- |
 | **07:00–23:00** | Searches for new associations in the configured periods and rotates through known associations to inspect child sections. |
-| **23:00–01:00** | Runs the broad historical search once for the nightly window. If it fails, later five-minute starts can retry it. |
-| **01:00–07:00** | Checks saved original-course IDs every 30 minutes. These quick checks cannot authorize a course update; anything suspicious gets a fresh full validation. |
+| **00:00–01:00** | Runs the broad historical search once for the local date. If it fails, later five-minute starts in that hour can retry it. |
+| **01:00–06:00** | Checks up to 50 saved original-course IDs every five minutes. These quick checks cannot authorize a course update; anything suspicious gets a fresh full validation. |
 | **Recovery, all day** | Pending and blocked work remains eligible. The existing recovery schedule checks every four hours, including outside daytime hours. |
 
-The nightly search and 30-minute checks keep their existing schedules even though Render wakes every five minutes. The LTI **Run Now** action performs period discovery immediately, but does not force child monitoring outside its daytime window.
+The historical scan and status pass save their progress in MongoDB. If the service restarts, completed status checks stay complete, and remaining records are checked on later five-minute runs or the next night. The LTI **Run Now** action performs period discovery immediately, but does not force child monitoring outside its daytime window.
+
+There are three different kinds of work: daytime discovery finds associations; daytime child monitoring checks whether their child sections changed; nighttime status verification checks whether saved original Course Offerings are still inactive. A status mismatch goes through full fresh validation before any corrective write. Checking 320 associations does not mean 320 can be corrected in one run: full reconciliations still share a maximum of 50 per execution.
 
 **Render administrator action:** change the existing Cron Job schedule to `*/5 * * * *` and keep the command `npm run cron:section-association`. This is an external Render setting; changing application environment variables does not change the Cron Job schedule. Internal mode also defaults to a five-minute fast interval and is only for always-on hosting.
 

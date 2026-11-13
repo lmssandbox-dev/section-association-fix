@@ -7,13 +7,13 @@ const { createRateLimitedHttp, createMongoGate, rateLimitKey } = require('../sha
 const { createSectionAssociationClient } = require('./client');
 const { createSectionAssociationStore } = require('./store');
 const { createReconciler } = require('./reconciler');
-const { createSectionAssociationService } = require('./service');
+const { createSectionAssociationService, MAX_RECONCILIATIONS_PER_EXECUTION } = require('./service');
 const { createApiHealthService } = require('./apiHealth');
 const { discoveryPeriodsConfiguration } = require('./config');
 
 const RUNTIME_DEFAULTS = Object.freeze({ stabilityMinutes: 5, fastIntervalMinutes: 5,
-  recoveryIntervalHours: 4, maxReconciliationsPerRun: 50, completedReverifyHours: 24,
-  childMonitoringBatchSize: 320, statusVerificationBatchSize: 150 });
+  recoveryIntervalHours: 4, maxReconciliationsPerRun: MAX_RECONCILIATIONS_PER_EXECUTION, completedReverifyHours: 24,
+  childMonitoringBatchSize: 320, statusVerificationBatchSize: 50 });
 
 function createSectionAssociationRuntime({ env = process.env, http, logger = console }) {
   const brightspace = new URL(env.BS_URL);
@@ -35,10 +35,12 @@ function createSectionAssociationRuntime({ env = process.env, http, logger = con
   const stabilityMinutes = positiveInteger(env.SECTION_ASSOCIATION_FIX_STABILITY_MINUTES, RUNTIME_DEFAULTS.stabilityMinutes);
   const fastIntervalMinutes = positiveInteger(env.SECTION_ASSOCIATION_FIX_FAST_INTERVAL_MINUTES, RUNTIME_DEFAULTS.fastIntervalMinutes);
   const recoveryIntervalHours = positiveInteger(env.SECTION_ASSOCIATION_FIX_RECOVERY_INTERVAL_HOURS, RUNTIME_DEFAULTS.recoveryIntervalHours);
-  const maxReconciliationsPerRun = positiveInteger(env.SECTION_ASSOCIATION_FIX_MAX_RECONCILIATIONS_PER_RUN, RUNTIME_DEFAULTS.maxReconciliationsPerRun);
+  const maxReconciliationsPerRun = Math.min(MAX_RECONCILIATIONS_PER_EXECUTION,
+    positiveInteger(env.SECTION_ASSOCIATION_FIX_MAX_RECONCILIATIONS_PER_RUN, RUNTIME_DEFAULTS.maxReconciliationsPerRun));
   const completedReverifyHours = positiveInteger(env.SECTION_ASSOCIATION_FIX_COMPLETED_REVERIFY_HOURS, RUNTIME_DEFAULTS.completedReverifyHours);
   const childMonitoringBatchSize = positiveInteger(env.SECTION_ASSOCIATION_FIX_CHILD_MONITOR_BATCH_SIZE, RUNTIME_DEFAULTS.childMonitoringBatchSize);
-  const statusVerificationBatchSize = positiveInteger(env.SECTION_ASSOCIATION_FIX_STATUS_VERIFY_BATCH_SIZE, RUNTIME_DEFAULTS.statusVerificationBatchSize);
+  const statusVerificationBatchSize = Math.min(50, positiveInteger(env.SECTION_ASSOCIATION_FIX_STATUS_VERIFY_BATCH_SIZE,
+    RUNTIME_DEFAULTS.statusVerificationBatchSize));
   const discoveryConfiguration = discoveryPeriodsConfiguration(env);
   const reconciler = createReconciler({ client, store, dryRun, logger });
   const service = createSectionAssociationService({ client, store, reconciler, stabilityMinutes,

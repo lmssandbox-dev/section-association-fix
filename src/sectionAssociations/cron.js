@@ -2,11 +2,14 @@
 
 const { logEvent, safeErrorFields } = require('./log');
 const { startMaintenanceExecution, buildMaintenanceExecutionSummary, persistMaintenanceExecution } = require('./executionSummary');
+const { MAX_RECONCILIATIONS_PER_EXECUTION } = require('./service');
 
 async function runSectionAssociationCron({ service, store, recoveryIntervalHours, logger = console,
   now = Date.now, setIntervalFn = setInterval, clearIntervalFn = clearInterval,
   leaseMs = 10 * 60 * 1000, heartbeatMs = 60 * 1000, maxReconciliationsPerRun = 50,
   source = 'automatic', apiHealthService, manualRequestId }) {
+  maxReconciliationsPerRun = Math.min(MAX_RECONCILIATIONS_PER_EXECUTION,
+    Math.max(0, Math.floor(Number(maxReconciliationsPerRun) || 0)));
   let manualRequest = manualRequestId ? { requestId: manualRequestId } : null;
   if (source === 'automatic' && typeof store.getManualExecutionRequest === 'function') {
     try {

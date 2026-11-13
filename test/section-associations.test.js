@@ -499,7 +499,7 @@ test('first successful discovery records baseline history and sends it through t
   store.recordDiscoveries = async rows => { events.push('incremental-persisted'); return recordDiscoveries(rows); };
   store.releaseBaseline = async () => {};
   let reconciles = 0;
-  const baselineTime = Date.parse('2026-10-19T02:00:00Z');
+  const baselineTime = Date.parse('2026-10-19T03:00:00Z'); // 00:00 Sao Paulo
   const service = createSectionAssociationService({ client: { async associationCandidates(code) {
     events.push(`query:${code}`); return [association];
   } }, store,

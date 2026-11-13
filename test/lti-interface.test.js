@@ -261,11 +261,11 @@ test('expanded history shows only monitoring metrics for activities performed', 
   let details=child.history.innerHTML.match(/<div class="detail-strip">([\s\S]*?)<\/div><\/details>/)[1];
   assert.match(details,/Associations inspected: 121\/125 · Changes: 2 · Mapping refreshes: 3 · Backlog: 24/);
   assert.doesNotMatch(details,/Status checks/);
-  const statusRun={...execution,monitoringActivities:{status:true},statusChecksSucceeded:148,statusChecksAttempted:150,
-    statusChangesDetected:1,statusMappingRefreshesRequired:1,statusMonitoringLag:6};
+  const statusRun={...execution,monitoringActivities:{status:true},statusChecksAttempted:50,statusChecksSucceeded:50,statusAssociationsVerified:50,
+    statusReconciliationsPerformed:2,statusCourseOfferingCorrections:1,statusReconciliationsDeferred:3};
   const status=await runPage(async()=>({ok:true,async json(){return{availability:'Available',worker:'idle',latestExecution:statusRun,executions:[statusRun]}}}));
   details=status.history.innerHTML.match(/<div class="detail-strip">([\s\S]*?)<\/div><\/details>/)[1];
-  assert.match(details,/Status checks: 148\/150 · Changes: 1 · Mapping refreshes: 1 · Backlog: 6/);
+  assert.match(details,/Offerings verified: 50 · Reconciled: 2 · Course corrections: 1 · Deferred: 3/);
   assert.doesNotMatch(details,/Associations inspected/);
   const legacy={...execution};
   delete legacy.monitoringActivities;
